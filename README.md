@@ -21,3 +21,9 @@ Requires Rust toolchain and git >= 2.30.
 ## License
 
 MIT
+
+## Screenshot
+
+![GitLanes commit graph](docs/screenshot.png)
+
+*Separate BRANCH/TAG column, curved lane graph, author avatars, commit detail panel with unified diff.*

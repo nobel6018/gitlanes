@@ -36,3 +36,55 @@ export function formatDate(unixSeconds: number): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+
+/** authorEmail → LANE_COLORS 인덱스. 문자 코드 누적만 하는 가벼운 결정적 해시 */
+export function authorColorIndex(email: string): number {
+  let hash = 0;
+  for (let i = 0; i < email.length; i++) {
+    hash = (hash * 31 + email.charCodeAt(i)) | 0;
+  }
+  const n = LANE_COLORS.length;
+  return ((hash % n) + n) % n;
+}
+
+const LATIN_HEAD = /^\p{Script=Latin}/u;
+
+/**
+ * 아바타 이니셜. 라틴 이름은 앞 두 단어의 첫 글자("Jimin Park" → "JP"),
+ * 한글 등 비라틴 이름은 첫 글자 1자("박용진" → "박").
+ */
+export function authorInitials(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) {
+    return "?";
+  }
+  const chars = [...trimmed];
+  // 라틴 판정은 악센트 문자(Åsa)까지 포함하도록 스크립트 속성으로 본다
+  if (!LATIN_HEAD.test(chars[0])) {
+    return chars[0];
+  }
+  const words = trimmed.split(/\s+/).filter((word) => LATIN_HEAD.test(word));
+  if (words.length === 0) {
+    return chars[0].toUpperCase();
+  }
+  return words
+    .slice(0, 2)
+    .map((word) => word[0].toUpperCase())
+    .join("");
+}
+
+const rgbaCache = new Map<string, string>();
+
+/** LANE_COLORS[color]를 alpha 적용한 rgba 문자열로. 행마다 파싱하지 않게 캐시한다 */
+export function laneColorAlpha(color: number, alpha: number): string {
+  const key = `${color}:${alpha}`;
+  const cached = rgbaCache.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const hex = laneColor(color);
+  const value = parseInt(hex.slice(1), 16);
+  const rgba = `rgba(${(value >> 16) & 0xff}, ${(value >> 8) & 0xff}, ${value & 0xff}, ${alpha})`;
+  rgbaCache.set(key, rgba);
+  return rgba;
+}

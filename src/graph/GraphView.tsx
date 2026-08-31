@@ -10,9 +10,12 @@ import {
   BRANCH_COL_WIDTH,
   DATE_COL_WIDTH,
   SHA_COL_WIDTH,
+  authorColorIndex,
+  authorInitials,
   formatDate,
   graphColumnWidth,
   laneColor,
+  laneColorAlpha,
 } from "./layout";
 import { RefPills } from "./RefPills";
 import "./graph.css";
@@ -56,6 +59,7 @@ const Row = memo(function Row({
 }: RowProps) {
   const className =
     "gl-row" + (selected ? " gl-row-selected" : "") + (row.isHead ? " gl-row-head" : "");
+  const avatarColor = authorColorIndex(row.authorEmail);
   return (
     <div
       className={className}
@@ -70,7 +74,16 @@ const Row = memo(function Row({
         {row.subject}
       </div>
       <div className="gl-cell gl-cell-author" style={{ width: AUTHOR_COL_WIDTH }} title={row.author}>
-        {row.author}
+        <span
+          className="gl-avatar"
+          style={{
+            background: laneColorAlpha(avatarColor, 0.25),
+            color: laneColor(avatarColor),
+          }}
+        >
+          {authorInitials(row.author)}
+        </span>
+        <span className="gl-author-name">{row.author}</span>
       </div>
       <div className="gl-cell gl-cell-sha" style={{ width: SHA_COL_WIDTH }}>
         {row.shortSha.slice(0, SHA_DISPLAY_LENGTH)}

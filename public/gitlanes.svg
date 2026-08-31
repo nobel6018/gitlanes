@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <rect width="48" height="48" rx="11" fill="#1C1E23"/>
+  <g fill="none" stroke-width="4" stroke-linecap="round">
+    <!-- LANE_COLORS[0] 주 줄기 -->
+    <path d="M13 9V39" stroke="#3FB3DE"/>
+    <!-- LANE_COLORS[1] 곁가지가 주 줄기로 합류 -->
+    <path d="M35 9v7c0 8-22 6-22 14" stroke="#E88A5C"/>
+    <!-- LANE_COLORS[2] 주 줄기에서 갈라져 나감 -->
+    <path d="M13 20c0 8 22 4 22 12v7" stroke="#54C08A"/>
+  </g>
+  <g stroke="#1C1E23" stroke-width="3">
+    <circle cx="13" cy="14" r="4.5" fill="#3FB3DE"/>
+    <circle cx="13" cy="30" r="4.5" fill="#E88A5C"/>
+    <circle cx="35" cy="37" r="4.5" fill="#54C08A"/>
+  </g>
+</svg>

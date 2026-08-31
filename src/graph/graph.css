@@ -122,7 +122,31 @@
 }
 
 .gl-cell-author {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--fg-1);
+}
+
+.gl-author-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 이니셜 아바타. 배경은 authorEmail 해시로 고른 레인 색 25% */
+.gl-avatar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
 }
 
 .gl-cell-sha {
