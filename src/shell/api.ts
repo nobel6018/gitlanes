@@ -1,0 +1,33 @@
+// Tauri command 래퍼. 시그니처는 CONTRACTS.md 동결 계약을 따른다.
+import { invoke } from "@tauri-apps/api/core";
+import type { CommitDetails, GraphData, RepoInfo } from "../types";
+
+export function openRepo(path: string): Promise<RepoInfo> {
+  return invoke<RepoInfo>("open_repo", { path });
+}
+
+export function loadGraph(path: string, limit: number): Promise<GraphData> {
+  return invoke<GraphData>("load_graph", { path, limit });
+}
+
+export function getCommitDetails(path: string, sha: string): Promise<CommitDetails> {
+  return invoke<CommitDetails>("get_commit_details", { path, sha });
+}
+
+export function getFileDiff(path: string, sha: string, file: string): Promise<string> {
+  return invoke<string>("get_file_diff", { path, sha, file });
+}
+
+/** Tauri command는 Err(String)을 그대로 reject 한다. 사람이 읽을 메시지로 정규화. */
+export function errorMessage(err: unknown): string {
+  if (typeof err === "string") {
+    return err;
+  }
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (err && typeof err === "object" && "message" in err) {
+    return String((err as { message: unknown }).message);
+  }
+  return String(err);
+}

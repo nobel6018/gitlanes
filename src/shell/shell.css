@@ -1,0 +1,621 @@
+/* GitLanes 앱 셸 레이아웃. 색은 theme.css의 변수만 사용한다. */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-window);
+}
+
+/* ---------- 툴바 ---------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 10px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border-0);
+}
+
+.toolbar-repo {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.toolbar-repo-name {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.toolbar-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-2);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+.toolbar-spacer {
+  flex: 1 1 auto;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  padding-right: 4px;
+}
+
+.toolbar-count {
+  color: var(--fg-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  color: var(--fg-1);
+  background: transparent;
+  white-space: nowrap;
+}
+
+.toolbar-btn:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.toolbar-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.toolbar-btn.toggle {
+  color: var(--fg-2);
+}
+
+.toolbar-btn.toggle.on {
+  color: var(--fg-1);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.toolbar-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.toolbar-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.spin {
+  animation: gl-spin 0.9s linear infinite;
+  transform-origin: 50% 50%;
+}
+
+@keyframes gl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- 로드 인디케이터 ---------- */
+
+.progress {
+  flex: 0 0 auto;
+  height: 2px;
+  background: var(--border-0);
+  overflow: hidden;
+}
+
+.progress::after {
+  content: "";
+  display: block;
+  width: 30%;
+  height: 100%;
+  background: var(--accent);
+  animation: gl-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes gl-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+/* ---------- 메인 ---------- */
+
+.main {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.graph-area {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-content);
+  overflow: hidden;
+  position: relative;
+}
+
+.statusbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 22px;
+  padding: 0 10px;
+  background: var(--bg-titlebar);
+  border-top: 1px solid var(--border-0);
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.statusbar .sb-path {
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: right;
+}
+
+/* ---------- 상세 패널 ---------- */
+
+.detail-panel {
+  flex: 0 0 360px;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-1);
+  overflow: hidden;
+}
+
+.panel-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.panel-empty {
+  padding: 16px 14px;
+  color: var(--fg-2);
+}
+
+.panel-empty.small {
+  padding: 6px 0;
+}
+
+.panel-section {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.commit-subject {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.commit-body {
+  margin: 8px 0 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--fg-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.meta-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.meta-label {
+  flex: 0 0 66px;
+  color: var(--fg-2);
+}
+
+.meta-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  word-break: break-all;
+}
+
+.fg-2 {
+  color: var(--fg-2);
+}
+
+.sig-email,
+.sig-date {
+  color: var(--fg-2);
+}
+
+.parent-link {
+  color: var(--link);
+  border-bottom: 1px solid transparent;
+}
+
+.parent-link:hover {
+  border-bottom-color: var(--link);
+}
+
+.files-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 4px;
+  border-radius: 3px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.file-row:hover {
+  background: var(--hover-bg);
+}
+
+.status-badge {
+  flex: 0 0 14px;
+  height: 14px;
+  line-height: 14px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  color: var(--bg-content);
+}
+
+.status-A {
+  background: var(--added);
+}
+
+.status-M {
+  background: var(--modified);
+}
+
+.status-D {
+  background: var(--deleted);
+}
+
+.status-R,
+.status-C,
+.status-T {
+  background: transparent;
+  color: var(--fg-2);
+  border: 1px solid var(--fg-2);
+}
+
+.file-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.path-dir {
+  color: var(--fg-2);
+}
+
+.path-base {
+  color: var(--fg-1);
+}
+
+.file-stat {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.stat-add {
+  color: var(--added);
+}
+
+.stat-del {
+  color: var(--deleted);
+}
+
+/* ---------- diff ---------- */
+
+.panel-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.back-btn {
+  flex: 0 0 auto;
+  color: var(--link);
+  font-size: 12px;
+}
+
+.panel-head-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diff {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 6px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diff-line {
+  padding: 0 10px;
+  white-space: pre;
+  min-width: max-content;
+}
+
+.diff-line.add {
+  background: var(--added-bg);
+  color: var(--added);
+}
+
+.diff-line.del {
+  background: var(--deleted-bg);
+  color: var(--deleted);
+}
+
+.diff-line.hunk {
+  color: var(--link);
+  background: rgba(111, 168, 232, 0.08);
+}
+
+.diff-line.meta {
+  color: var(--fg-2);
+}
+
+/* ---------- 웰컴 ---------- */
+
+.welcome {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  background: var(--bg-window);
+}
+
+.welcome-inner {
+  width: 440px;
+  max-width: 90vw;
+  padding: 32px 0;
+  text-align: center;
+}
+
+.welcome-brand {
+  margin-bottom: 22px;
+}
+
+.welcome-logo {
+  line-height: 0;
+  margin-bottom: 10px;
+}
+
+.welcome-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.welcome-subtitle {
+  margin: 4px 0 0;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.welcome-open {
+  width: 240px;
+  height: 38px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.welcome-open:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.welcome-open:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.recents {
+  margin-top: 28px;
+  text-align: left;
+}
+
+.recents-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fg-2);
+}
+
+.recents-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-1);
+  border-radius: 5px;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.recent-item {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.recent-item:last-child {
+  border-bottom: none;
+}
+
+.recent-item:hover {
+  background: var(--hover-bg);
+}
+
+.recent-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
+  padding: 7px 10px;
+  text-align: left;
+}
+
+.recent-name {
+  display: block;
+  font-size: 13px;
+}
+
+.recent-path {
+  display: block;
+  font-size: 11px;
+  color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.recent-remove {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  margin-right: 6px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.recent-remove:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+/* ---------- 토스트 ---------- */
+
+.toast {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 560px;
+  padding: 9px 10px 9px 11px;
+  border: 1px solid var(--deleted);
+  border-radius: 5px;
+  background: var(--bg-panel);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  animation: gl-toast-in 160ms ease-out;
+}
+
+@keyframes gl-toast-in {
+  from {
+    transform: translate(-50%, -18px);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+}
+
+.toast {
+  transform: translate(-50%, 0);
+}
+
+.toast-icon {
+  flex: 0 0 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 50%;
+  background: var(--deleted);
+  color: var(--bg-content);
+  font-weight: 700;
+}
+
+.toast-message {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.toast-close {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.toast-close:hover {
+  color: var(--fg-1);
+}

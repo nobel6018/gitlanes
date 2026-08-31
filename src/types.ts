@@ -99,4 +99,10 @@ export interface CommitDetails {
   files: FileChange[];
 }
 
-// get_file_diff(path, sha, file) -> string (unified diff 원문)
+// get_file_diff(path, sha, file, oldFile) -> string (unified diff 원문)
+//   oldFile: rename/copy 커밋에서 FileChange.oldPath를 그대로 전달 (아니면 null).
+//   pathspec에 old/new 경로를 함께 걸어 rename이 "new file"로 보이지 않게 한다.
+
+// get_startup_repo() -> string | null
+//   CLI 첫 위치 인자 또는 GITLANES_REPO 환경변수로 지정된 시작 레포 경로.
+//   ui-shell은 마운트 시 1회 호출해 값이 있으면 자동으로 open_repo를 수행한다.

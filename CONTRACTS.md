@@ -21,7 +21,10 @@
 open_repo(path: string) -> RepoInfo            // 실패 시 Err(String): 사람이 읽을 한국어/영어 오류 메시지
 load_graph(path: string, limit: number) -> GraphData
 get_commit_details(path: string, sha: string) -> CommitDetails
-get_file_diff(path: string, sha: string, file: string) -> string   // unified diff 원문
+get_file_diff(path: string, sha: string, file: string, oldFile: string | null) -> string
+    // unified diff 원문. oldFile은 rename/copy일 때 FileChange.oldPath 전달
+get_startup_repo() -> string | null
+    // CLI 첫 위치 인자 또는 GITLANES_REPO 환경변수. ui-shell이 마운트 시 자동 오픈에 사용
 ```
 
 - 모든 응답 타입은 `src/types.ts`와 1:1 일치 (`#[serde(rename_all = "camelCase")]`)

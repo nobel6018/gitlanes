@@ -1,0 +1,214 @@
+/* ui-graph 스타일. 색은 CONTRACTS.md의 CSS 변수만 사용하고, 레인 색만 인라인 style로 받는다 */
+
+.gl-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-content);
+  color: var(--fg-1);
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* ── 헤더 ───────────────────────────────────────── */
+
+.gl-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: 24px;
+  border-bottom: 1px solid var(--border-0);
+  background: var(--bg-content);
+  color: var(--fg-2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.gl-header .gl-cell {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ── 본문 ───────────────────────────────────────── */
+
+.gl-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.gl-canvas {
+  position: absolute;
+  top: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.gl-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.gl-spacer {
+  position: relative;
+  width: 100%;
+}
+
+/* ── 행 ─────────────────────────────────────────── */
+
+.gl-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  cursor: default;
+  user-select: none;
+}
+
+.gl-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* 선택 행: var(--accent) 위에 50% 투명 오버레이 */
+.gl-row-selected::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.gl-row-head {
+  font-weight: 700;
+}
+
+.gl-cell {
+  position: relative;
+  flex: none;
+  padding: 0 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.gl-cell-branch {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+}
+
+.gl-cell-graph {
+  padding: 0;
+}
+
+.gl-cell-message {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-1);
+}
+
+.gl-cell-author {
+  color: var(--fg-1);
+}
+
+.gl-cell-sha {
+  color: var(--fg-2);
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 12px;
+}
+
+.gl-cell-date {
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── ref pill ───────────────────────────────────── */
+
+.gl-pill {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  height: 16px;
+  padding: 0 5px;
+  border: 1px solid var(--border-1);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--fg-1);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.gl-pill-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.gl-pill-tag {
+  /* 각진 스타일로 브랜치와 구분한다 */
+  border-radius: 2px;
+  border-color: var(--modified);
+  color: var(--modified);
+}
+
+.gl-pill-head {
+  font-weight: 700;
+}
+
+.gl-pill-more {
+  flex: none;
+  color: var(--fg-2);
+  font-size: 10px;
+}
+
+.gl-pill-icon {
+  flex: none;
+  width: 9px;
+  height: 9px;
+}
+
+.gl-pill-check {
+  width: 8px;
+  height: 8px;
+}
+
+/* ── 상태 표시 ──────────────────────────────────── */
+
+.gl-footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.gl-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--fg-2);
+  font-size: 12px;
+}
