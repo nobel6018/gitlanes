@@ -58,6 +58,14 @@ export interface CommitRow {
   edges: Edge[];
 }
 
+/** 워킹 디렉토리 미커밋 변경 요약. 깨끗하면 GraphData.wip이 null */
+export interface WipInfo {
+  /** 변경된 파일 수 (staged + unstaged + untracked, 파일 단위 중복 제거) */
+  changedFiles: number;
+  /** 그중 staged 파일 수 */
+  stagedFiles: number;
+}
+
 /** Tauri command: load_graph(path, limit) */
 export interface GraphData {
   rows: CommitRow[];
@@ -67,6 +75,18 @@ export interface GraphData {
   hasMore: boolean;
   /** 전체 rows에서 사용된 최대 레인 수 (캔버스 폭 계산용) */
   laneCount: number;
+  /** 미커밋 변경. 없으면 null. GraphView가 HEAD 행 위에 WIP 행으로 렌더 */
+  wip: WipInfo | null;
+}
+
+/** Tauri command: list_refs(path) — 사이드바용 전체 refs (로드된 커밋 범위와 무관) */
+export interface RefEntry {
+  /** "main", "origin/main", "v1.2.0" */
+  name: string;
+  kind: RefKind;
+  /** 가리키는 커밋 sha (annotated tag는 역참조된 커밋) */
+  sha: string;
+  isHead: boolean;
 }
 
 export type FileStatus = "A" | "M" | "D" | "R" | "C" | "T";

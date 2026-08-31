@@ -1,6 +1,6 @@
 // Tauri command 래퍼. 시그니처는 CONTRACTS.md 동결 계약을 따른다.
 import { invoke } from "@tauri-apps/api/core";
-import type { CommitDetails, GraphData, RepoInfo } from "../types";
+import type { CommitDetails, GraphData, RefEntry, RepoInfo } from "../types";
 
 export function openRepo(path: string): Promise<RepoInfo> {
   return invoke<RepoInfo>("open_repo", { path });
@@ -22,6 +22,11 @@ export function getFileDiff(
   oldFile: string | null,
 ): Promise<string> {
   return invoke<string>("get_file_diff", { path, sha, file, oldFile });
+}
+
+/** 사이드바용 전체 refs. 로드된 커밋 범위와 무관하다 */
+export function listRefs(path: string): Promise<RefEntry[]> {
+  return invoke<RefEntry[]>("list_refs", { path });
 }
 
 /** CLI 인자/환경변수로 지정된 시작 레포 경로. 없으면 null */

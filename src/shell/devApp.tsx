@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import App from "../App";
 import { makeMockGraph } from "../graph";
-import type { CommitDetails, FileChange, GraphData, RepoInfo } from "../types";
+import type { CommitDetails, FileChange, GraphData, RefEntry, RepoInfo } from "../types";
 import "../theme.css";
 
 const MOCK_PATH = "/mock/awesome-project";
@@ -47,9 +47,111 @@ function mockGraph(limit: number): GraphData {
     ...base,
     totalLoaded: base.rows.length,
     hasMore: count < TOTAL_COMMITS,
+    // 워킹 디렉토리가 더러운 상태 — GraphView가 HEAD 위에 WIP 행을 그린다
+    wip: { changedFiles: 7, stagedFiles: 3 },
   };
   graphCache.set(limit, data);
   return data;
+}
+
+/** 로컬 5 + origin 20 + 태그 5. makeMockGraph가 만든 refs를 먼저 흡수해 그래프 pill과 어긋나지 않게 한다. */
+const LOCAL_NAMES = [
+  "main",
+  "feat/wip-sidebar-search",
+  "feat/graph-canvas",
+  "fix/lane-color-reuse",
+  "chore/bump-tauri",
+];
+
+const REMOTE_NAMES = [
+  "origin/main",
+  "origin/develop",
+  "origin/feat/wip-sidebar-search",
+  "origin/feat/graph-canvas",
+  "origin/feat/commit-details",
+  "origin/feat/diff-viewer",
+  "origin/feat/keyboard-nav",
+  "origin/fix/lane-color-reuse",
+  "origin/fix/scroll-jitter",
+  "origin/fix/rename-diff",
+  "origin/fix/toast-stacking",
+  "origin/chore/bump-tauri",
+  "origin/chore/ci-cache",
+  "origin/chore/eslint",
+  "origin/release/0.1",
+  "origin/release/0.2",
+  "origin/experiment/webgl-lanes",
+  "origin/experiment/worker-layout",
+  "origin/docs/contracts",
+  "origin/revert/lane-pool",
+];
+
+const TAG_NAMES = ["v0.1.0", "v0.1.1", "v0.1.2", "v0.2.0-rc.1", "v0.2.0"];
+
+let refsCache: RefEntry[] | null = null;
+
+function mockRefs(): RefEntry[] {
+  if (refsCache !== null) {
+    return refsCache;
+  }
+  const rows = mockGraph(1000).rows;
+  const byName = new Map<string, RefEntry>();
+
+  // 1) 그래프가 실제로 붙여둔 ref를 먼저 채운다
+  for (const row of rows) {
+    for (const ref of row.refs) {
+      if (!byName.has(ref.name)) {
+        byName.set(ref.name, {
+          name: ref.name,
+          kind: ref.kind,
+          sha: row.sha,
+          isHead: ref.isHead,
+        });
+      }
+    }
+  }
+
+  // 2) 목표 개수까지 합성 ref로 채운다 (sha는 로드 범위 안의 행에서 고른다)
+  const headSha = rows.find((row) => row.isHead)?.sha ?? rows[0].sha;
+  let cursor = 0;
+  const pickSha = (): string => {
+    cursor += 1;
+    return rows[(cursor * 37) % rows.length].sha;
+  };
+  const fill = (names: string[], kind: RefEntry["kind"], target: number) => {
+    let have = [...byName.values()].filter((ref) => ref.kind === kind).length;
+    for (const name of names) {
+      if (have >= target) {
+        break;
+      }
+      if (byName.has(name)) {
+        continue;
+      }
+      byName.set(name, {
+        name,
+        kind,
+        sha: name === "main" ? headSha : pickSha(),
+        isHead: false,
+      });
+      have += 1;
+    }
+  };
+  fill(LOCAL_NAMES, "localBranch", 5);
+  fill(REMOTE_NAMES, "remoteBranch", 20);
+  fill(TAG_NAMES, "tag", 5);
+
+  const all = [...byName.values()];
+  // HEAD 표시는 로컬 브랜치 하나에만
+  if (!all.some((ref) => ref.kind === "localBranch" && ref.isHead)) {
+    const main = all.find((ref) => ref.kind === "localBranch" && ref.name === "main");
+    if (main !== undefined) {
+      main.isHead = true;
+      main.sha = headSha;
+    }
+  }
+
+  refsCache = all;
+  return all;
 }
 
 function mockFiles(seed: number): FileChange[] {
@@ -164,6 +266,10 @@ mockIPC(async (cmd, payload) => {
       const limit = Number(readArg(payload, "limit") ?? 0);
       return mockGraph(limit);
     }
+
+    case "list_refs":
+      await sleep(80);
+      return mockRefs();
 
     case "get_commit_details": {
       await sleep(90);

@@ -5,7 +5,8 @@
 //!
 //! @see CONTRACTS.md
 
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 
 use crate::model::Edge;
 use crate::parse::RawCommit;
@@ -66,11 +67,102 @@ impl ColorPicker {
     }
 }
 
-/// 직전 row를 처리한 뒤의 상태. band (i-1, i) 선분을 만들 때 쓴다.
+/// 활성 레인 배열.
+///
+/// 커밋마다 "이 sha를 기다리는 레인"과 "가장 왼쪽 빈 슬롯"을 찾는데, 배열을 매번 훑으면
+/// 커밋당 O(레인 수)가 붙는다. 레인이 수십 개인 저장소에서 이게 지배적이라
+/// sha 색인과 빈 슬롯 최소 힙을 함께 유지한다.
+#[derive(Debug, Default)]
+struct Lanes {
+    slots: Vec<Option<Slot>>,
+    /// 기다리는 sha → 그 sha를 기다리는 레인 인덱스들
+    waiting: HashMap<String, Vec<usize>>,
+    /// 비어 있는 레인 인덱스. 가장 왼쪽부터 재사용하려고 최소 힙을 쓴다
+    free: BinaryHeap<Reverse<usize>>,
+}
+
+impl Lanes {
+    fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn slot(&self, index: usize) -> Option<&Slot> {
+        self.slots.get(index).and_then(Option::as_ref)
+    }
+
+    fn active(&self) -> impl Iterator<Item = (usize, &Slot)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| slot.as_ref().map(|slot| (index, slot)))
+    }
+
+    /// `sha`를 기다리는 레인들을 왼쪽부터. 보통 0~2개다.
+    fn matches(&self, sha: &str) -> Vec<usize> {
+        let mut found = self.waiting.get(sha).cloned().unwrap_or_default();
+        found.sort_unstable();
+        found
+    }
+
+    /// `sha`를 기다리는 가장 왼쪽 레인.
+    fn find_waiting(&self, sha: &str) -> Option<usize> {
+        self.waiting.get(sha)?.iter().copied().min()
+    }
+
+    /// 가장 왼쪽 빈 슬롯을 잡는다. 없으면 끝에 새로 만든다.
+    fn alloc(&mut self) -> usize {
+        // trim으로 사라졌거나 이미 채워진 인덱스는 버린다 (힙에 남는 낡은 항목)
+        while let Some(Reverse(index)) = self.free.pop() {
+            if self.slots.get(index).is_some_and(Option::is_none) {
+                return index;
+            }
+        }
+        self.slots.push(None);
+        self.slots.len() - 1
+    }
+
+    fn set(&mut self, index: usize, expected: String, color: usize) {
+        self.detach(index);
+        self.waiting
+            .entry(expected.clone())
+            .or_default()
+            .push(index);
+        self.slots[index] = Some(Slot { expected, color });
+    }
+
+    /// 레인을 종료하고 쓰던 색을 돌려준다.
+    fn clear(&mut self, index: usize) -> Option<usize> {
+        let released = self.detach(index).map(|slot| slot.color);
+        if index < self.slots.len() {
+            self.free.push(Reverse(index));
+        }
+        released
+    }
+
+    /// 슬롯을 비우고 sha 색인에서도 뗀다.
+    fn detach(&mut self, index: usize) -> Option<Slot> {
+        let slot = self.slots.get_mut(index)?.take()?;
+        if let Some(holders) = self.waiting.get_mut(&slot.expected) {
+            holders.retain(|&lane| lane != index);
+            if holders.is_empty() {
+                self.waiting.remove(&slot.expected);
+            }
+        }
+        Some(slot)
+    }
+
+    /// 끝쪽 빈 슬롯을 잘라 lane_count가 부풀지 않게 한다.
+    fn trim(&mut self) {
+        while matches!(self.slots.last(), Some(None)) {
+            self.slots.pop();
+        }
+    }
+}
+
+/// 직전 row에서 생긴 병합 선분 정보. band (i-1, i)를 만들 때 쓴다.
+/// 활성 레인 자체는 [`Lanes`]의 현재 상태가 곧 직전 row 처리 직후 상태라 따로 복제하지 않는다.
 #[derive(Debug)]
 struct Band {
-    /// 직전 row 처리 직후의 활성 레인 스냅샷
-    snapshot: Vec<Option<Slot>>,
     /// 병합 부모용으로 새로 만든 레인: (새 레인, 출발 레인)
     origins: Vec<(usize, usize)>,
     /// 이미 존재하는 레인으로 합류하는 병합 선분: (출발 레인, 도착 레인, 색)
@@ -79,7 +171,7 @@ struct Band {
 
 /// topo 순서 커밋 목록에 레인/색/엣지를 배정한다.
 pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
-    let mut lanes: Vec<Option<Slot>> = Vec::new();
+    let mut lanes = Lanes::default();
     let mut picker = ColorPicker::new();
     let mut rows: Vec<RowLayout> = Vec::with_capacity(commits.len());
     let mut lane_count = 0usize;
@@ -87,43 +179,35 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
 
     for commit in commits {
         // 1. 이 커밋을 기다리는 레인들. 가장 왼쪽이 커밋 점의 레인이 된다.
-        let matches: Vec<usize> = lanes
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| slot.as_ref().is_some_and(|s| s.expected == commit.sha))
-            .map(|(index, _)| index)
-            .collect();
+        let matches = lanes.matches(&commit.sha);
 
         let (lane, color) = match matches.first() {
-            Some(&first) => (first, lanes[first].as_ref().unwrap().color),
+            Some(&first) => (first, lanes.slot(first).unwrap().color),
             // 기다리는 레인이 없으면 새 브랜치 tip이다.
-            None => (alloc_slot(&mut lanes), picker.acquire()),
+            // alloc은 빈 슬롯만 건드리므로 아래 band 계산(활성 레인만 훑는다)에 영향이 없다.
+            None => (lanes.alloc(), picker.acquire()),
         };
 
         // 직전 row의 band는 이번 커밋의 레인을 알아야 확정된다.
+        // 이 시점의 lanes 상태가 곧 직전 row를 처리한 직후 상태다.
         if let Some(previous) = band.take() {
             if let Some(row) = rows.last_mut() {
-                row.edges = build_edges(&previous, &commit.sha, lane);
+                row.edges = build_edges(&lanes, &previous, &commit.sha, lane);
             }
         }
 
         // 2. 나머지 match는 이 커밋에서 끝난다. 색은 색풀로 돌려준다.
         for &index in matches.iter().skip(1) {
-            if let Some(slot) = lanes[index].take() {
-                picker.release(slot.color);
+            if let Some(released) = lanes.clear(index) {
+                picker.release(released);
             }
         }
 
         // 3. 커밋 레인은 first parent를 기다린다. 루트면 레인이 끝난다.
         match commit.parents.first() {
-            Some(first_parent) => {
-                lanes[lane] = Some(Slot {
-                    expected: first_parent.clone(),
-                    color,
-                });
-            }
+            Some(first_parent) => lanes.set(lane, first_parent.clone(), color),
             None => {
-                lanes[lane] = None;
+                lanes.clear(lane);
                 picker.release(color);
             }
         }
@@ -132,26 +216,21 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
         let mut origins = Vec::new();
         let mut diagonals = Vec::new();
         for parent in commit.parents.iter().skip(1) {
-            match find_waiting(&lanes, parent) {
+            match lanes.find_waiting(parent) {
                 Some(index) => {
-                    let existing_color = lanes[index].as_ref().unwrap().color;
+                    let existing_color = lanes.slot(index).unwrap().color;
                     diagonals.push((lane, index, existing_color));
                 }
                 None => {
-                    let index = alloc_slot(&mut lanes);
+                    let index = lanes.alloc();
                     let new_color = picker.acquire();
-                    lanes[index] = Some(Slot {
-                        expected: parent.clone(),
-                        color: new_color,
-                    });
+                    lanes.set(index, parent.clone(), new_color);
                     origins.push((index, lane));
                 }
             }
         }
 
-        while matches!(lanes.last(), Some(None)) {
-            lanes.pop();
-        }
+        lanes.trim();
         lane_count = lane_count.max(lanes.len()).max(lane + 1);
 
         rows.push(RowLayout {
@@ -159,17 +238,13 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
             color,
             edges: Vec::new(),
         });
-        band = Some(Band {
-            snapshot: lanes.clone(),
-            origins,
-            diagonals,
-        });
+        band = Some(Band { origins, diagonals });
     }
 
     // 마지막 row 아래 구간: 살아있는 레인은 화면 밖으로 계속 내려간다.
     if let Some(previous) = band.take() {
         if let Some(row) = rows.last_mut() {
-            row.edges = build_edges(&previous, "", 0);
+            row.edges = build_edges(&lanes, &previous, "", 0);
         }
     }
 
@@ -179,22 +254,6 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
     }
 }
 
-fn alloc_slot(lanes: &mut Vec<Option<Slot>>) -> usize {
-    match lanes.iter().position(Option::is_none) {
-        Some(index) => index,
-        None => {
-            lanes.push(None);
-            lanes.len() - 1
-        }
-    }
-}
-
-fn find_waiting(lanes: &[Option<Slot>], sha: &str) -> Option<usize> {
-    lanes
-        .iter()
-        .position(|slot| slot.as_ref().is_some_and(|s| s.expected == sha))
-}
-
 /// band 하나의 선분을 만든다.
 ///
 /// - 새로 생긴 병합 레인은 출발점이 병합 커밋의 레인이다 (점에서 벌어지는 선)
@@ -202,65 +261,60 @@ fn find_waiting(lanes: &[Option<Slot>], sha: &str) -> Option<usize> {
 /// - 그 밖에는 수직 통과선이다
 ///
 /// `next_sha`가 빈 문자열이면 다음 row가 없는 마지막 band다.
-fn build_edges(band: &Band, next_sha: &str, next_lane: usize) -> Vec<Edge> {
-    let mut edges: Vec<Edge> = Vec::new();
+fn build_edges(lanes: &Lanes, band: &Band, next_sha: &str, next_lane: usize) -> Vec<Edge> {
+    let mut edges: Vec<Edge> = Vec::with_capacity(lanes.len() + band.diagonals.len());
 
     for &(from, target, color) in &band.diagonals {
-        let to = if ends_at_next(band, target, next_sha) {
+        let to = if ends_at_next(lanes, target, next_sha) {
             next_lane
         } else {
             target
         };
-        push_unique(
-            &mut edges,
-            Edge {
-                from_lane: from,
-                to_lane: to,
-                color,
-            },
-        );
+        let edge = Edge {
+            from_lane: from,
+            to_lane: to,
+            color,
+        };
+        if !edges.contains(&edge) {
+            edges.push(edge);
+        }
     }
 
-    for (index, slot) in band.snapshot.iter().enumerate() {
-        let Some(slot) = slot else { continue };
+    // 레인끼리는 출발 레인이 서로 달라 중복이 나올 수 없다. 병합 선분과만 겹칠 수 있어
+    // 그 구간(보통 비어 있다)만 대조한다. 레인 수 제곱 비교를 피하려는 것이다.
+    let diagonal_count = edges.len();
+    for (index, slot) in lanes.active() {
         let from = band
             .origins
             .iter()
             .find(|(lane, _)| *lane == index)
             .map(|(_, origin)| *origin)
             .unwrap_or(index);
-        let to = if ends_at_next(band, index, next_sha) {
+        let to = if ends_at_next(lanes, index, next_sha) {
             next_lane
         } else {
             index
         };
-        push_unique(
-            &mut edges,
-            Edge {
-                from_lane: from,
-                to_lane: to,
-                color: slot.color,
-            },
-        );
+        let edge = Edge {
+            from_lane: from,
+            to_lane: to,
+            color: slot.color,
+        };
+        if !edges[..diagonal_count].contains(&edge) {
+            edges.push(edge);
+        }
     }
 
     edges
 }
 
-fn ends_at_next(band: &Band, lane: usize, next_sha: &str) -> bool {
+fn ends_at_next(lanes: &Lanes, lane: usize, next_sha: &str) -> bool {
     if next_sha.is_empty() {
         return false;
     }
-    band.snapshot
-        .get(lane)
-        .and_then(Option::as_ref)
+    lanes
+        .slot(lane)
         .is_some_and(|slot| slot.expected == next_sha)
-}
-
-fn push_unique(edges: &mut Vec<Edge>, edge: Edge) {
-    if !edges.contains(&edge) {
-        edges.push(edge);
-    }
 }
 
 #[cfg(test)]

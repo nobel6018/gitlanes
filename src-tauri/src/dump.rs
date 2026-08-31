@@ -65,9 +65,13 @@ pub fn run(request: &DumpRequest, out: &mut impl Write) -> Result<(), String> {
     let data = load_graph(request.repo.clone(), request.limit)?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 
+    let wip = match data.wip {
+        Some(wip) => format!("{}changed/{}staged", wip.changed_files, wip.staged_files),
+        None => "none".to_string(),
+    };
     writeln!(
         out,
-        "load_graph: {elapsed_ms:.1}ms totalLoaded={} laneCount={} hasMore={}",
+        "load_graph: {elapsed_ms:.1}ms totalLoaded={} laneCount={} hasMore={} wip={wip}",
         data.total_loaded, data.lane_count, data.has_more
     )
     .map_err(write_failed)?;
