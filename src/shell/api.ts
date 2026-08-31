@@ -14,8 +14,19 @@ export function getCommitDetails(path: string, sha: string): Promise<CommitDetai
   return invoke<CommitDetails>("get_commit_details", { path, sha });
 }
 
-export function getFileDiff(path: string, sha: string, file: string): Promise<string> {
-  return invoke<string>("get_file_diff", { path, sha, file });
+/** oldFile: rename/copy일 때 FileChange.oldPath, 아니면 null */
+export function getFileDiff(
+  path: string,
+  sha: string,
+  file: string,
+  oldFile: string | null,
+): Promise<string> {
+  return invoke<string>("get_file_diff", { path, sha, file, oldFile });
+}
+
+/** CLI 인자/환경변수로 지정된 시작 레포 경로. 없으면 null */
+export function getStartupRepo(): Promise<string | null> {
+  return invoke<string | null>("get_startup_repo");
 }
 
 /** Tauri command는 Err(String)을 그대로 reject 한다. 사람이 읽을 메시지로 정규화. */

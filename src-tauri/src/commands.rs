@@ -1,4 +1,4 @@
-//! Tauri command 4개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
+//! Tauri command 5개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
 //!
 //! @see CONTRACTS.md
 
@@ -179,47 +179,85 @@ pub fn get_commit_details(path: String, sha: String) -> Result<CommitDetails, St
 /// 커밋 안에서 파일 하나의 unified diff 원문을 돌려준다.
 /// 루트 커밋은 빈 트리와 비교되도록 `git show`를 쓴다.
 #[tauri::command]
-pub fn get_file_diff(path: String, sha: String, file: String) -> Result<String, String> {
+pub fn get_file_diff(
+    path: String,
+    sha: String,
+    file: String,
+    old_file: Option<String>,
+) -> Result<String, String> {
     let sha = validate_rev(&sha)?;
     if file.trim().is_empty() {
         return Err("파일 경로가 비어 있습니다".to_string());
     }
 
     let parents = first_line_parents(&path, &sha)?;
-
-    if parents.is_empty() {
-        // 루트 커밋: git show가 빈 트리와의 diff를 만들어 준다
-        return git::run(
-            &path,
-            &[
-                "show",
-                "--format=",
-                "--no-color",
-                "--no-ext-diff",
-                "-M",
-                sha.as_str(),
-                "--",
-                file.as_str(),
-            ],
-        )
-        .map_err(|e| format!("diff를 읽지 못했습니다: {e}"));
-    }
-
     let first_parent = format!("{sha}^1");
-    git::run(
-        &path,
-        &[
+
+    let mut args: Vec<&str> = if parents.is_empty() {
+        // 루트 커밋: git show가 빈 트리와의 diff를 만들어 준다
+        vec![
+            "show",
+            "--format=",
+            "--no-color",
+            "--no-ext-diff",
+            "-M",
+            sha.as_str(),
+        ]
+    } else {
+        vec![
             "diff",
             "--no-color",
             "--no-ext-diff",
             "-M",
             first_parent.as_str(),
             sha.as_str(),
-            "--",
-            file.as_str(),
-        ],
+        ]
+    };
+
+    args.push("--");
+    // rename/copy는 원본 경로도 pathspec에 걸어야 한다. 새 경로만 걸면 rename 원본이
+    // 필터에서 빠져 git이 rename을 못 찾고 "new file"로 보여준다.
+    if let Some(old) = old_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|old| !old.is_empty() && *old != file)
+    {
+        args.push(old);
+    }
+    args.push(file.as_str());
+
+    git::run(&path, &args).map_err(|e| format!("diff를 읽지 못했습니다: {e}"))
+}
+
+/// 시작 시 열 저장소 경로. CLI 첫 위치 인자 → `GITLANES_REPO` 환경변수 순으로 찾는다.
+/// 경로 존재 검증은 하지 않는다. 검증은 [`open_repo`]가 한다.
+#[tauri::command]
+pub fn get_startup_repo() -> Option<String> {
+    pick_startup_repo(
+        std::env::args().skip(1),
+        std::env::var("GITLANES_REPO").ok(),
     )
-    .map_err(|e| format!("diff를 읽지 못했습니다: {e}"))
+}
+
+fn pick_startup_repo<I>(args: I, env: Option<String>) -> Option<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let args: Vec<String> = args.into_iter().collect();
+    // --dump 모드의 <repo-path>, [limit]을 시작 레포로 착각하지 않게 한다
+    if args.iter().any(|arg| arg == crate::dump::DUMP_FLAG) {
+        return None;
+    }
+
+    // macOS가 붙이는 -psn_0_... 같은 플래그성 인자는 위치 인자가 아니다
+    let positional = args
+        .into_iter()
+        .find(|arg| !arg.is_empty() && !arg.starts_with('-'));
+
+    positional
+        .or(env)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn load_file_changes(path: &str, sha: &str, is_merge: bool) -> Result<Vec<FileChange>, String> {
@@ -303,6 +341,47 @@ mod tests {
         assert!(validate_rev("--upload-pack=evil").is_err());
         assert!(validate_rev("  ").is_err());
         assert_eq!(validate_rev(" abc123 ").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn 시작_레포는_첫_위치_인자를_먼저_쓴다() {
+        let args = [
+            "--flag".to_string(),
+            "/repo/a".to_string(),
+            "/repo/b".to_string(),
+        ];
+        assert_eq!(
+            pick_startup_repo(args, Some("/env/repo".to_string())),
+            Some("/repo/a".to_string())
+        );
+    }
+
+    #[test]
+    fn 위치_인자가_없으면_환경변수를_쓴다() {
+        assert_eq!(
+            pick_startup_repo(["-psn_0_12345".to_string()], Some("/env/repo".to_string())),
+            Some("/env/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn dump_모드에서는_시작_레포를_읽지_않는다() {
+        let args = [
+            "--dump".to_string(),
+            "/repo/a".to_string(),
+            "500".to_string(),
+        ];
+        assert_eq!(pick_startup_repo(args, Some("/env/repo".to_string())), None);
+    }
+
+    #[test]
+    fn 둘_다_없거나_공백이면_none이다() {
+        assert_eq!(pick_startup_repo(Vec::<String>::new(), None), None);
+        assert_eq!(
+            pick_startup_repo(Vec::<String>::new(), Some("   ".into())),
+            None
+        );
+        assert_eq!(pick_startup_repo(["".to_string()], None), None);
     }
 
     #[test]
@@ -401,7 +480,8 @@ mod integration_tests {
         repo.git(&["commit", "-qm", "root commit"]);
 
         repo.git(&["mv", "a.txt", "b.txt"]);
-        repo.write("b.txt", "a\nb\nc\nd\n");
+        // 줄 하나를 갈아치워 rename + modify가 되게 한다 (유사도 66%로 -M이 잡는다)
+        repo.write("b.txt", "a\nb\nd\n");
         repo.write("gone.txt", "temp\n");
         repo.git(&["add", "-A"]);
         repo.git(&[
@@ -554,7 +634,7 @@ mod integration_tests {
         assert_eq!(renamed.status, FileStatus::Renamed);
         assert_eq!(renamed.old_path.as_deref(), Some("a.txt"));
         assert_eq!(renamed.additions, 1);
-        assert_eq!(renamed.deletions, 0);
+        assert_eq!(renamed.deletions, 1);
 
         let added = details
             .files
@@ -620,7 +700,7 @@ mod integration_tests {
     fn get_file_diff는_unified_diff_원문을_돌려준다() {
         let repo = fixture();
         let sha = repo.rev("HEAD~1"); // main work
-        let diff = get_file_diff(repo.path(), sha, "m.txt".to_string()).unwrap();
+        let diff = get_file_diff(repo.path(), sha, "m.txt".to_string(), None).unwrap();
         assert!(diff.contains("+++ b/m.txt"), "{diff}");
         assert!(diff.contains("@@"), "{diff}");
         assert!(diff.contains("+m"), "{diff}");
@@ -630,7 +710,7 @@ mod integration_tests {
     fn 루트_커밋의_diff도_동작한다() {
         let repo = fixture();
         let sha = repo.rev("HEAD~3");
-        let diff = get_file_diff(repo.path(), sha, "a.txt".to_string()).unwrap();
+        let diff = get_file_diff(repo.path(), sha, "a.txt".to_string(), None).unwrap();
         assert!(diff.contains("new file mode"), "{diff}");
         assert!(diff.contains("+++ b/a.txt"), "{diff}");
         assert!(diff.contains("+a"), "{diff}");
@@ -639,20 +719,99 @@ mod integration_tests {
     #[test]
     fn merge_커밋의_diff는_first_parent_기준이다() {
         let repo = fixture();
-        let diff = get_file_diff(repo.path(), "HEAD".to_string(), "f.txt".to_string()).unwrap();
+        let diff =
+            get_file_diff(repo.path(), "HEAD".to_string(), "f.txt".to_string(), None).unwrap();
         assert!(diff.contains("+++ b/f.txt"), "{diff}");
         assert!(diff.contains("+f"), "{diff}");
 
         // first parent에 이미 있던 m.txt는 머지 diff에 나오지 않는다
-        let empty = get_file_diff(repo.path(), "HEAD".to_string(), "m.txt".to_string()).unwrap();
+        let empty =
+            get_file_diff(repo.path(), "HEAD".to_string(), "m.txt".to_string(), None).unwrap();
         assert!(empty.trim().is_empty(), "{empty}");
+    }
+
+    #[test]
+    fn dump_모드는_요약과_행_목록을_출력한다() {
+        let repo = fixture();
+        let request = crate::dump::DumpRequest {
+            repo: repo.path(),
+            limit: 5000,
+        };
+        let mut out = Vec::new();
+        crate::dump::run(&request, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+
+        assert!(lines[0].starts_with("load_graph: "), "{text}");
+        assert!(lines[0].contains("ms totalLoaded=5"), "{text}");
+        assert!(lines[0].contains("laneCount=2"), "{text}");
+        assert!(lines[0].contains("hasMore=false"), "{text}");
+
+        // 25행 이하라 생략 줄이 없다
+        assert_eq!(lines.len(), 6, "{text}");
+
+        // 첫 행은 머지 커밋이고 main/tag ref가 붙는다
+        let head = lines[1];
+        assert!(head.contains(" lane=0 color=0 merge=1 "), "{head}");
+        assert!(head.contains("edges=[0>0:0, 0>1:1]"), "{head}");
+        assert!(head.contains("refs=[main, light, v1.0]"), "{head}");
+        assert!(head.ends_with("Merge feature"), "{head}");
+
+        // 루트 커밋은 아래로 이어지는 선이 없다
+        assert!(lines[5].contains("edges=[]"), "{}", lines[5]);
+        assert!(lines[5].contains("merge=0"), "{}", lines[5]);
+    }
+
+    #[test]
+    fn rename된_파일은_old_경로를_함께_걸어_수정_diff로_보인다() {
+        let repo = fixture();
+        let sha = repo.rev("HEAD~2"); // a.txt -> b.txt (rename + modify)
+
+        let diff = get_file_diff(
+            repo.path(),
+            sha.clone(),
+            "b.txt".to_string(),
+            Some("a.txt".to_string()),
+        )
+        .unwrap();
+
+        assert!(diff.contains("rename from a.txt"), "{diff}");
+        assert!(diff.contains("rename to b.txt"), "{diff}");
+        assert!(
+            diff.contains("\n-c\n"),
+            "old 경로의 사라진 줄이 -줄로 보여야 한다: {diff}"
+        );
+        assert!(diff.contains("\n+d\n"), "{diff}");
+        assert!(
+            !diff.contains("new file mode"),
+            "rename이 새 파일 추가로 보이면 안 된다: {diff}"
+        );
+
+        // old_file 없이 부르면 pathspec이 새 경로만 걸려 rename 정보를 잃는다
+        let without_old = get_file_diff(repo.path(), sha, "b.txt".to_string(), None).unwrap();
+        assert!(without_old.contains("new file mode"), "{without_old}");
+    }
+
+    #[test]
+    fn old_file이_새_경로와_같으면_pathspec을_중복해서_걸지_않는다() {
+        let repo = fixture();
+        let sha = repo.rev("HEAD~1"); // main work
+        let diff = get_file_diff(
+            repo.path(),
+            sha,
+            "m.txt".to_string(),
+            Some("m.txt".to_string()),
+        )
+        .unwrap();
+        assert!(diff.contains("+++ b/m.txt"), "{diff}");
+        assert_eq!(diff.matches("diff --git").count(), 1, "{diff}");
     }
 
     #[test]
     fn 공백과_한글이_섞인_경로도_diff를_읽는다() {
         let repo = fixture();
         let sha = repo.rev("HEAD~3");
-        let diff = get_file_diff(repo.path(), sha, "docs/설계 문서.md".to_string()).unwrap();
+        let diff = get_file_diff(repo.path(), sha, "docs/설계 문서.md".to_string(), None).unwrap();
         assert!(diff.contains("docs/설계 문서.md"), "{diff}");
     }
 }

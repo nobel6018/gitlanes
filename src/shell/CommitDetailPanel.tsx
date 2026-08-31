@@ -55,12 +55,12 @@ export function CommitDetailPanel({
     };
   }, [repoPath, sha, onError]);
 
-  async function openDiff(file: string) {
-    setDiffFile(file);
+  async function openDiff(file: FileChange) {
+    setDiffFile(file.path);
     setDiff(null);
     try {
-      const text = await getFileDiff(repoPath, sha, file);
-      setDiff({ file, text });
+      const text = await getFileDiff(repoPath, sha, file.path, file.oldPath);
+      setDiff({ file: file.path, text });
     } catch (err) {
       setDiffFile(null);
       onError(errorMessage(err));
@@ -154,7 +154,7 @@ export function CommitDetailPanel({
           ) : (
             <ul className="file-list">
               {details.files.map((file) => (
-                <FileRow key={file.path} file={file} onOpen={() => openDiff(file.path)} />
+                <FileRow key={file.path} file={file} onOpen={() => openDiff(file)} />
               ))}
             </ul>
           )}

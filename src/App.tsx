@@ -3,7 +3,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { GraphView } from "./graph";
 import { COMMITS_PER_PAGE } from "./constants";
 import type { GraphData, RepoInfo } from "./types";
-import { errorMessage, loadGraph, openRepo } from "./shell/api";
+import { errorMessage, getStartupRepo, loadGraph, openRepo } from "./shell/api";
 import { CommitDetailPanel } from "./shell/CommitDetailPanel";
 import { Toast } from "./shell/Toast";
 import { Toolbar } from "./shell/Toolbar";
@@ -37,10 +37,12 @@ export default function App() {
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
   const [showTags, setShowTags] = useState<boolean>(readShowTags);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [booting, setBooting] = useState(true);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
   const graphReq = useRef(0);
+  const startupDone = useRef(false);
 
   const showError = useCallback((message: string) => {
     toastSeq.current += 1;
@@ -107,6 +109,28 @@ export default function App() {
     }
   }, [openPath, showError]);
 
+  // 시작 레포(CLI 인자/환경변수)를 마운트 시 1회만 확인한다.
+  // ref 가드로 StrictMode 이중 실행에서도 open_repo가 두 번 나가지 않는다.
+  useEffect(() => {
+    if (startupDone.current) {
+      return;
+    }
+    startupDone.current = true;
+    getStartupRepo()
+      .then((path) => {
+        if (path !== null && path !== "") {
+          return openPath(path);
+        }
+        return undefined;
+      })
+      .catch((err: unknown) => {
+        showError(errorMessage(err));
+      })
+      .finally(() => {
+        setBooting(false);
+      });
+  }, [openPath, showError]);
+
   const handleLoadMore = useCallback(() => {
     if (graphLoading) {
       return;
@@ -130,6 +154,17 @@ export default function App() {
 
   const toastNode =
     toast === null ? null : <Toast key={toast.id} message={toast.message} onClose={dismissToast} />;
+
+  if (repo === null && booting) {
+    return (
+      <div className="app">
+        <div className="welcome">
+          <div className="panel-empty">Loading…</div>
+        </div>
+        {toastNode}
+      </div>
+    );
+  }
 
   if (repo === null) {
     return (
