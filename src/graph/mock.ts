@@ -231,5 +231,10 @@ export function makeMockGraph(rowCount: number): GraphData {
     totalLoaded: rows.length,
     hasMore: false,
     laneCount,
+    // 결정적 규칙: 행 수가 홀수면 워킹 디렉토리가 더러운 상태로 본다
+    wip:
+      rowCount % 2 === 1
+        ? { changedFiles: 3 + (rowCount % 7), stagedFiles: rowCount % 4 }
+        : null,
   };
 }

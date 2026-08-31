@@ -65,6 +65,16 @@ pub struct CommitRow {
     pub edges: Vec<Edge>,
 }
 
+/// 미커밋 변경 요약. `git status --porcelain`의 항목을 센다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WipInfo {
+    /// staged + unstaged + untracked를 파일 단위로 중복 제거한 수
+    pub changed_files: usize,
+    /// 그중 index에 올라간 수
+    pub staged_files: usize,
+}
+
 /// `load_graph` 응답.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +83,19 @@ pub struct GraphData {
     pub total_loaded: usize,
     pub has_more: bool,
     pub lane_count: usize,
+    /// 미커밋 변경. 깨끗하면 None
+    pub wip: Option<WipInfo>,
+}
+
+/// `list_refs` 응답 항목. 사이드바용이라 로드된 커밋 범위와 무관하게 전체를 담는다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefEntry {
+    pub name: String,
+    pub kind: RefKind,
+    /// 가리키는 커밋 sha (annotated tag는 역참조된 커밋)
+    pub sha: String,
+    pub is_head: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -173,6 +196,29 @@ mod tests {
     }
 
     #[test]
+    fn wip_info와_ref_entry는_camel_case_키를_쓴다() {
+        let wip = WipInfo {
+            changed_files: 7,
+            staged_files: 4,
+        };
+        assert_eq!(
+            serde_json::to_string(&wip).unwrap(),
+            r#"{"changedFiles":7,"stagedFiles":4}"#
+        );
+
+        let entry = RefEntry {
+            name: "origin/main".into(),
+            kind: RefKind::RemoteBranch,
+            sha: "abc".into(),
+            is_head: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&entry).unwrap(),
+            r#"{"name":"origin/main","kind":"remoteBranch","sha":"abc","isHead":false}"#
+        );
+    }
+
+    #[test]
     fn edge는_camel_case_키로_직렬화된다() {
         let edge = Edge {
             from_lane: 1,
@@ -218,10 +264,12 @@ mod tests {
             total_loaded: 0,
             has_more: false,
             lane_count: 1,
+            wip: None,
         };
         let json = serde_json::to_value(&data).unwrap();
-        for key in ["rows", "totalLoaded", "hasMore", "laneCount"] {
+        for key in ["rows", "totalLoaded", "hasMore", "laneCount", "wip"] {
             assert!(json.get(key).is_some(), "{key} 키가 없다");
         }
+        assert!(json.get("wip").unwrap().is_null(), "깨끗하면 null이다");
     }
 }

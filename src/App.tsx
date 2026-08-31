@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { GraphView } from "./graph";
 import { COMMITS_PER_PAGE } from "./constants";
-import type { GraphData, RepoInfo } from "./types";
-import { errorMessage, getStartupRepo, loadGraph, openRepo } from "./shell/api";
+import type { GraphData, RefEntry, RepoInfo } from "./types";
+import { errorMessage, getStartupRepo, listRefs, loadGraph, openRepo } from "./shell/api";
+import { BranchSidebar } from "./shell/BranchSidebar";
 import { CommitDetailPanel } from "./shell/CommitDetailPanel";
+import { SearchBox } from "./shell/SearchBox";
 import { Toast } from "./shell/Toast";
 import { Toolbar } from "./shell/Toolbar";
 import { WelcomeScreen } from "./shell/WelcomeScreen";
@@ -13,12 +15,33 @@ import { formatCount, shortSha } from "./shell/format";
 import "./shell/shell.css";
 
 const SHOW_TAGS_KEY = "gitlanes.showTags";
+const SIDEBAR_KEY = "gitlanes.sidebar";
 
-function readShowTags(): boolean {
+const EMPTY_GRAPH: GraphData = {
+  rows: [],
+  totalLoaded: 0,
+  hasMore: false,
+  laneCount: 0,
+  wip: null,
+};
+
+function readFlag(key: string, fallback: boolean): boolean {
   try {
-    return localStorage.getItem(SHOW_TAGS_KEY) !== "0";
+    const raw = localStorage.getItem(key);
+    if (raw === null) {
+      return fallback;
+    }
+    return raw !== "0";
   } catch {
-    return true;
+    return fallback;
+  }
+}
+
+function writeFlag(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // localStorage 실패는 무시 (설정만 휘발)
   }
 }
 
@@ -27,22 +50,40 @@ interface ToastState {
   message: string;
 }
 
+/** nonce가 바뀔 때마다 GraphView가 해당 행을 뷰포트 중앙으로 스크롤한다 */
+interface ScrollTarget {
+  sha: string;
+  nonce: number;
+}
+
 export default function App() {
   const [repo, setRepo] = useState<RepoInfo | null>(null);
   const [graph, setGraph] = useState<GraphData | null>(null);
+  const [refs, setRefs] = useState<RefEntry[]>([]);
+  const [refsLoading, setRefsLoading] = useState(false);
   const [limit, setLimit] = useState(COMMITS_PER_PAGE);
   const [reloadKey, setReloadKey] = useState(0);
   const [graphLoading, setGraphLoading] = useState(false);
   const [opening, setOpening] = useState(false);
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
-  const [showTags, setShowTags] = useState<boolean>(readShowTags);
+  const [scrollTarget, setScrollTarget] = useState<ScrollTarget | null>(null);
+  const [showTags, setShowTags] = useState<boolean>(() => readFlag(SHOW_TAGS_KEY, true));
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readFlag(SIDEBAR_KEY, true));
+  const [query, setQuery] = useState("");
+  const [matchIndex, setMatchIndex] = useState(0);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [booting, setBooting] = useState(true);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
   const graphReq = useRef(0);
+  const refsReq = useRef(0);
+  const scrollSeq = useRef(0);
   const startupDone = useRef(false);
+  const lastQuery = useRef("");
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const data: GraphData = graph ?? EMPTY_GRAPH;
 
   const showError = useCallback((message: string) => {
     toastSeq.current += 1;
@@ -62,9 +103,9 @@ export default function App() {
     graphReq.current = reqId;
     setGraphLoading(true);
     loadGraph(repo.path, limit)
-      .then((data) => {
+      .then((loaded) => {
         if (graphReq.current === reqId) {
-          setGraph(data);
+          setGraph(loaded);
         }
       })
       .catch((err: unknown) => {
@@ -79,6 +120,33 @@ export default function App() {
       });
   }, [repo, limit, reloadKey, showError]);
 
+  // 사이드바 refs는 로드된 커밋 범위와 무관하므로 limit 변화에는 다시 부르지 않는다
+  useEffect(() => {
+    if (repo === null) {
+      setRefs([]);
+      return;
+    }
+    const reqId = refsReq.current + 1;
+    refsReq.current = reqId;
+    setRefsLoading(true);
+    listRefs(repo.path)
+      .then((loaded) => {
+        if (refsReq.current === reqId) {
+          setRefs(loaded);
+        }
+      })
+      .catch((err: unknown) => {
+        if (refsReq.current === reqId) {
+          showError(errorMessage(err));
+        }
+      })
+      .finally(() => {
+        if (refsReq.current === reqId) {
+          setRefsLoading(false);
+        }
+      });
+  }, [repo, reloadKey, showError]);
+
   const openPath = useCallback(
     async (path: string) => {
       setOpening(true);
@@ -86,7 +154,11 @@ export default function App() {
         const info = await openRepo(path);
         addRecent(info.path);
         setSelectedSha(null);
+        setScrollTarget(null);
+        setQuery("");
+        lastQuery.current = "";
         setGraph(null);
+        setRefs([]);
         setLimit(COMMITS_PER_PAGE);
         setRepo(info);
       } catch (err) {
@@ -131,6 +203,94 @@ export default function App() {
       });
   }, [openPath, showError]);
 
+  /** 선택 + 해당 행을 뷰포트 중앙으로 스크롤 */
+  const jumpTo = useCallback((sha: string) => {
+    scrollSeq.current += 1;
+    setSelectedSha(sha);
+    setScrollTarget({ sha, nonce: scrollSeq.current });
+  }, []);
+
+  const loadedShas = useMemo(() => new Set(data.rows.map((row) => row.sha)), [data.rows]);
+
+  const handleSelectRef = useCallback(
+    (sha: string) => {
+      if (loadedShas.has(sha)) {
+        jumpTo(sha);
+        return;
+      }
+      showError("커밋이 로드 범위 밖입니다. 더 불러오세요.");
+    },
+    [loadedShas, jumpTo, showError],
+  );
+
+  // 검색: subject / author / shortSha 대소문자 무시 부분일치
+  const matches = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (needle === "") {
+      return [];
+    }
+    const found: string[] = [];
+    for (const row of data.rows) {
+      if (
+        row.subject.toLowerCase().includes(needle) ||
+        row.author.toLowerCase().includes(needle) ||
+        row.shortSha.toLowerCase().includes(needle)
+      ) {
+        found.push(row.sha);
+      }
+    }
+    return found;
+  }, [data.rows, query]);
+
+  // 질의어가 바뀐 순간에만 첫 매치로 점프한다.
+  // (더 보기/새로고침으로 rows만 바뀔 때 현재 매치를 잃지 않게)
+  useEffect(() => {
+    if (lastQuery.current === query) {
+      return;
+    }
+    lastQuery.current = query;
+    setMatchIndex(0);
+    if (matches.length > 0) {
+      jumpTo(matches[0]);
+    }
+  }, [query, matches, jumpTo]);
+
+  const gotoMatch = useCallback(
+    (index: number) => {
+      if (matches.length === 0) {
+        return;
+      }
+      const next = ((index % matches.length) + matches.length) % matches.length;
+      setMatchIndex(next);
+      jumpTo(matches[next]);
+    },
+    [matches, jumpTo],
+  );
+
+  const handleNextMatch = useCallback(() => gotoMatch(matchIndex + 1), [gotoMatch, matchIndex]);
+  const handlePrevMatch = useCallback(() => gotoMatch(matchIndex - 1), [gotoMatch, matchIndex]);
+
+  const handleClearSearch = useCallback(() => {
+    setQuery("");
+    setMatchIndex(0);
+  }, []);
+
+  // ⌘F / Ctrl+F로 검색창 포커스
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        const input = searchInputRef.current;
+        if (input !== null) {
+          input.focus();
+          input.select();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const handleLoadMore = useCallback(() => {
     if (graphLoading) {
       return;
@@ -142,13 +302,15 @@ export default function App() {
 
   const handleToggleTags = useCallback(() => {
     setShowTags((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(SHOW_TAGS_KEY, next ? "1" : "0");
-      } catch {
-        // localStorage 실패는 무시 (설정만 휘발)
-      }
-      return next;
+      writeFlag(SHOW_TAGS_KEY, !prev);
+      return !prev;
+    });
+  }, []);
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      writeFlag(SIDEBAR_KEY, !prev);
+      return !prev;
     });
   }, []);
 
@@ -181,12 +343,24 @@ export default function App() {
     );
   }
 
-  const data: GraphData = graph ?? { rows: [], totalLoaded: 0, hasMore: false, laneCount: 0 };
-
   return (
     <div className="app">
       <Toolbar
         repo={repo}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={handleToggleSidebar}
+        search={
+          <SearchBox
+            query={query}
+            matchCount={matches.length}
+            matchPosition={matches.length === 0 ? 0 : matchIndex + 1}
+            inputRef={searchInputRef}
+            onChange={setQuery}
+            onNext={handleNextMatch}
+            onPrev={handlePrevMatch}
+            onClear={handleClearSearch}
+          />
+        }
         commitCount={data.totalLoaded}
         hasMore={data.hasMore}
         loading={graphLoading}
@@ -198,6 +372,14 @@ export default function App() {
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
       <div className="main">
+        {sidebarOpen && (
+          <BranchSidebar
+            refs={refs}
+            loading={refsLoading}
+            selectedSha={selectedSha}
+            onSelectRef={handleSelectRef}
+          />
+        )}
         <div className="graph-area">
           <GraphView
             data={data}
@@ -206,6 +388,7 @@ export default function App() {
             onLoadMore={handleLoadMore}
             loading={graphLoading}
             showTags={showTags}
+            scrollTarget={scrollTarget}
           />
         </div>
         {selectedSha !== null && (
@@ -224,6 +407,11 @@ export default function App() {
           {formatCount(data.totalLoaded)} commits{data.hasMore ? "+" : ""}
         </span>
         <span>HEAD {shortSha(repo.headSha)}</span>
+        {data.wip !== null && (
+          <span>
+            WIP {data.wip.changedFiles} changed ({data.wip.stagedFiles} staged)
+          </span>
+        )}
         {graphLoading && <span>Loading…</span>}
         <span className="sb-path" title={repo.path}>
           {repo.path}

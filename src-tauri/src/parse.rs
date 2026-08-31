@@ -5,9 +5,9 @@
 //!
 //! @see CONTRACTS.md
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::model::{FileChange, FileStatus, RefInfo, RefKind};
+use crate::model::{FileChange, FileStatus, RefEntry, RefInfo, RefKind, WipInfo};
 
 /// `git log` 한 레코드. 레인 배치 입력이기도 하다.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,8 +120,8 @@ fn parse_ts(raw: &str, which: &str) -> Result<i64, String> {
 /// 포맷: `%(objectname)%1f%(*objectname)%1f%(refname)%1f%(HEAD)`
 /// (for-each-ref는 `%x1f`를 해석하지 않아 `%1f`를 쓴다.)
 /// annotated tag는 tag 객체 sha가 아니라 역참조한 커밋 sha에 매달아야 한다.
-pub fn parse_refs(out: &str) -> HashMap<String, Vec<RefInfo>> {
-    let mut map: HashMap<String, Vec<RefInfo>> = HashMap::new();
+pub fn parse_ref_entries(out: &str) -> Vec<RefEntry> {
+    let mut entries: Vec<RefEntry> = Vec::new();
     for line in out.lines() {
         if line.trim().is_empty() {
             continue;
@@ -157,17 +157,72 @@ pub fn parse_refs(out: &str) -> HashMap<String, Vec<RefInfo>> {
             continue;
         }
 
-        map.entry(target.to_string()).or_default().push(RefInfo {
+        entries.push(RefEntry {
             name: name.to_string(),
             kind,
+            sha: target.to_string(),
             is_head: kind == RefKind::LocalBranch && head_marker == "*",
         });
     }
 
-    for refs in map.values_mut() {
-        refs.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+    entries.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+    entries
+}
+
+/// [`parse_ref_entries`] 결과를 커밋 sha로 묶는다. 각 sha 안의 순서는 정렬을 물려받는다.
+pub fn parse_refs(out: &str) -> HashMap<String, Vec<RefInfo>> {
+    let mut map: HashMap<String, Vec<RefInfo>> = HashMap::new();
+    for entry in parse_ref_entries(out) {
+        map.entry(entry.sha).or_default().push(RefInfo {
+            name: entry.name,
+            kind: entry.kind,
+            is_head: entry.is_head,
+        });
     }
     map
+}
+
+/// `git status --porcelain -z` 출력을 세어 미커밋 변경 요약을 만든다. 깨끗하면 None.
+///
+/// 레코드는 `XY <path>\0`이고 rename/copy면 원본 경로가 청크 하나로 뒤따른다.
+/// X는 index(staged) 상태, Y는 작업 트리 상태다. `??`는 untracked라 staged가 아니다.
+///
+/// 한 파일이 레코드 두 개로 나오는 경우가 있어(예: `git rm --cached`는 `D `와 `??`를
+/// 함께 낸다) 경로로 중복을 제거한다.
+pub fn parse_status(out: &str) -> Option<WipInfo> {
+    let mut changed: HashSet<&str> = HashSet::new();
+    let mut staged: HashSet<&str> = HashSet::new();
+
+    let mut chunks = out.split('\0');
+    while let Some(chunk) = chunks.next() {
+        // "XY " 뒤에 경로가 붙는다. 그보다 짧으면 레코드가 아니다
+        if chunk.len() < 4 {
+            continue;
+        }
+        let mut marks = chunk.chars();
+        let (Some(index_mark), Some(tree_mark)) = (marks.next(), marks.next()) else {
+            continue;
+        };
+        let path = &chunk[3..];
+
+        // rename/copy는 원본 경로가 별도 청크로 따라온다. 한 파일로 세야 하니 건너뛴다
+        if matches!(index_mark, 'R' | 'C') || matches!(tree_mark, 'R' | 'C') {
+            chunks.next();
+        }
+
+        changed.insert(path);
+        if index_mark != ' ' && index_mark != '?' {
+            staged.insert(path);
+        }
+    }
+
+    if changed.is_empty() {
+        return None;
+    }
+    Some(WipInfo {
+        changed_files: changed.len(),
+        staged_files: staged.len(),
+    })
 }
 
 /// `--raw --numstat -M -z` 출력을 파일 변경 목록으로 만든다.
@@ -376,6 +431,83 @@ mod tests {
 
         // origin/HEAD는 심볼릭 ref라 제외한다
         assert!(!head.iter().any(|r| r.name.contains("HEAD")));
+    }
+
+    #[test]
+    fn list_refs용_항목은_종류와_이름순으로_정렬된다() {
+        let out = concat!(
+            "d2e5496e\u{1f}ff362da2\u{1f}refs/tags/v1.0\u{1f} \n",
+            "ff362da2\u{1f}\u{1f}refs/remotes/origin/main\u{1f} \n",
+            "6da487fe\u{1f}\u{1f}refs/heads/feature\u{1f} \n",
+            "ff362da2\u{1f}\u{1f}refs/heads/main\u{1f}*\n",
+            "ff362da2\u{1f}\u{1f}refs/remotes/origin/HEAD\u{1f} \n",
+        );
+        let entries = parse_ref_entries(out);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.kind, e.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (RefKind::LocalBranch, "feature"),
+                (RefKind::LocalBranch, "main"),
+                (RefKind::RemoteBranch, "origin/main"),
+                (RefKind::Tag, "v1.0"),
+            ]
+        );
+        // annotated tag는 역참조된 커밋 sha를 담는다
+        assert_eq!(entries[3].sha, "ff362da2");
+        assert_eq!(entries[0].sha, "6da487fe");
+        assert!(entries[1].is_head, "체크아웃된 main만 is_head다");
+        assert!(!entries[0].is_head);
+        assert!(!entries[2].is_head);
+    }
+
+    #[test]
+    fn status_출력에서_변경과_staged를_센다() {
+        // git status --porcelain -z 실측 출력 형태
+        let out = concat!(
+            "AM both.txt\0",                  // staged + 이후 수정
+            "D  del.txt\0",                   // staged 삭제
+            "R  renamed.txt\0renameme.txt\0", // staged rename, 파일 1개로 센다
+            "A  staged.txt\0",                // staged 추가
+            " M tracked.txt\0",               // unstaged 수정
+            "?? sub/\0",                      // untracked
+            "?? untracked.txt\0",
+        );
+        let wip = parse_status(out).expect("변경이 있으면 Some이다");
+        assert_eq!(wip.changed_files, 7);
+        assert_eq!(wip.staged_files, 4, "AM, D, R, A만 index에 올라가 있다");
+    }
+
+    #[test]
+    fn unstaged_rename도_파일_하나로_센다() {
+        let out = " R new.txt\0old.txt\0";
+        let wip = parse_status(out).unwrap();
+        assert_eq!(wip.changed_files, 1);
+        assert_eq!(wip.staged_files, 0);
+    }
+
+    #[test]
+    fn 같은_경로가_두_레코드로_나오면_한_번만_센다() {
+        // git rm --cached는 index 삭제(D )와 작업 트리 잔존(??)을 함께 낸다
+        let wip = parse_status("D  f.txt\0?? f.txt\0").unwrap();
+        assert_eq!(wip.changed_files, 1);
+        assert_eq!(wip.staged_files, 1);
+    }
+
+    #[test]
+    fn 깨끗한_작업_트리는_none이다() {
+        assert!(parse_status("").is_none());
+        assert!(parse_status("\0").is_none());
+    }
+
+    #[test]
+    fn 충돌_항목도_변경으로_센다() {
+        let wip = parse_status("UU conflict.txt\0").unwrap();
+        assert_eq!(wip.changed_files, 1);
+        assert_eq!(wip.staged_files, 1);
     }
 
     #[test]

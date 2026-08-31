@@ -54,6 +54,7 @@
 
 .gl-scroll {
   position: absolute;
+  outline: none;
   inset: 0;
   overflow-x: hidden;
   overflow-y: auto;
@@ -93,6 +94,20 @@
 
 .gl-row-head {
   font-weight: 700;
+}
+
+/* WIP 의사 행: 커밋이 아니므로 선택도 hover 강조도 없다 */
+.gl-row-wip {
+  color: var(--fg-2);
+  font-style: italic;
+}
+
+.gl-row-wip:hover {
+  background: transparent;
+}
+
+.gl-row-wip .gl-cell-message {
+  color: var(--fg-2);
 }
 
 .gl-cell {

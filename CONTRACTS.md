@@ -25,7 +25,24 @@ get_file_diff(path: string, sha: string, file: string, oldFile: string | null) -
     // unified diff 원문. oldFile은 rename/copy일 때 FileChange.oldPath 전달
 get_startup_repo() -> string | null
     // CLI 첫 위치 인자 또는 GITLANES_REPO 환경변수. ui-shell이 마운트 시 자동 오픈에 사용
+list_refs(path: string) -> RefEntry[]
+    // 사이드바용 전체 refs. 로드된 커밋 범위와 무관하게 모든 브랜치/태그
 ```
+
+## v0.2 확장 (WIP 행, 스크롤 타깃, 키보드)
+
+- `GraphData.wip: WipInfo | null`: rust-core가 `git status --porcelain -z` 1회로 채운다. 깨끗하면 null
+- GraphView는 wip이 있으면 **HEAD 커밋 행 바로 위에 WIP 의사 행을 삽입**해 렌더한다:
+  - MESSAGE: `// WIP — N changed files (M staged)` 스타일, fg-2 이탤릭
+  - GRAPH: HEAD 레인 위치에 점선 테두리 링(채움 없음), HEAD 점까지 같은 레인 색 점선 수직 엣지
+  - WIP 삽입으로 그 지점 아래 행들의 y가 ROW_HEIGHT만큼 밀린다. 원래 band(headIdx-1, headIdx)의 엣지는 두 행 높이에 걸쳐 그린다
+  - WIP 행은 클릭 불가(선택/상세 없음), 가상 스크롤 인덱스 계산에 포함
+- `GraphViewProps`에 추가:
+  ```ts
+  /** nonce가 바뀔 때마다 해당 sha 행을 뷰포트 중앙으로 스크롤. 목록에 없으면 무시 */
+  scrollTarget: { sha: string; nonce: number } | null;
+  ```
+- 키보드: GraphView 스크롤 컨테이너 포커스 시 ↑/↓로 선택을 이전/다음 행으로 이동(onSelect 호출)하고 해당 행이 보이도록 스크롤. WIP 행은 건너뜀
 
 - 모든 응답 타입은 `src/types.ts`와 1:1 일치 (`#[serde(rename_all = "camelCase")]`)
 - `load_graph`는 `git log --branches --remotes --tags HEAD --topo-order` 기준. limit개 초과 시 잘라내고 `hasMore: true`

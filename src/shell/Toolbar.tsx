@@ -1,8 +1,13 @@
+import type { ReactNode } from "react";
 import type { RepoInfo } from "../types";
 import { formatCount } from "./format";
 
 export interface ToolbarProps {
   repo: RepoInfo;
+  /** 툴바 중앙에 놓을 검색 UI */
+  search: ReactNode;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
   commitCount: number;
   hasMore: boolean;
   loading: boolean;
@@ -14,6 +19,9 @@ export interface ToolbarProps {
 
 export function Toolbar({
   repo,
+  search,
+  sidebarOpen,
+  onToggleSidebar,
   commitCount,
   hasMore,
   loading,
@@ -24,6 +32,21 @@ export function Toolbar({
 }: ToolbarProps) {
   return (
     <header className="toolbar">
+      <button
+        className={sidebarOpen ? "toolbar-icon on" : "toolbar-icon"}
+        onClick={onToggleSidebar}
+        title={sidebarOpen ? "Hide branch sidebar" : "Show branch sidebar"}
+        aria-pressed={sidebarOpen}
+        aria-label="Toggle branch sidebar"
+      >
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <g fill="none" stroke="currentColor" strokeWidth="1.3">
+            <rect x="1.7" y="2.7" width="12.6" height="10.6" rx="1.6" />
+            <path d="M6.2 2.7v10.6" />
+          </g>
+        </svg>
+      </button>
+
       <div className="toolbar-repo">
         <span className="toolbar-repo-name" title={repo.path}>
           {repo.name}
@@ -42,6 +65,7 @@ export function Toolbar({
       </div>
 
       <div className="toolbar-spacer">
+        {search}
         <span className="toolbar-count">
           {formatCount(commitCount)} commits{hasMore ? "+" : ""}
         </span>

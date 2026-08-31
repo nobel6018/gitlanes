@@ -17,6 +17,7 @@ function Harness() {
         onLoadMore={() => {}}
         loading={false}
         showTags={true}
+        scrollTarget={null}
       />
     </div>
   );

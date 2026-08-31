@@ -1,4 +1,4 @@
-//! Tauri command 5개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
+//! Tauri command 6개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
 //!
 //! @see CONTRACTS.md
 
@@ -6,9 +6,12 @@ use std::path::Path;
 
 use crate::git;
 use crate::layout::assign_lanes;
-use crate::model::{CommitDetails, CommitRow, FileChange, GraphData, RefInfo, RepoInfo, Signature};
+use crate::model::{
+    CommitDetails, CommitRow, FileChange, GraphData, RefEntry, RefInfo, RepoInfo, Signature,
+};
 use crate::parse::{
-    parse_commit_meta, parse_file_changes, parse_log, parse_refs, LOG_FORMAT, META_FORMAT,
+    parse_commit_meta, parse_file_changes, parse_log, parse_ref_entries, parse_refs, parse_status,
+    LOG_FORMAT, META_FORMAT,
 };
 
 /// short sha 길이. `src/types.ts`의 `CommitRow.shortSha` 주석과 맞춘다.
@@ -61,7 +64,7 @@ pub fn open_repo(path: String) -> Result<RepoInfo, String> {
 }
 
 /// 커밋 그래프를 topo 순서로 읽어 레인/색/엣지까지 계산해 돌려준다.
-/// git 호출은 log, for-each-ref, rev-parse 3회다.
+/// git 호출은 log, for-each-ref, rev-parse, status 4회다.
 #[tauri::command]
 pub fn load_graph(path: String, limit: usize) -> Result<GraphData, String> {
     if limit == 0 {
@@ -70,6 +73,7 @@ pub fn load_graph(path: String, limit: usize) -> Result<GraphData, String> {
             total_loaded: 0,
             has_more: false,
             lane_count: 1,
+            wip: None,
         });
     }
 
@@ -112,6 +116,11 @@ pub fn load_graph(path: String, limit: usize) -> Result<GraphData, String> {
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
+    // status가 실패해도(잠긴 인덱스 등) 그래프는 보여준다
+    let wip = git::run(&path, &["status", "--porcelain", "-z"])
+        .ok()
+        .and_then(|out| parse_status(&out));
+
     let layout = assign_lanes(&commits);
 
     let rows: Vec<CommitRow> = commits
@@ -141,8 +150,28 @@ pub fn load_graph(path: String, limit: usize) -> Result<GraphData, String> {
         total_loaded: rows.len(),
         has_more,
         lane_count: layout.lane_count,
+        wip,
         rows,
     })
+}
+
+/// 사이드바용 전체 refs. 로드된 커밋 범위와 무관하게 저장소의 모든 ref를 돌려준다.
+/// git 호출은 for-each-ref 1회다.
+#[tauri::command]
+pub fn list_refs(path: String) -> Result<Vec<RefEntry>, String> {
+    let out = git::run(
+        &path,
+        &[
+            "for-each-ref",
+            REF_FORMAT,
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )
+    .map_err(|e| format!("ref 목록을 읽지 못했습니다: {e}"))?;
+
+    Ok(parse_ref_entries(&out))
 }
 
 /// 커밋 메타데이터와 변경 파일 목록을 돌려준다. git 호출은 2회다.
@@ -404,7 +433,7 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::model::FileStatus;
+    use crate::model::{FileStatus, RefKind};
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -731,6 +760,92 @@ mod integration_tests {
     }
 
     #[test]
+    fn 깨끗한_저장소는_wip이_없다() {
+        let repo = fixture();
+        let data = load_graph(repo.path(), 100).unwrap();
+        assert_eq!(data.wip, None);
+    }
+
+    #[test]
+    fn 미커밋_변경이_있으면_wip을_채운다() {
+        let repo = fixture();
+
+        repo.write("m.txt", "m\nchanged\n"); // unstaged 수정
+        repo.write("untracked.txt", "new\n"); // untracked
+        repo.write("staged.txt", "s\n");
+        repo.git(&["add", "staged.txt"]); // staged 추가
+        repo.git(&["rm", "-q", "--cached", "f.txt"]); // staged 삭제 + untracked로 남음
+
+        let wip = load_graph(repo.path(), 100)
+            .unwrap()
+            .wip
+            .expect("wip이 있어야 한다");
+        assert_eq!(
+            wip.changed_files, 4,
+            "m.txt, untracked.txt, staged.txt, f.txt"
+        );
+        assert_eq!(wip.staged_files, 2, "staged.txt(A), f.txt(D)");
+
+        // 되돌리면 다시 깨끗해진다
+        repo.git(&["reset", "-q", "--hard", "HEAD"]);
+        repo.git(&["clean", "-qfd"]);
+        assert_eq!(load_graph(repo.path(), 100).unwrap().wip, None);
+    }
+
+    #[test]
+    fn staged_rename은_파일_하나로_센다() {
+        let repo = fixture();
+        repo.git(&["mv", "m.txt", "moved.txt"]);
+        let wip = load_graph(repo.path(), 100).unwrap().wip.unwrap();
+        assert_eq!(wip.changed_files, 1);
+        assert_eq!(wip.staged_files, 1);
+    }
+
+    #[test]
+    fn list_refs는_브랜치와_태그를_모두_돌려준다() {
+        let repo = fixture();
+        let refs = list_refs(repo.path()).unwrap();
+
+        assert_eq!(
+            refs.iter()
+                .map(|r| (r.kind, r.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (RefKind::LocalBranch, "feature"),
+                (RefKind::LocalBranch, "main"),
+                (RefKind::Tag, "light"),
+                (RefKind::Tag, "v1.0"),
+            ]
+        );
+
+        let head = repo.rev("HEAD");
+        let main = refs.iter().find(|r| r.name == "main").unwrap();
+        assert_eq!(main.sha, head);
+        assert!(main.is_head);
+
+        // annotated tag도 tag 객체가 아니라 커밋 sha를 담는다
+        let annotated = refs.iter().find(|r| r.name == "v1.0").unwrap();
+        assert_eq!(annotated.sha, head);
+        assert_ne!(
+            repo.rev("v1.0^{}"),
+            repo.rev("refs/tags/v1.0"),
+            "annotated tag가 맞다"
+        );
+
+        assert!(refs.iter().filter(|r| r.is_head).count() == 1);
+        assert_eq!(
+            refs.iter().find(|r| r.name == "feature").unwrap().sha,
+            repo.rev("feature")
+        );
+    }
+
+    #[test]
+    fn list_refs는_저장소가_아니면_오류다() {
+        let err = list_refs("/definitely/not/a/repo/gitlanes".to_string()).unwrap_err();
+        assert!(err.contains("ref 목록을 읽지 못했습니다"), "{err}");
+    }
+
+    #[test]
     fn dump_모드는_요약과_행_목록을_출력한다() {
         let repo = fixture();
         let request = crate::dump::DumpRequest {
@@ -746,6 +861,10 @@ mod integration_tests {
         assert!(lines[0].contains("ms totalLoaded=5"), "{text}");
         assert!(lines[0].contains("laneCount=2"), "{text}");
         assert!(lines[0].contains("hasMore=false"), "{text}");
+        assert!(
+            lines[0].contains("wip=none"),
+            "깨끗한 저장소는 wip=none이다: {text}"
+        );
 
         // 25행 이하라 생략 줄이 없다
         assert_eq!(lines.len(), 6, "{text}");
