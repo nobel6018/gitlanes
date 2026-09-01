@@ -1,7 +1,7 @@
 // GRAPH 컬럼 캔버스 페인터. 순수 그리기 함수만 두고 스크롤/rAF 관리는 GraphView가 한다.
 // 계약(CONTRACTS.md): CommitRow.edges는 rust-core가 계산해 내려준다. 여기서는 좌표 변환만 한다.
 import { DOT_RADIUS, EDGE_WIDTH, ROW_HEIGHT } from "../constants";
-import type { CommitRow } from "../types";
+import type { CommitRow, Edge } from "../types";
 import { laneColor, laneX } from "./layout";
 import type { PseudoLayout, PseudoRow } from "./pseudo";
 
@@ -17,11 +17,15 @@ export interface DrawParams {
   devicePixelRatio: number;
   /** merge 커밋 링의 내부를 채울 색 (var(--bg-content) 해석값) */
   bgColor: string;
+  /** 경로 강조 플래그(행 인덱스 기준). null이면 강조 없음(전부 밝게) */
+  highlight: Uint8Array | null;
 }
 
 /** 화면 밖 한 행씩 여유를 둬서 절단된 곡선이 보이지 않게 한다 */
 const EDGE_OVERSCAN_ROWS = 2;
 const PSEUDO_DASH = [3, 3];
+/** 경로 밖 요소의 불투명도 */
+const DIM_ALPHA = 0.35;
 
 export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   const ctx = canvas.getContext("2d");
@@ -47,13 +51,26 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   const firstDisplay = Math.floor(p.scrollTop / ROW_HEIGHT) - EDGE_OVERSCAN_ROWS;
   const lastDisplay = Math.ceil((p.scrollTop + p.height) / ROW_HEIGHT) + EDGE_OVERSCAN_ROWS;
 
+  const marked = p.highlight;
+  const inSet = (index: number): boolean =>
+    marked !== null && index >= 0 && index < marked.length && marked[index] === 1;
+  /** 행 강조 여부. 강조가 꺼져 있으면 전부 밝다 */
+  const isLit = (index: number): boolean => marked === null || inSet(index);
+  /**
+   * 엣지는 자기가 속한 링크의 양끝으로 판정한다. band 양끝 행 기준이 아니다.
+   * @see CONTRACTS.md "Edge 링크 귀속"
+   */
+  const isEdgeLit = (edge: Edge): boolean =>
+    marked === null ||
+    (inSet(edge.childRow) && (edge.parentRow === -1 ? inSet(edge.childRow) : inSet(edge.parentRow)));
+
   const drawPseudos = () => {
     for (const pseudo of p.layout.pseudos) {
       if (pseudo.displayIndex > lastDisplay) {
         break;
       }
       if (pseudo.displayIndex >= firstDisplay) {
-        drawPseudoMark(ctx, pseudo, centerY);
+        drawPseudoMark(ctx, pseudo, centerY, isLit(pseudo.anchorRow));
       }
     }
   };
@@ -66,13 +83,16 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   const first = Math.max(0, toRowIndex(firstDisplay));
   const last = Math.min(rows.length - 1, toRowIndex(lastDisplay));
 
-  // 색상별로 Path2D를 모아 stroke 호출 수를 색 개수(<=10)로 줄인다
-  const paths = new Map<number, Path2D>();
-  const pathFor = (color: number): Path2D => {
-    let path = paths.get(color);
+  // 색상별로 Path2D를 모아 stroke 호출 수를 색 개수(<=10)로 줄인다.
+  // 강조가 켜지면 밝은 벌과 어두운 벌로 나눠 담아 alpha를 두 번만 바꾼다
+  const brightPaths = new Map<number, Path2D>();
+  const dimPaths = new Map<number, Path2D>();
+  const pathFor = (color: number, dim: boolean): Path2D => {
+    const bucket = dim ? dimPaths : brightPaths;
+    let path = bucket.get(color);
     if (!path) {
       path = new Path2D();
-      paths.set(color, path);
+      bucket.set(color, path);
     }
     return path;
   };
@@ -83,7 +103,7 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
     const y1 = centerY(toDisplay(i + 1));
     for (const edge of row.edges) {
       const x0 = laneX(edge.fromLane);
-      const path = pathFor(edge.color);
+      const path = pathFor(edge.color, !isEdgeLit(edge));
       if (edge.fromLane === edge.toLane) {
         path.moveTo(x0, y0);
         path.lineTo(x0, y1);
@@ -101,7 +121,15 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   ctx.lineWidth = EDGE_WIDTH;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  for (const [color, path] of paths) {
+  if (dimPaths.size > 0) {
+    ctx.globalAlpha = DIM_ALPHA;
+    for (const [color, path] of dimPaths) {
+      ctx.strokeStyle = laneColor(color);
+      ctx.stroke(path);
+    }
+    ctx.globalAlpha = 1;
+  }
+  for (const [color, path] of brightPaths) {
     ctx.strokeStyle = laneColor(color);
     ctx.stroke(path);
   }
@@ -116,6 +144,7 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
     const y = centerY(toDisplay(i));
     const color = laneColor(row.color);
     const r = row.isHead ? DOT_RADIUS + 1.5 : DOT_RADIUS;
+    ctx.globalAlpha = isLit(i) ? 1 : DIM_ALPHA;
 
     if (row.isMerge) {
       ctx.beginPath();
@@ -140,6 +169,7 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
       ctx.stroke();
     }
   }
+  ctx.globalAlpha = 1;
 }
 
 /**
@@ -150,12 +180,14 @@ function drawPseudoMark(
   ctx: CanvasRenderingContext2D,
   pseudo: PseudoRow,
   centerY: (displayIndex: number) => number,
+  lit: boolean,
 ): void {
   const x = laneX(pseudo.lane);
   const y = centerY(pseudo.displayIndex);
   const color = laneColor(pseudo.color);
 
   ctx.save();
+  ctx.globalAlpha = lit ? 1 : DIM_ALPHA;
   ctx.setLineDash(PSEUDO_DASH);
   ctx.strokeStyle = color;
   ctx.lineCap = "butt";

@@ -32,6 +32,56 @@ pub struct LayoutResult {
 struct Slot {
     expected: String,
     color: usize,
+    /// 이 레인이 나르는 "자식 → 부모" 링크 ([`Links`] 인덱스)
+    link: usize,
+}
+
+/// "자식 커밋 → 부모 커밋" 링크 표. 각 선분이 어느 링크에 속하는지 기록해
+/// 프론트가 경로 강조를 판정할 수 있게 한다.
+///
+/// 자식 행은 링크를 만들 때 바로 알지만 부모 행은 그 커밋이 등장해야 정해진다.
+/// 그래서 기다리는 부모 sha로 색인해 두었다가 해당 커밋을 처리할 때 한꺼번에 채운다.
+/// 끝까지 안 채워진 링크(부모가 limit 밖)는 -1로 남는다.
+#[derive(Debug, Default)]
+struct Links {
+    /// (자식 행, 부모 행). 부모 미확정이면 -1
+    entries: Vec<(usize, i64)>,
+    /// 기다리는 부모 sha → 아직 부모 행이 없는 링크들
+    pending: HashMap<String, Vec<usize>>,
+}
+
+impl Links {
+    fn create(&mut self, child_row: usize, parent_sha: &str) -> usize {
+        let id = self.entries.len();
+        self.entries.push((child_row, -1));
+        self.pending
+            .entry(parent_sha.to_string())
+            .or_default()
+            .push(id);
+        id
+    }
+
+    /// `sha` 커밋이 `row`에 등장했다. 이 커밋을 기다리던 링크의 부모 행을 확정한다.
+    fn resolve(&mut self, sha: &str, row: usize) {
+        if let Some(ids) = self.pending.remove(sha) {
+            for id in ids {
+                self.entries[id].1 = row as i64;
+            }
+        }
+    }
+
+    fn rows_of(&self, link: usize) -> (usize, i64) {
+        self.entries[link]
+    }
+}
+
+/// 링크가 확정되기 전의 선분. 마지막에 [`Edge`]로 옮긴다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RawEdge {
+    from_lane: usize,
+    to_lane: usize,
+    color: usize,
+    link: usize,
 }
 
 /// 레인 색 배정기. 아직 안 쓴 색을 먼저 내주고, 다 쓴 뒤에는 종료된 레인의 색을 재활용한다.
@@ -134,13 +184,17 @@ impl Lanes {
         self.slots.len() - 1
     }
 
-    fn set(&mut self, index: usize, expected: String, color: usize) {
+    fn set(&mut self, index: usize, expected: String, color: usize, link: usize) {
         self.detach(index);
         self.waiting
             .entry(expected.clone())
             .or_default()
             .push(index);
-        self.slots[index] = Some(Slot { expected, color });
+        self.slots[index] = Some(Slot {
+            expected,
+            color,
+            link,
+        });
     }
 
     /// 레인을 종료하고 쓰던 색을 돌려준다.
@@ -193,19 +247,24 @@ impl Lanes {
 struct Band {
     /// 병합 부모용으로 새로 만든 레인: (새 레인, 출발 레인)
     origins: Vec<(usize, usize)>,
-    /// 이미 존재하는 레인으로 합류하는 병합 선분: (출발 레인, 도착 레인, 색)
-    diagonals: Vec<(usize, usize, usize)>,
+    /// 이미 존재하는 레인으로 합류하는 병합 선분: (출발 레인, 도착 레인, 색, 링크)
+    diagonals: Vec<(usize, usize, usize, usize)>,
 }
 
 /// topo 순서 커밋 목록에 레인/색/엣지를 배정한다.
 pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
     let mut lanes = Lanes::default();
     let mut picker = ColorPicker::new();
+    let mut links = Links::default();
     let mut rows: Vec<RowLayout> = Vec::with_capacity(commits.len());
+    let mut bands: Vec<Vec<RawEdge>> = Vec::with_capacity(commits.len());
     let mut lane_count = 0usize;
     let mut band: Option<Band> = None;
 
-    for commit in commits {
+    for (row_index, commit) in commits.iter().enumerate() {
+        // 이 커밋을 기다리던 링크들의 부모 행이 여기서 정해진다
+        links.resolve(&commit.sha, row_index);
+
         // 1. 이 커밋을 기다리는 레인들. 가장 왼쪽이 커밋 점의 레인이 된다.
         let matches = lanes.matches(&commit.sha);
 
@@ -223,8 +282,8 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
         // 직전 row의 band는 이번 커밋의 레인을 알아야 확정된다.
         // 이 시점의 lanes 상태가 곧 직전 row를 처리한 직후 상태다.
         if let Some(previous) = band.take() {
-            if let Some(row) = rows.last_mut() {
-                row.edges = build_edges(&lanes, &previous, &commit.sha, lane);
+            if let Some(slot) = bands.last_mut() {
+                *slot = build_edges(&lanes, &previous, &commit.sha, lane);
             }
         }
 
@@ -237,7 +296,10 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
 
         // 3. 커밋 레인은 first parent를 기다린다. 루트면 레인이 끝난다.
         match commit.parents.first() {
-            Some(first_parent) => lanes.set(lane, first_parent.clone(), color),
+            Some(first_parent) => {
+                let link = links.create(row_index, first_parent);
+                lanes.set(lane, first_parent.clone(), color, link);
+            }
             None => {
                 lanes.clear(lane);
                 picker.release(color);
@@ -247,16 +309,21 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
         // 4. 추가 부모(merge). 이미 기다리는 레인이 있으면 연결만, 없으면 새 레인을 만든다.
         let mut origins = Vec::new();
         let mut diagonals = Vec::new();
-        for parent in commit.parents.iter().skip(1) {
+        for (position, parent) in commit.parents.iter().enumerate().skip(1) {
+            // 같은 부모가 두 번 적힌 커밋은 링크도 하나다
+            if commit.parents[..position].contains(parent) {
+                continue;
+            }
+            let link = links.create(row_index, parent);
             match lanes.find_waiting(parent) {
                 Some(index) => {
                     let existing_color = lanes.slot(index).unwrap().color;
-                    diagonals.push((lane, index, existing_color));
+                    diagonals.push((lane, index, existing_color, link));
                 }
                 None => {
                     let index = lanes.alloc();
                     let new_color = picker.acquire_avoiding(&lanes.neighbor_colors(index));
-                    lanes.set(index, parent.clone(), new_color);
+                    lanes.set(index, parent.clone(), new_color, link);
                     origins.push((index, lane));
                 }
             }
@@ -270,14 +337,32 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
             color,
             edges: Vec::new(),
         });
+        bands.push(Vec::new());
         band = Some(Band { origins, diagonals });
     }
 
     // 마지막 row 아래 구간: 살아있는 레인은 화면 밖으로 계속 내려간다.
     if let Some(previous) = band.take() {
-        if let Some(row) = rows.last_mut() {
-            row.edges = build_edges(&lanes, &previous, "", 0);
+        if let Some(slot) = bands.last_mut() {
+            *slot = build_edges(&lanes, &previous, "", 0);
         }
+    }
+
+    // 이제 모든 링크의 부모 행이 정해졌다(끝까지 미해결이면 -1). 선분에 옮겨 담는다.
+    for (row, raw_edges) in rows.iter_mut().zip(bands) {
+        row.edges = raw_edges
+            .into_iter()
+            .map(|raw| {
+                let (child_row, parent_row) = links.rows_of(raw.link);
+                Edge {
+                    from_lane: raw.from_lane,
+                    to_lane: raw.to_lane,
+                    color: raw.color,
+                    child_row,
+                    parent_row,
+                }
+            })
+            .collect();
     }
 
     LayoutResult {
@@ -292,20 +377,24 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
 /// - `next_sha`를 기다리는 레인은 도착점이 다음 커밋의 레인이다 (점으로 합류하는 선)
 /// - 그 밖에는 수직 통과선이다
 ///
+/// 모든 선분은 자기가 속한 링크를 함께 들고 나간다. 통과선은 그 레인이 나르는 링크,
+/// 병합 선분은 그 병합이 만든 링크다.
+///
 /// `next_sha`가 빈 문자열이면 다음 row가 없는 마지막 band다.
-fn build_edges(lanes: &Lanes, band: &Band, next_sha: &str, next_lane: usize) -> Vec<Edge> {
-    let mut edges: Vec<Edge> = Vec::with_capacity(lanes.len() + band.diagonals.len());
+fn build_edges(lanes: &Lanes, band: &Band, next_sha: &str, next_lane: usize) -> Vec<RawEdge> {
+    let mut edges: Vec<RawEdge> = Vec::with_capacity(lanes.len() + band.diagonals.len());
 
-    for &(from, target, color) in &band.diagonals {
+    for &(from, target, color, link) in &band.diagonals {
         let to = if ends_at_next(lanes, target, next_sha) {
             next_lane
         } else {
             target
         };
-        let edge = Edge {
+        let edge = RawEdge {
             from_lane: from,
             to_lane: to,
             color,
+            link,
         };
         if !edges.contains(&edge) {
             edges.push(edge);
@@ -327,10 +416,11 @@ fn build_edges(lanes: &Lanes, band: &Band, next_sha: &str, next_lane: usize) -> 
         } else {
             index
         };
-        let edge = Edge {
+        let edge = RawEdge {
             from_lane: from,
             to_lane: to,
             color: slot.color,
+            link: slot.link,
         };
         if !edges[..diagonal_count].contains(&edge) {
             edges.push(edge);
@@ -364,11 +454,20 @@ mod tests {
         }
     }
 
-    fn edge(from_lane: usize, to_lane: usize, color: usize) -> Edge {
+    /// (출발 레인, 도착 레인, 색, 링크의 자식 행, 링크의 부모 행)
+    fn edge(
+        from_lane: usize,
+        to_lane: usize,
+        color: usize,
+        child_row: usize,
+        parent_row: i64,
+    ) -> Edge {
         Edge {
             from_lane,
             to_lane,
             color,
+            child_row,
+            parent_row,
         }
     }
 
@@ -381,9 +480,10 @@ mod tests {
         assert_eq!(result.lane_count, 1);
         assert!(result.rows.iter().all(|r| r.lane == 0 && r.color == 0));
 
-        // band 0, 1은 통과 수직선, 마지막 band는 루트라 비어 있다
-        assert_eq!(result.rows[0].edges, vec![edge(0, 0, 0)]);
-        assert_eq!(result.rows[1].edges, vec![edge(0, 0, 0)]);
+        // band 0, 1은 통과 수직선, 마지막 band는 루트라 비어 있다.
+        // 통과선도 자기 링크(자식 행 → 부모 행)를 들고 있다
+        assert_eq!(result.rows[0].edges, vec![edge(0, 0, 0, 0, 1)]);
+        assert_eq!(result.rows[1].edges, vec![edge(0, 0, 0, 1, 2)]);
         assert!(result.rows[2].edges.is_empty(), "루트 아래로는 선이 없다");
     }
 
@@ -413,24 +513,29 @@ mod tests {
         assert_eq!(colors, vec![0, 0, 1, 0, 0]);
 
         // band(M, Ma): first parent 수직선 + 병합 부모 F로 벌어지는 선
+        // fan-out 선분은 머지 커밋(row 0)에서 두 번째 부모 F(row 2)로 가는 링크다
         assert_eq!(
             result.rows[0].edges,
-            vec![edge(0, 0, 0), edge(0, 1, 1)],
+            vec![edge(0, 0, 0, 0, 1), edge(0, 1, 1, 0, 2)],
             "머지 커밋 점에서 새 레인 1로 벌어지는 선이 있어야 한다"
         );
 
-        // band(Ma, F): 레인 0은 B를 기다리며 통과, 레인 1은 다음 row(F)에서 끝난다
-        assert_eq!(result.rows[1].edges, vec![edge(0, 0, 0), edge(1, 1, 1)]);
+        // band(Ma, F): 레인 0은 B를 기다리며 통과(Ma→B 링크), 레인 1은 M→F 링크를 계속 나른다
+        assert_eq!(
+            result.rows[1].edges,
+            vec![edge(0, 0, 0, 1, 3), edge(1, 1, 1, 0, 2)]
+        );
 
         // band(F, B): 두 레인이 모두 B를 기다린다. 레인 1은 커밋 레인 0으로 합류한다
+        // 합류선은 F(row 2) → B(row 3) 링크다
         assert_eq!(
             result.rows[2].edges,
-            vec![edge(0, 0, 0), edge(1, 0, 1)],
+            vec![edge(0, 0, 0, 1, 3), edge(1, 0, 1, 2, 3)],
             "레인 1이 row B의 커밋 점으로 합류하는 선이 band(F, B)에 있어야 한다"
         );
 
         // band(B, A): 레인 1은 종료됐고 레인 0만 남는다
-        assert_eq!(result.rows[3].edges, vec![edge(0, 0, 0)]);
+        assert_eq!(result.rows[3].edges, vec![edge(0, 0, 0, 3, 4)]);
         assert!(result.rows[4].edges.is_empty());
     }
 
@@ -456,14 +561,23 @@ mod tests {
             vec![0, 1, 0, 1, 0]
         );
 
-        // 새 tip B는 band(A, B)에 선이 없다. 레인 0만 통과한다
-        assert_eq!(result.rows[0].edges, vec![edge(0, 0, 0)]);
-        // band(B, C): 레인 0이 C에서 끝나고, 레인 1은 D를 기다리며 통과
-        assert_eq!(result.rows[1].edges, vec![edge(0, 0, 0), edge(1, 1, 1)]);
-        // band(C, D): 레인 1이 D에서 끝난다 (자기 레인이라 수직선)
-        assert_eq!(result.rows[2].edges, vec![edge(0, 0, 0), edge(1, 1, 1)]);
-        // band(D, E): 두 레인이 E를 기다린다 → 레인 1은 레인 0으로 합류
-        assert_eq!(result.rows[3].edges, vec![edge(0, 0, 0), edge(1, 0, 1)]);
+        // 새 tip B는 band(A, B)에 선이 없다. 레인 0만 통과한다 (A→C 링크)
+        assert_eq!(result.rows[0].edges, vec![edge(0, 0, 0, 0, 2)]);
+        // band(B, C): 레인 0이 C에서 끝나고, 레인 1은 D를 기다리며 통과(B→D 링크)
+        assert_eq!(
+            result.rows[1].edges,
+            vec![edge(0, 0, 0, 0, 2), edge(1, 1, 1, 1, 3)]
+        );
+        // band(C, D): 레인 0은 C→E 링크로 통과, 레인 1이 D에서 끝난다
+        assert_eq!(
+            result.rows[2].edges,
+            vec![edge(0, 0, 0, 2, 4), edge(1, 1, 1, 1, 3)]
+        );
+        // band(D, E): 두 레인이 E를 기다린다 → 레인 1은 레인 0으로 합류(D→E 링크)
+        assert_eq!(
+            result.rows[3].edges,
+            vec![edge(0, 0, 0, 2, 4), edge(1, 0, 1, 3, 4)]
+        );
         assert!(result.rows[4].edges.is_empty());
     }
 
@@ -488,12 +602,14 @@ mod tests {
 
         // band(H2, P): 레인 0(F 대기) 통과 + 레인 1은 P에서 끝남 + 레인 1 → 레인 0 병합 선분
         let band = &result.rows[1].edges;
+        // 병합 선분은 H2(row 1) → F(row 3) 링크,
+        // 통과선은 H1(row 0) → F(row 3) 링크로 서로 다른 링크다
         assert!(
-            band.contains(&edge(1, 0, 0)),
+            band.contains(&edge(1, 0, 0, 1, 3)),
             "이미 있는 레인 0으로 합류하는 선분이 있어야 한다: {band:?}"
         );
         assert!(
-            band.contains(&edge(0, 0, 0)),
+            band.contains(&edge(0, 0, 0, 0, 3)),
             "레인 0의 통과선도 남아야 한다: {band:?}"
         );
         assert_eq!(result.lane_count, 2);
@@ -654,8 +770,8 @@ mod tests {
         let result = assign_lanes(&commits);
         assert_eq!(
             result.rows[0].edges,
-            vec![edge(0, 0, 0)],
-            "마지막 band에도 통과선을 내려 화면 밖으로 이어지게 한다"
+            vec![edge(0, 0, 0, 0, -1)],
+            "부모가 로드 범위 밖이면 parent_row가 -1이다"
         );
     }
 
@@ -670,10 +786,11 @@ mod tests {
         let result = assign_lanes(&commits);
         assert_eq!(result.lane_count, 3);
 
+        // 세 선분 모두 머지 커밋(row 0)이 자식이고 부모 행만 다르다
         let band = &result.rows[0].edges;
-        assert!(band.contains(&edge(0, 0, 0)), "{band:?}");
-        assert!(band.contains(&edge(0, 1, 1)), "{band:?}");
-        assert!(band.contains(&edge(0, 2, 2)), "{band:?}");
+        assert!(band.contains(&edge(0, 0, 0, 0, 1)), "{band:?}");
+        assert!(band.contains(&edge(0, 1, 1, 0, 2)), "{band:?}");
+        assert!(band.contains(&edge(0, 2, 2, 0, 3)), "{band:?}");
     }
 
     #[test]
@@ -682,7 +799,47 @@ mod tests {
         let result = assign_lanes(&commits);
         let band = &result.rows[0].edges;
         assert_eq!(band.len(), 1, "중복 선분이 없어야 한다: {band:?}");
-        assert_eq!(band[0], edge(0, 0, 0));
+        assert_eq!(band[0], edge(0, 0, 0, 0, 1));
+    }
+
+    #[test]
+    fn 모든_선분은_유효한_링크에_속한다() {
+        let commits = [
+            commit("M", &["Ma", "F"]),
+            commit("Ma", &["B"]),
+            commit("F", &["B"]),
+            commit("B", &["A"]),
+            commit("A", &["Z"]), // Z는 로드 범위 밖
+        ];
+        let result = assign_lanes(&commits);
+
+        for (index, row) in result.rows.iter().enumerate() {
+            for e in &row.edges {
+                // 링크의 자식은 실재하는 행이다
+                assert!(e.child_row < result.rows.len(), "{index}: {e:?}");
+                // 부모는 미해결(-1)이거나 자식보다 아래 행이다 (topo 순서)
+                assert!(
+                    e.parent_row == -1 || e.parent_row > e.child_row as i64,
+                    "{index}: {e:?}"
+                );
+                if e.parent_row >= 0 {
+                    assert!(
+                        (e.parent_row as usize) < result.rows.len(),
+                        "{index}: {e:?}"
+                    );
+                }
+                // 선분은 자기 band를 걸쳐 있는 링크에만 속한다
+                assert!(e.child_row <= index, "{index}: {e:?}");
+                assert!(
+                    e.parent_row == -1 || e.parent_row > index as i64,
+                    "{index}: {e:?}"
+                );
+            }
+        }
+
+        // A의 부모 Z는 로드되지 않아 마지막 band는 미해결이다
+        let last = result.rows.last().unwrap();
+        assert_eq!(last.edges, vec![edge(0, 0, 0, 4, -1)]);
     }
 
     #[test]

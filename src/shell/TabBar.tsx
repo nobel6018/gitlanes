@@ -1,0 +1,56 @@
+export interface TabInfo {
+  id: number;
+  /** 열린 레포 경로. 아직 안 열었으면 null (웰컴 탭) */
+  path: string | null;
+  /** 탭 라벨 */
+  label: string;
+}
+
+export interface TabBarProps {
+  tabs: TabInfo[];
+  activeId: number;
+  onActivate: (id: number) => void;
+  onClose: (id: number) => void;
+  onNewTab: () => void;
+}
+
+export function TabBar({ tabs, activeId, onActivate, onClose, onNewTab }: TabBarProps) {
+  return (
+    <div className="tabbar">
+      <div className="tabbar-scroll">
+        {tabs.map((tab) => (
+          <div
+            key={tab.id}
+            className={tab.id === activeId ? "tab active" : "tab"}
+            onMouseDown={(e) => {
+              // 가운데 클릭으로 닫기 (브라우저 탭과 같은 관습)
+              if (e.button === 1) {
+                e.preventDefault();
+                onClose(tab.id);
+              }
+            }}
+          >
+            <button
+              className="tab-label"
+              onClick={() => onActivate(tab.id)}
+              title={tab.path ?? "New tab"}
+            >
+              {tab.label}
+            </button>
+            <button
+              className="tab-close"
+              onClick={() => onClose(tab.id)}
+              title="Close tab"
+              aria-label={`Close ${tab.label}`}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+      <button className="tab-new" onClick={onNewTab} title="New tab" aria-label="New tab">
+        +
+      </button>
+    </div>
+  );
+}

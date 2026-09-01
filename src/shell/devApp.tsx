@@ -19,7 +19,11 @@ import type {
 import "../theme.css";
 
 const MOCK_PATH = "/mock/awesome-project";
-const MOCK_PICK_PATH = "/mock/picked-from-dialog";
+/** 다이얼로그를 열 때마다 번갈아 나오는 두 번째/세 번째 mock 레포 (탭 독립성 확인용) */
+const MOCK_PICK_PATHS = ["/mock/second-repo", "/mock/third-repo"];
+let pickCursor = 0;
+/** get_remote_url이 돌려줄 고정 GitHub URL */
+const MOCK_REMOTE_URL = "https://github.com/gitlanes/awesome-project";
 /** 전체 커밋 수. limit이 이 값보다 작으면 hasMore가 켜진다. */
 const TOTAL_COMMITS = 12340;
 /** 하네스 시작 후 이 시간이 지나면 토큰과 wip이 한 번 바뀐다 (자동 새로고침 검증용) */
@@ -367,8 +371,20 @@ mockIPC(async (cmd, payload) => {
     case "open_repo": {
       await sleep(120);
       const path = String(readArg(payload, "path") ?? MOCK_PATH);
-      return { ...REPO, path, name: path.split("/").filter(Boolean).pop() ?? REPO.name };
+      // 탭마다 다른 레포처럼 보이도록 경로에 따라 이름/브랜치를 바꾼다
+      const name = path.split("/").filter(Boolean).pop() ?? REPO.name;
+      const branches = ["main", "develop", "release/0.7"];
+      return {
+        ...REPO,
+        path,
+        name,
+        headBranch: branches[hashOf(path) % branches.length],
+      };
     }
+
+    case "get_remote_url":
+      await sleep(40);
+      return MOCK_REMOTE_URL;
 
     case "load_graph": {
       await sleep(220);
@@ -408,9 +424,17 @@ mockIPC(async (cmd, payload) => {
     }
 
     // plugin-dialog의 open()은 이 command로 내려온다
-    case "plugin:dialog|open":
+    case "plugin:dialog|open": {
       await sleep(150);
-      return MOCK_PICK_PATH;
+      const picked = MOCK_PICK_PATHS[pickCursor % MOCK_PICK_PATHS.length];
+      pickCursor += 1;
+      return picked;
+    }
+
+    // plugin-opener의 openUrl(). 하네스에서는 실제로 열지 않고 로그만 남긴다
+    case "plugin:opener|open_url":
+      console.log("[mock] openUrl:", readArg(payload, "url"));
+      return null;
 
     default:
       throw new Error(`mock IPC: 처리하지 않는 command "${cmd}"`);

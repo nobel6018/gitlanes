@@ -37,6 +37,11 @@ export function searchCommits(path: string, query: string, limit: number): Promi
   return invoke<SearchMatch[]>("search_commits", { path, query, limit });
 }
 
+/** origin remote의 웹 URL. remote가 없으면 null */
+export function getRemoteUrl(path: string): Promise<string | null> {
+  return invoke<string | null>("get_remote_url", { path });
+}
+
 /** 자동 새로고침용 경량 폴링 (refs 지문 + wip 요약) */
 export function getRepoState(path: string): Promise<RepoState> {
   return invoke<RepoState>("get_repo_state", { path });
