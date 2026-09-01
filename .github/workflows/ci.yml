@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: test-macos
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+      - run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  # 개발 중 스모크 빌드: main 머지마다 macOS arm64 번들만 만들고
+  # 릴리스 프로필 캐시(shared-key: macos-latest)를 데워 태그 빌드를 가속한다.
+  dev-build:
+    if: github.event_name == 'push'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: macos-latest
+
+      - run: npm ci
+
+      - name: Build macOS arm64 bundle
+        run: npm run tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GitLanes-dev-macos-arm64
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          retention-days: 7
