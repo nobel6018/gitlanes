@@ -10,8 +10,11 @@ GitKraken-style commit graph viewer. Free and open source (MIT), read-only, work
 - **WIP & stash rows**: uncommitted changes and every stash appear inline in the graph; stash rows open in the detail panel like any commit
 - **Branch sidebar**: collapsible LOCAL / REMOTE / TAGS tree, click to jump to a ref's commit
 - **Search**: Cmd+F over message / author / sha across the *entire* history — matches beyond the loaded range are paged in automatically
-- **Commit details**: file list with status badges and ±stats, rename-aware unified diff (virtualized for huge diffs)
-- **Live**: auto-refreshes when the repository changes (refs fingerprint polling, focused window only)
+- **Commit details**: file list with status badges and ±stats (flat or tree view), rename-aware unified diff (virtualized for huge diffs)
+- **Repo tabs**: several repositories side by side, each with its own state
+- **Path highlight**: selecting a commit dims everything outside its ancestry, so you can read one branch through a busy graph
+- **Context menu**: copy sha/message, open the commit on GitHub/your remote
+- **Live**: auto-refreshes when the repository changes (refs fingerprint polling, focused window only); update badge when a newer release exists
 - **Fast**: Rust backend wrapping the system `git` CLI, parallel subprocess calls, canvas rendering with virtual scrolling — a 32k-commit repository loads in ~300ms and scrolls at 60fps
 - **Read-only by design**: no staging, no push, no way to break anything; use it alongside your favorite git client
 - Draggable column widths, keyboard navigation (↑/↓), sha copy (button or row double-click), eye-comfort dark theme

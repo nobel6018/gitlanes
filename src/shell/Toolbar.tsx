@@ -15,6 +15,9 @@ export interface ToolbarProps {
   onToggleTags: () => void;
   onOpen: () => void;
   onRefresh: () => void;
+  /** 새 버전이 있으면 배지를 띄운다 */
+  updateTag: string | null;
+  onOpenRelease: () => void;
 }
 
 export function Toolbar({
@@ -29,6 +32,8 @@ export function Toolbar({
   onToggleTags,
   onOpen,
   onRefresh,
+  updateTag,
+  onOpenRelease,
 }: ToolbarProps) {
   return (
     <header className="toolbar">
@@ -70,6 +75,16 @@ export function Toolbar({
           {formatCount(commitCount)} commits{hasMore ? "+" : ""}
         </span>
       </div>
+
+      {updateTag !== null && (
+        <button
+          className="update-badge"
+          onClick={onOpenRelease}
+          title={`새 버전 ${updateTag}가 있습니다. 릴리스 페이지 열기`}
+        >
+          {updateTag} ↑
+        </button>
+      )}
 
       <button
         className={showTags ? "toolbar-btn toggle on" : "toolbar-btn toggle"}
