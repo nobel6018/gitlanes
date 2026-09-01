@@ -1271,3 +1271,26 @@
   background: var(--hover-bg);
   color: var(--fg-1);
 }
+
+/* 탭 로딩 스피너: 로딩 중에는 close 버튼 자리를 차지하고, hover하면 close가 돌아온다 */
+.tab-spinner {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
+
+.tab.loading .tab-close {
+  display: none;
+}
+
+.tab.loading:hover .tab-spinner {
+  display: none;
+}
+
+.tab.loading:hover .tab-close {
+  display: inline-flex;
+}

@@ -71,6 +71,21 @@ get_remote_url(path: string) -> string | null
 - 레포 탭(ui-shell): 툴바 위에 GitKraken식 탭 바. 탭마다 독립된 레포/그래프/선택/검색 상태, + 버튼으로 새 탭(웰컴 화면), 탭 close, 마지막 탭 close는 웰컴으로. 자동 새로고침 폴링은 활성 탭만. localStorage `gitlanes.tabs`에 열린 레포 경로와 활성 인덱스 저장, 시작 시 복원 (startup repo 인자가 있으면 그걸 새 탭으로)
 - 컨텍스트 메뉴(ui-shell): 항목 = Copy sha, Copy message, Open on GitHub/Remote(get_remote_url 있을 때만, `<url>/commit/<sha>` 새 브라우저 — @tauri-apps/plugin-opener), 클릭 밖/Esc로 닫힘
 
+## v0.10 확장 (네이티브 메뉴 단축키, Open Repository 버튼 제거)
+
+- rust-core가 Tauri 네이티브 앱 메뉴를 커스터마이즈한다. File 메뉴에 다음 항목을 넣고, 각 항목은 웹뷰 전역 이벤트를 emit한다 (macOS는 Cmd, Windows/Linux는 Ctrl — `CmdOrCtrl` accelerator):
+  | 메뉴 항목 | 단축키 | emit 이벤트 |
+  |---|---|---|
+  | New Tab | CmdOrCtrl+T | `menu:new-tab` |
+  | Open Repository… | CmdOrCtrl+O | `menu:open-repo` |
+  | Close Tab | CmdOrCtrl+W | `menu:close-tab` |
+  | Refresh | CmdOrCtrl+R | `menu:refresh` |
+  - macOS 기본 Close Window(⌘W 선점)는 ⇧⌘W로 옮기고, 나머지 기본 메뉴(App/Edit(복사·붙여넣기 유지)/Window)는 보존한다
+  - payload 없음. 이벤트는 프론트가 `@tauri-apps/api/event`의 listen으로 수신
+- ui-shell 동작: `menu:new-tab` → 새 탭(웰컴), `menu:open-repo` → 새 탭 생성 후 즉시 폴더 다이얼로그(이미 웰컴 탭이 활성인 경우 그 탭에서), `menu:close-tab` → 활성 탭 닫기(마지막 탭이면 웰컴 탭 하나 남김), `menu:refresh` → 활성 탭 새로고침
+- 툴바의 Open Repository 버튼은 제거한다. 레포 열기는 + 새 탭/⌘O/웰컴 화면 경유로만 (활성 레포 탭을 덮어쓰는 경로 제거). 웰컴 화면의 Open 버튼과 최근 목록은 유지
+- 하네스(브라우저)에서는 Tauri 이벤트가 없으므로 ⌘T/⌘R keydown 폴백을 __TAURI_INTERNALS__ 부재 시에만 등록 (⌘W는 브라우저가 선점하므로 폴백 없음)
+
 ## v0.2 확장 (WIP 행, 스크롤 타깃, 키보드)
 
 - `GraphData.wip: WipInfo | null`: rust-core가 `git status --porcelain -z` 1회로 채운다. 깨끗하면 null

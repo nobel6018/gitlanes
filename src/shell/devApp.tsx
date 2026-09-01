@@ -474,6 +474,8 @@ mockIPC(async (cmd, payload) => {
       console.log("[mock] openUrl:", readArg(payload, "url"));
       return null;
 
+    // plugin:event|listen은 일부러 처리하지 않는다.
+    // 하네스에는 네이티브 메뉴가 없으므로, 구독 실패를 신호로 App이 ⌘T/⌘R keydown 폴백을 켠다
     default:
       throw new Error(`mock IPC: 처리하지 않는 command "${cmd}"`);
   }

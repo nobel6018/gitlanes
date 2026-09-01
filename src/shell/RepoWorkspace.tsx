@@ -107,6 +107,14 @@ export interface RepoWorkspaceProps {
   update: WorkspaceUpdateProps;
   /** 활성 탭에만 내려오는 업데이트 배너. 툴바 바로 아래에 놓는다 */
   banner: ReactNode;
+  /**
+   * 메뉴 명령 카운터. 이 탭에 대해 값이 올라갈 때만 실행한다.
+   * App이 탭별로 따로 세기 때문에 탭 전환만으로는 바뀌지 않는다.
+   */
+  openDialogNonce: number;
+  refreshNonce: number;
+  /** 그래프 로드/새로고침 중인지 App에 알린다 (탭 스피너용) */
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 export interface WorkspaceUpdateProps {
@@ -131,6 +139,9 @@ export function RepoWorkspace({
   requestOpen,
   update,
   banner,
+  openDialogNonce,
+  refreshNonce,
+  onLoadingChange,
 }: RepoWorkspaceProps) {
   const [repo, setRepo] = useState<RepoInfo | null>(null);
   const [graph, setGraph] = useState<GraphData | null>(null);
@@ -159,6 +170,8 @@ export function RepoWorkspace({
   const refsReq = useRef(0);
   const scrollSeq = useRef(0);
   const initialOpened = useRef(false);
+  const lastOpenNonce = useRef(0);
+  const lastRefreshNonce = useRef(0);
   const activeRef = useRef(active);
   const lastQuery = useRef("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -314,6 +327,11 @@ export function RepoWorkspace({
     initialOpened.current = true;
     void openPath(initialPath);
   }, [initialPath, openPath]);
+
+  // 비활성 탭도 자기 로딩을 탭 바에 알린다
+  useEffect(() => {
+    onLoadingChange?.(graphLoading);
+  }, [graphLoading, onLoadingChange]);
 
   /** 선택 + 해당 행을 뷰포트 중앙으로 스크롤 */
   const jumpTo = useCallback((sha: string) => {
@@ -499,6 +517,24 @@ export function RepoWorkspace({
     setReloadKey((k) => k + 1);
   }, []);
 
+  // 메뉴 Open Repository… (⌘O): 이 탭에서 폴더 다이얼로그를 연다
+  useEffect(() => {
+    if (openDialogNonce === 0 || openDialogNonce === lastOpenNonce.current) {
+      return;
+    }
+    lastOpenNonce.current = openDialogNonce;
+    void handleBrowse();
+  }, [openDialogNonce, handleBrowse]);
+
+  // 메뉴 Refresh (⌘R): 툴바 Refresh와 같은 경로
+  useEffect(() => {
+    if (refreshNonce === 0 || refreshNonce === lastRefreshNonce.current) {
+      return;
+    }
+    lastRefreshNonce.current = refreshNonce;
+    reloadFromStart();
+  }, [refreshNonce, reloadFromStart]);
+
   /** refs 지문/wip이 바뀌었으면 전체 리로드. 폴링과 탭 전환이 함께 쓴다 */
   const checkRepoState = useCallback(() => {
     if (repo === null || loadingRef.current || graphToken.current === "") {
@@ -663,7 +699,6 @@ export function RepoWorkspace({
         loading={graphLoading}
         showTags={showTags}
         onToggleTags={handleToggleTags}
-        onOpen={handleBrowse}
         onRefresh={reloadFromStart}
         updateTag={update.tag}
         onOpenRelease={update.onOpenRelease}

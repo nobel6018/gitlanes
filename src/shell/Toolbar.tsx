@@ -13,7 +13,6 @@ export interface ToolbarProps {
   loading: boolean;
   showTags: boolean;
   onToggleTags: () => void;
-  onOpen: () => void;
   onRefresh: () => void;
   /** 새 버전이 있으면 배지를 띄운다 */
   updateTag: string | null;
@@ -34,7 +33,6 @@ export function Toolbar({
   loading,
   showTags,
   onToggleTags,
-  onOpen,
   onRefresh,
   updateTag,
   onOpenRelease,
@@ -144,10 +142,6 @@ export function Toolbar({
           />
         </svg>
         Refresh
-      </button>
-
-      <button className="toolbar-btn primary" onClick={onOpen} title="Open another repository">
-        Open Repository
       </button>
     </header>
   );
