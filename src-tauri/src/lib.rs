@@ -10,6 +10,8 @@ mod model;
 mod parse;
 mod remote;
 mod search;
+#[cfg(test)]
+mod testrepo;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
