@@ -25,6 +25,15 @@ jobs:
 
       - run: npm ci
       - run: npx tsc --noEmit
+
+      # 회귀 가드: 앱 버전은 __APP_VERSION__ 주입만 허용 (하드코딩이면 자기 자신을 새 버전으로 오인)
+      - name: Guard against hardcoded APP_VERSION
+        run: |
+          if grep -E 'APP_VERSION = "' src/shell/version.ts; then
+            echo "version.ts에 하드코딩된 버전이 있습니다. __APP_VERSION__을 쓰세요." >&2
+            exit 1
+          fi
+
       - run: npm run build
       - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
