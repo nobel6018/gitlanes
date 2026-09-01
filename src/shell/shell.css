@@ -209,7 +209,7 @@
 }
 
 .panel-section {
-  padding: 12px 14px;
+  padding: 9px 12px;
   border-bottom: 1px solid var(--border-1);
 }
 
@@ -222,7 +222,7 @@
 }
 
 .commit-body {
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   font-family: var(--font-ui);
   font-size: 12px;
   color: var(--fg-2);
@@ -232,13 +232,15 @@
 
 .meta-row {
   display: flex;
-  gap: 8px;
-  padding: 2px 0;
-  font-size: 12px;
+  gap: 6px;
+  padding: 0;
+  min-height: 17px;
+  line-height: 17px;
+  font-size: 11.5px;
 }
 
 .meta-label {
-  flex: 0 0 66px;
+  flex: 0 0 56px;
   color: var(--fg-2);
 }
 
@@ -247,7 +249,8 @@
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 6px;
+  align-items: center;
+  gap: 2px 6px;
   word-break: break-all;
 }
 
@@ -270,9 +273,13 @@
 }
 
 .files-title {
-  margin: 0 0 6px;
-  font-size: 12px;
+  margin: 0 0 4px;
+  min-height: 18px;
+  font-size: 11px;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--fg-2);
 }
 
 .file-list {
@@ -284,12 +291,14 @@
 .file-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  padding: 3px 4px;
+  height: 22px;
+  padding: 0 4px;
   border-radius: 3px;
   text-align: left;
   font-size: 12px;
+  line-height: 22px;
 }
 
 .file-row:hover {
@@ -297,9 +306,9 @@
 }
 
 .status-badge {
-  flex: 0 0 14px;
-  height: 14px;
-  line-height: 14px;
+  flex: 0 0 13px;
+  height: 13px;
+  line-height: 13px;
   text-align: center;
   font-size: 10px;
   font-weight: 700;
@@ -347,9 +356,18 @@
 .file-stat {
   flex: 0 0 auto;
   display: flex;
-  gap: 5px;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 62px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-add,
+.stat-del {
+  min-width: 26px;
+  text-align: right;
 }
 
 .stat-add {
@@ -367,7 +385,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 30px;
+  height: 26px;
   padding: 0 10px;
   border-bottom: 1px solid var(--border-1);
 }
@@ -918,30 +936,47 @@
   display: flex;
   align-items: stretch;
   flex: 0 0 auto;
-  height: 30px;
+  height: 37px;
   background: var(--bg-titlebar);
   border-bottom: 1px solid var(--border-0);
 }
 
 .tabbar-scroll {
+  position: relative; /* 탭의 offsetParent가 되어야 자동 스크롤 계산이 맞다 */
   display: flex;
   align-items: stretch;
   flex: 1 1 auto;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: none;
+  scrollbar-width: thin;
 }
 
+/* macOS 오버레이 스크롤바에 숨지 않게 항상 자리를 차지하는 얇은 스크롤바 */
 .tabbar-scroll::-webkit-scrollbar {
-  height: 0;
+  height: 7px;
+}
+
+.tabbar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tabbar-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-1);
+  border-radius: 4px;
+}
+
+.tabbar-scroll::-webkit-scrollbar-thumb:hover {
+  background: #5B606D;
 }
 
 .tab {
   display: flex;
   align-items: center;
-  flex: 0 0 auto;
-  max-width: 200px;
+  /* 탭이 늘면 220 -> 120px까지만 줄고, 그 뒤로는 가로 스크롤이 생긴다 */
+  flex: 0 1 220px;
+  min-width: 120px;
+  max-width: 220px;
   padding-right: 4px;
   border-right: 1px solid var(--border-0);
   background: var(--bg-titlebar);
@@ -985,17 +1020,127 @@
   color: var(--fg-1);
 }
 
-.tab-new {
-  flex: 0 0 auto;
-  width: 28px;
+.tab-parent {
   color: var(--fg-2);
-  font-size: 15px;
-  line-height: 1;
+  opacity: 0.75;
 }
 
-.tab-new:hover {
+.tab.active .tab-parent {
+  color: var(--fg-2);
+}
+
+.tab-new,
+.tab-scroll-btn,
+.tab-menu-btn {
+  flex: 0 0 auto;
+  width: 24px;
+  align-self: stretch;
+  color: var(--fg-2);
+  font-size: 14px;
+  line-height: 1;
+  border-left: 1px solid var(--border-0);
+}
+
+.tab-new {
+  width: 28px;
+  font-size: 15px;
+}
+
+.tab-scroll-btn {
+  border-left: none;
+  border-right: 1px solid var(--border-0);
+}
+
+.tab-new:hover:not(:disabled),
+.tab-scroll-btn:hover:not(:disabled),
+.tab-menu-btn:hover {
   background: var(--hover-bg);
   color: var(--fg-1);
+}
+
+.tab-scroll-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tab-menu-btn.on {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+/* 탭 목록 드롭다운 */
+
+.tab-menu-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.tab-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 180;
+  min-width: 260px;
+  max-width: 420px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border-1);
+  border-radius: 5px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+}
+
+.tab-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border-radius: 3px;
+  text-align: left;
+}
+
+.tab-menu-item:hover {
+  background: var(--hover-bg);
+}
+
+.tab-menu-item.active {
+  background: var(--accent-soft);
+}
+
+.tab-menu-check {
+  flex: 0 0 10px;
+  color: var(--added);
+  font-size: 10px;
+  line-height: 18px;
+}
+
+.tab-menu-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tab-menu-name {
+  display: block;
+  font-size: 12px;
+  color: var(--fg-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-menu-path {
+  display: block;
+  font-size: 11px;
+  color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
 }
 
 .tab-panel {
@@ -1090,7 +1235,8 @@
   align-items: center;
   gap: 5px;
   width: 100%;
-  height: 20px;
+  height: 22px;
+  line-height: 22px;
   padding-right: 4px;
   border-radius: 3px;
   text-align: left;
@@ -1106,6 +1252,7 @@
 .tree-dir-name {
   flex: 1 1 auto;
   min-width: 0;
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
