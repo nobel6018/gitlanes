@@ -586,74 +586,12 @@ mod tests {
 mod integration_tests {
     use super::*;
     use crate::model::{FileStatus, RefKind};
-    use std::path::PathBuf;
+    use crate::testrepo::TempRepo;
     use std::process::Command;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    struct TempRepo {
-        root: PathBuf,
-    }
-
-    impl Drop for TempRepo {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
-    impl TempRepo {
-        fn path(&self) -> String {
-            self.root.to_string_lossy().into_owned()
-        }
-
-        fn git(&self, args: &[&str]) {
-            let status = Command::new("git")
-                .current_dir(&self.root)
-                .env("GIT_AUTHOR_NAME", "테스터")
-                .env("GIT_AUTHOR_EMAIL", "tester@example.com")
-                .env("GIT_COMMITTER_NAME", "커미터")
-                .env("GIT_COMMITTER_EMAIL", "committer@example.com")
-                .args(args)
-                .output()
-                .expect("git 실행 실패");
-            assert!(
-                status.status.success(),
-                "git {args:?} 실패: {}",
-                String::from_utf8_lossy(&status.stderr)
-            );
-        }
-
-        fn write(&self, name: &str, content: &str) {
-            let target = self.root.join(name);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(target, content).unwrap();
-        }
-
-        fn rev(&self, rev: &str) -> String {
-            let out = Command::new("git")
-                .current_dir(&self.root)
-                .args(["rev-parse", rev])
-                .output()
-                .unwrap();
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        }
-    }
 
     /// root -> rename -> (feature | main) -> merge 구조의 저장소를 만든다.
     fn fixture() -> TempRepo {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("gitlanes-test-{}-{id}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let repo = TempRepo { root };
-
-        repo.git(&["init", "-q", "-b", "main"]);
-        repo.git(&["config", "user.name", "테스터"]);
-        repo.git(&["config", "user.email", "tester@example.com"]);
-        repo.git(&["config", "commit.gpgsign", "false"]);
+        let repo = TempRepo::init("gitlanes-test");
 
         repo.write("a.txt", "a\nb\nc\n");
         repo.write("docs/설계 문서.md", "제목\n");
@@ -913,22 +851,7 @@ mod integration_tests {
 
     /// 스트리밍 조기 중단을 눈으로 확인할 만큼 커밋을 쌓은 저장소.
     fn deep_fixture(count: usize) -> TempRepo {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("gitlanes-deep-{}-{id}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let repo = TempRepo { root };
-
-        repo.git(&["init", "-q", "-b", "main"]);
-        repo.git(&["config", "user.name", "테스터"]);
-        repo.git(&["config", "user.email", "tester@example.com"]);
-        repo.git(&["config", "commit.gpgsign", "false"]);
-        for i in 0..count {
-            repo.write("counter.txt", &format!("{i}\n"));
-            repo.git(&["add", "-A"]);
-            repo.git(&["commit", "-qm", &format!("commit {i}")]);
-        }
-        repo
+        TempRepo::linear("gitlanes-deep", count)
     }
 
     #[test]

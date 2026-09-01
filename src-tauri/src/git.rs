@@ -173,6 +173,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testrepo::TempRepo;
 
     #[test]
     fn 저장소가_아닌_경로는_git_stderr를_그대로_전달한다() {
@@ -185,8 +186,9 @@ mod tests {
 
     #[test]
     fn run_all은_넘긴_순서대로_결과를_돌려준다() {
+        let repo = TempRepo::linear("gitlanes-runall", 1);
         let results = run_all(
-            ".",
+            repo.path(),
             &[
                 &["--version"] as &[&str],
                 &["rev-parse", "--is-inside-work-tree"],
@@ -195,13 +197,15 @@ mod tests {
         );
         assert_eq!(results.len(), 3);
         assert!(results[0].as_ref().unwrap().starts_with("git version"));
+        assert_eq!(results[1].as_ref().unwrap().trim(), "true");
         assert!(results[2].as_ref().unwrap().starts_with("git version"));
     }
 
     #[test]
     fn run_all은_실패한_호출만_오류로_남긴다() {
+        let repo = TempRepo::linear("gitlanes-runall-err", 1);
         let results = run_all(
-            ".",
+            repo.path(),
             &[&["--version"] as &[&str], &["definitely-not-a-git-command"]],
         );
         assert!(results[0].is_ok());
@@ -210,9 +214,12 @@ mod tests {
 
     #[test]
     fn stream_records는_레코드마다_콜백을_부른다() {
+        // 실행 환경의 히스토리 깊이에 묶이지 않도록 저장소를 직접 만든다
+        let repo = TempRepo::linear("gitlanes-stream", 5);
+
         let mut lines = Vec::new();
         stream_records(
-            ".",
+            repo.path(),
             &["log", "-n", "3", "--format=%H%x1e"],
             0x1e,
             |record| {
@@ -224,30 +231,53 @@ mod tests {
 
         assert_eq!(lines.len(), 3);
         assert!(lines.iter().all(|sha| sha.len() >= 40), "{lines:?}");
+        assert_eq!(lines[0], repo.rev("HEAD"), "topo 순서 선두부터다");
     }
 
     #[test]
     fn stream_records는_조기_중단해도_오류가_아니다() {
         // 남은 출력을 버리고 프로세스를 정리하므로 SIGPIPE가 오류로 새어나오면 안 된다.
         // 반복해서 돌려 좀비나 파일 디스크립터가 쌓이지 않는지도 함께 본다
+        let repo = TempRepo::linear("gitlanes-stream-stop", 5);
+
         for _ in 0..20 {
             let mut seen = 0usize;
-            stream_records(".", &["log", "--all", "--format=%H%x1e"], 0x1e, |_record| {
-                seen += 1;
-                if seen >= 2 {
-                    Flow::Stop
-                } else {
-                    Flow::Continue
-                }
-            })
+            stream_records(
+                repo.path(),
+                &["log", "--all", "--format=%H%x1e"],
+                0x1e,
+                |_record| {
+                    seen += 1;
+                    if seen >= 2 {
+                        Flow::Stop
+                    } else {
+                        Flow::Continue
+                    }
+                },
+            )
             .expect("조기 중단은 성공이다");
             assert_eq!(seen, 2, "Stop 이후로는 콜백을 부르지 않는다");
         }
+
+        // 조기 중단을 반복한 뒤에도 같은 저장소를 온전히 읽을 수 있다
+        let mut all = 0usize;
+        stream_records(
+            repo.path(),
+            &["log", "--all", "--format=%H%x1e"],
+            0x1e,
+            |_record| {
+                all += 1;
+                Flow::Continue
+            },
+        )
+        .unwrap();
+        assert_eq!(all, 5);
     }
 
     #[test]
     fn stream_records는_실패한_명령의_stderr를_전달한다() {
-        let err = stream_records(".", &["log", "--nope-not-an-option"], 0x1e, |_| {
+        let repo = TempRepo::linear("gitlanes-stream-err", 1);
+        let err = stream_records(repo.path(), &["log", "--nope-not-an-option"], 0x1e, |_| {
             Flow::Continue
         })
         .unwrap_err();
