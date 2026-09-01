@@ -1139,3 +1139,135 @@
 .update-badge:hover {
   background: rgba(84, 192, 138, 0.15);
 }
+
+/* ---------- 업데이트 확인 pill / 배너 ---------- */
+
+.update-pill {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px;
+  border: 1px solid var(--border-1);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color: var(--fg-2);
+  font-size: 12px;
+  white-space: nowrap;
+  animation: gl-pill-in 140ms ease-out;
+}
+
+@keyframes gl-pill-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.pill-ok {
+  color: var(--added);
+}
+
+.pill-fail {
+  color: var(--deleted);
+}
+
+.pill-version {
+  color: var(--fg-1);
+}
+
+.version-label {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.version-label:hover:not(:disabled) {
+  color: var(--fg-1);
+  text-decoration: underline;
+}
+
+.version-label:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border-0);
+  background: rgba(212, 180, 85, 0.1);
+  color: var(--fg-1);
+  font-size: 12px;
+}
+
+.banner-icon {
+  flex: 0 0 auto;
+  color: var(--modified);
+}
+
+.banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.banner-text strong {
+  color: var(--modified);
+}
+
+.banner-notes {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.banner-action {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 4px;
+  background: rgba(212, 180, 85, 0.18);
+  color: var(--modified);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.banner-action:hover {
+  background: rgba(212, 180, 85, 0.3);
+}
+
+.banner-close {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.banner-close:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}

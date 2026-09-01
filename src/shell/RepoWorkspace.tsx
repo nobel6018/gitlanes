@@ -1,6 +1,7 @@
 // 탭 하나의 작업 공간. 레포/그래프/선택/검색/사이드바 상태를 전부 여기서 들고 있다.
 // App은 이 컴포넌트를 탭마다 하나씩 마운트해두고 활성 탭만 보여준다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraphView } from "../graph";
@@ -25,8 +26,7 @@ import { Toast } from "./Toast";
 import { Toolbar } from "./Toolbar";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { useRecentRepos } from "./useRecentRepos";
-import { useUpdateCheck } from "./useUpdateCheck";
-import { RELEASES_PAGE } from "./version";
+import { APP_VERSION } from "./version";
 import { formatCount, shortSha } from "./format";
 
 const SHOW_TAGS_KEY = "gitlanes.showTags";
@@ -103,6 +103,18 @@ export interface RepoWorkspaceProps {
   onRepoOpened: (path: string, name: string) => void;
   /** 다른 탭이 이미 그 레포를 열었으면 App이 그 탭을 활성화하고 true를 준다 */
   requestOpen: (path: string) => boolean;
+  /** 앱 전역 업데이트 확인 상태 (App 소유) */
+  update: WorkspaceUpdateProps;
+  /** 활성 탭에만 내려오는 업데이트 배너. 툴바 바로 아래에 놓는다 */
+  banner: ReactNode;
+}
+
+export interface WorkspaceUpdateProps {
+  /** 새 버전 태그. 없으면 null */
+  tag: string | null;
+  checking: boolean;
+  onCheck: () => void;
+  onOpenRelease: () => void;
 }
 
 /** 커밋 행 우클릭 메뉴 위치와 대상 */
@@ -117,6 +129,8 @@ export function RepoWorkspace({
   active,
   onRepoOpened,
   requestOpen,
+  update,
+  banner,
 }: RepoWorkspaceProps) {
   const [repo, setRepo] = useState<RepoInfo | null>(null);
   const [graph, setGraph] = useState<GraphData | null>(null);
@@ -139,7 +153,6 @@ export function RepoWorkspace({
   const [menu, setMenu] = useState<MenuState | null>(null);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
-  const update = useUpdateCheck();
   const toastSeq = useRef(0);
   const graphReq = useRef(0);
   const graphToken = useRef("");
@@ -590,12 +603,6 @@ export function RepoWorkspace({
     return items;
   }, [menu, menuMessage, remoteUrl, copySha, showToast, showError]);
 
-  const handleOpenRelease = useCallback(() => {
-    void openUrl(RELEASES_PAGE).catch((err: unknown) => {
-      showError(errorMessage(err));
-    });
-  }, [showError]);
-
   const handleToggleTags = useCallback(() => {
     setShowTags((prev) => {
       writeFlag(SHOW_TAGS_KEY, !prev);
@@ -618,6 +625,7 @@ export function RepoWorkspace({
   if (repo === null) {
     return (
       <div className="workspace">
+        {banner}
         <WelcomeScreen
           recents={recents}
           opening={opening}
@@ -657,9 +665,13 @@ export function RepoWorkspace({
         onToggleTags={handleToggleTags}
         onOpen={handleBrowse}
         onRefresh={reloadFromStart}
-        updateTag={update === null ? null : update.tag}
-        onOpenRelease={handleOpenRelease}
+        updateTag={update.tag}
+        onOpenRelease={update.onOpenRelease}
+        appVersion={APP_VERSION}
+        checkingUpdate={update.checking}
+        onCheckUpdates={update.onCheck}
       />
+      {banner}
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
       <div className="main">

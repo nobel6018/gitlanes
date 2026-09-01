@@ -18,6 +18,10 @@ export interface ToolbarProps {
   /** 새 버전이 있으면 배지를 띄운다 */
   updateTag: string | null;
   onOpenRelease: () => void;
+  /** 현재 앱 버전. 클릭하면 수동으로 업데이트를 확인한다 */
+  appVersion: string;
+  checkingUpdate: boolean;
+  onCheckUpdates: () => void;
 }
 
 export function Toolbar({
@@ -34,6 +38,9 @@ export function Toolbar({
   onRefresh,
   updateTag,
   onOpenRelease,
+  appVersion,
+  checkingUpdate,
+  onCheckUpdates,
 }: ToolbarProps) {
   return (
     <header className="toolbar">
@@ -75,6 +82,15 @@ export function Toolbar({
           {formatCount(commitCount)} commits{hasMore ? "+" : ""}
         </span>
       </div>
+
+      <button
+        className="version-label"
+        onClick={onCheckUpdates}
+        disabled={checkingUpdate}
+        title="업데이트 확인"
+      >
+        v{appVersion}
+      </button>
 
       {updateTag !== null && (
         <button
