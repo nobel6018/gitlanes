@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { CommitDetails, FileChange, Signature } from "../types";
 import { errorMessage, getCommitDetails, getFileDiff } from "./api";
+import { FileRow } from "./FileRow";
+import { FileTree } from "./FileTree";
 import { copyText } from "./clipboard";
 import { DiffView } from "./DiffView";
-import { formatTimestamp, shortSha, splitPath, statusLabel } from "./format";
+import { formatTimestamp, shortSha, splitPath } from "./format";
 
 export interface CommitDetailPanelProps {
   repoPath: string;
@@ -20,6 +22,18 @@ interface DiffState {
   text: string;
 }
 
+const FILE_VIEW_KEY = "gitlanes.fileView";
+
+type FileView = "path" | "tree";
+
+function readFileView(): FileView {
+  try {
+    return localStorage.getItem(FILE_VIEW_KEY) === "tree" ? "tree" : "path";
+  } catch {
+    return "path";
+  }
+}
+
 export function CommitDetailPanel({
   repoPath,
   sha,
@@ -31,6 +45,7 @@ export function CommitDetailPanel({
   const [loading, setLoading] = useState(false);
   const [diff, setDiff] = useState<DiffState | null>(null);
   const [diffFile, setDiffFile] = useState<string | null>(null);
+  const [fileView, setFileView] = useState<FileView>(readFileView);
 
   useEffect(() => {
     let alive = true;
@@ -58,6 +73,15 @@ export function CommitDetailPanel({
       alive = false;
     };
   }, [repoPath, sha, onError]);
+
+  function changeFileView(next: FileView) {
+    setFileView(next);
+    try {
+      localStorage.setItem(FILE_VIEW_KEY, next);
+    } catch {
+      // localStorage 실패는 무시 (설정만 휘발)
+    }
+  }
 
   async function openDiff(file: FileChange) {
     setDiffFile(file.path);
@@ -157,10 +181,30 @@ export function CommitDetailPanel({
 
         <section className="panel-section files">
           <h3 className="files-title">
-            Files changed <span className="fg-2">{details.files.length}</span>
+            <span>
+              Files changed <span className="fg-2">{details.files.length}</span>
+            </span>
+            <span className="view-toggle" role="group" aria-label="File list layout">
+              <button
+                className={fileView === "path" ? "view-btn on" : "view-btn"}
+                onClick={() => changeFileView("path")}
+                aria-pressed={fileView === "path"}
+              >
+                Path
+              </button>
+              <button
+                className={fileView === "tree" ? "view-btn on" : "view-btn"}
+                onClick={() => changeFileView("tree")}
+                aria-pressed={fileView === "tree"}
+              >
+                Tree
+              </button>
+            </span>
           </h3>
           {details.files.length === 0 ? (
             <div className="panel-empty small">변경된 파일이 없습니다.</div>
+          ) : fileView === "tree" ? (
+            <FileTree files={details.files} onOpen={openDiff} />
           ) : (
             <ul className="file-list">
               {details.files.map((file) => (
@@ -247,26 +291,3 @@ function SignatureRow({ label, sig }: { label: string; sig: Signature }) {
   );
 }
 
-function FileRow({ file, onOpen }: { file: FileChange; onOpen: () => void }) {
-  const { dir, base } = splitPath(file.path);
-  const title =
-    file.oldPath === null
-      ? `${statusLabel(file.status)}: ${file.path}`
-      : `${statusLabel(file.status)}: ${file.oldPath} → ${file.path}`;
-
-  return (
-    <li>
-      <button className="file-row" onClick={onOpen} title={title}>
-        <span className={`status-badge status-${file.status}`}>{file.status}</span>
-        <span className="file-path">
-          <span className="path-dir">{dir}</span>
-          <span className="path-base">{base}</span>
-        </span>
-        <span className="file-stat">
-          {file.additions > 0 && <span className="stat-add">+{file.additions}</span>}
-          {file.deletions > 0 && <span className="stat-del">-{file.deletions}</span>}
-        </span>
-      </button>
-    </li>
-  );
-}

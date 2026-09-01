@@ -25,6 +25,8 @@ import { Toast } from "./Toast";
 import { Toolbar } from "./Toolbar";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { useRecentRepos } from "./useRecentRepos";
+import { useUpdateCheck } from "./useUpdateCheck";
+import { RELEASES_PAGE } from "./version";
 import { formatCount, shortSha } from "./format";
 
 const SHOW_TAGS_KEY = "gitlanes.showTags";
@@ -137,6 +139,7 @@ export function RepoWorkspace({
   const [menu, setMenu] = useState<MenuState | null>(null);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
+  const update = useUpdateCheck();
   const toastSeq = useRef(0);
   const graphReq = useRef(0);
   const graphToken = useRef("");
@@ -587,6 +590,12 @@ export function RepoWorkspace({
     return items;
   }, [menu, menuMessage, remoteUrl, copySha, showToast, showError]);
 
+  const handleOpenRelease = useCallback(() => {
+    void openUrl(RELEASES_PAGE).catch((err: unknown) => {
+      showError(errorMessage(err));
+    });
+  }, [showError]);
+
   const handleToggleTags = useCallback(() => {
     setShowTags((prev) => {
       writeFlag(SHOW_TAGS_KEY, !prev);
@@ -648,6 +657,8 @@ export function RepoWorkspace({
         onToggleTags={handleToggleTags}
         onOpen={handleBrowse}
         onRefresh={reloadFromStart}
+        updateTag={update === null ? null : update.tag}
+        onOpenRelease={handleOpenRelease}
       />
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
