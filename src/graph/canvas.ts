@@ -23,6 +23,17 @@ export interface DrawParams {
 
 /** 화면 밖 한 행씩 여유를 둬서 절단된 곡선이 보이지 않게 한다 */
 const EDGE_OVERSCAN_ROWS = 2;
+
+// 분기/합류 곡선의 제어점 거리. 구간 높이와 레인 이동 거리를 함께 본다.
+// 고정 비율(높이의 절반)로 두면 두 레인 이상 건너뛰는 곡선이 급하게 꺾인다.
+// 아래 계수는 3차 베지어의 최대 곡률을 수치로 최소화해 고른 값이고,
+// 자주 나오는 조합(한 레인 이동, 1~2행 구간)에서 최적값과 일치한다.
+const BEND_ROW_FACTOR = 0.28;
+const BEND_LANE_FACTOR = 0.37;
+/** 구간이 길고 레인 이동이 짧을 때 곡선이 대각선처럼 퍼지지 않게 하는 하한 */
+const BEND_MIN_FACTOR = 0.38;
+/** 넘으면 제어점이 뒤집혀 곡선이 위로 되돌아간다(비단조) */
+const BEND_MAX_FACTOR = 0.9;
 const PSEUDO_DASH = [3, 3];
 /** 경로 밖 요소의 불투명도 */
 const DIM_ALPHA = 0.35;
@@ -109,10 +120,17 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
         path.lineTo(x0, y1);
         continue;
       }
-      // GitKraken 식 S곡선: 제어점을 수직 방향으로 구간 높이의 절반만큼 띄운다.
-      // WIP 행이 끼어 구간이 두 행 높이가 되면 곡선도 그만큼 늘어난다
+      // GitKraken 식 S곡선. 제어점은 수직 방향으로만 띄우므로 곡선이 위아래
+      // 수직선과 접선이 이어진다. 의사 행이 끼어 구간이 늘어나면 곡선도 늘어난다
       const x1 = laneX(edge.toLane);
-      const bend = (y1 - y0) * 0.5;
+      const height = y1 - y0;
+      const bend = Math.min(
+        height * BEND_MAX_FACTOR,
+        Math.max(
+          height * BEND_MIN_FACTOR,
+          height * BEND_ROW_FACTOR + Math.abs(x1 - x0) * BEND_LANE_FACTOR,
+        ),
+      );
       path.moveTo(x0, y0);
       path.bezierCurveTo(x0, y0 + bend, x1, y1 - bend, x1, y1);
     }

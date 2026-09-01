@@ -121,6 +121,8 @@
 .gl-cell {
   position: relative;
   flex: none;
+  /* 컬럼 폭 계산이 padding 포함 기준이다. theme.css의 전역 규칙에 의존하지 않는다 */
+  box-sizing: border-box;
   padding: 0 8px;
   overflow: hidden;
   white-space: nowrap;
@@ -181,8 +183,8 @@
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   font-size: 9px;
   font-weight: 700;
@@ -199,6 +201,15 @@
 .gl-cell-date {
   color: var(--fg-2);
   font-variant-numeric: tabular-nums;
+}
+
+/* 폭이 부족해 드롭된 컬럼. 헤더와 행이 같은 클래스를 보므로 함께 사라진다.
+   width: 0으로는 padding 16px이 남아서 display로 빼야 한다 */
+.gl-hide-branch .gl-col-branch,
+.gl-hide-author .gl-col-author,
+.gl-hide-sha .gl-col-sha,
+.gl-hide-date .gl-col-date {
+  display: none;
 }
 
 /* ── 컬럼 리사이즈 핸들 ─────────────────────────── */
@@ -259,10 +270,11 @@
   align-items: center;
   gap: 2px;
   min-width: 0;
-  height: 16px;
+  /* 행 높이(ROW_HEIGHT)의 60% 선을 유지한다. 행이 커지면 같이 키운다 */
+  height: 18px;
   padding: 0 5px;
   border: 1px solid var(--border-1);
-  border-radius: 8px;
+  border-radius: 9px;
   background: var(--bg-panel);
   color: var(--fg-1);
   font-size: 11px;

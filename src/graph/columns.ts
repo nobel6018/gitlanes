@@ -77,3 +77,91 @@ export function columnStyle(columns: ColumnWidths): Record<string, string> {
     "--col-date": `${columns.date}px`,
   };
 }
+
+/** MESSAGE는 가장 중요한 컬럼이라 이 폭은 항상 확보한다 */
+export const MESSAGE_MIN_WIDTH = 240;
+/** GRAPH 컬럼이 컨테이너에서 차지할 수 있는 최대 비율 */
+export const GRAPH_MAX_RATIO = 0.35;
+/** 컨테이너가 이 폭 미만이면 BRANCH/TAG도 숨김 후보에 들어간다 */
+export const BRANCH_DROP_WIDTH = 560;
+
+/** 공간이 부족할 때 드롭하는 순서 (오른쪽부터) */
+const DROP_ORDER: ColumnKey[] = ["date", "sha", "author", "branch"];
+
+/** 숨김 상태를 비트마스크로 나른다. 원시값이라 Row의 memo를 깨지 않는다 */
+export const COLUMN_FLAG: Record<ColumnKey, number> = {
+  branch: 1,
+  author: 2,
+  sha: 4,
+  date: 8,
+};
+
+export interface ColumnFit {
+  /** 실제 적용 폭. 숨긴 컬럼은 값이 남아 있어도 렌더되지 않는다 */
+  widths: ColumnWidths;
+  /** 숨긴 컬럼 비트마스크 */
+  hiddenMask: number;
+  graphWidth: number;
+}
+
+/**
+ * 컨테이너 폭에 컬럼을 맞춘다. 순서는 GRAPH 상한 → 오른쪽 컬럼 드롭 → 남은 컬럼 축소.
+ * 사용자가 드래그한 폭도 MESSAGE 최소 폭을 침범하면 축소 대상이 된다.
+ */
+export function fitColumns(
+  layoutWidth: number,
+  columns: ColumnWidths,
+  graphDesired: number,
+  minGraphWidth: number,
+): ColumnFit {
+  // 아직 측정 전이면 제약 없이 그린다
+  if (layoutWidth <= 0) {
+    return { widths: { ...columns }, hiddenMask: 0, graphWidth: graphDesired };
+  }
+
+  const graphWidth = Math.min(
+    graphDesired,
+    Math.max(minGraphWidth, Math.floor(layoutWidth * GRAPH_MAX_RATIO)),
+  );
+  const widths = { ...columns };
+  let hiddenMask = 0;
+
+  const fixedTotal = () =>
+    DROP_ORDER.reduce(
+      (sum, key) => sum + ((hiddenMask & COLUMN_FLAG[key]) !== 0 ? 0 : widths[key]),
+      graphWidth,
+    );
+
+  for (const key of DROP_ORDER) {
+    if (fixedTotal() + MESSAGE_MIN_WIDTH <= layoutWidth) {
+      break;
+    }
+    // BRANCH는 아주 좁을 때만 포기한다
+    if (key === "branch" && layoutWidth >= BRANCH_DROP_WIDTH) {
+      break;
+    }
+    hiddenMask |= COLUMN_FLAG[key];
+  }
+
+  // 전부 드롭해도 부족하면 남은 컬럼을 최소 폭까지 비례 축소한다
+  let deficit = fixedTotal() + MESSAGE_MIN_WIDTH - layoutWidth;
+  if (deficit > 0) {
+    const visible = DROP_ORDER.filter((key) => (hiddenMask & COLUMN_FLAG[key]) === 0);
+    let headroom = visible.reduce(
+      (sum, key) => sum + Math.max(0, widths[key] - COLUMN_MIN_WIDTH),
+      0,
+    );
+    for (const key of visible) {
+      if (deficit <= 0 || headroom <= 0) {
+        break;
+      }
+      const room = Math.max(0, widths[key] - COLUMN_MIN_WIDTH);
+      const cut = Math.min(room, Math.ceil((deficit * room) / headroom));
+      widths[key] -= cut;
+      deficit -= cut;
+      headroom -= room;
+    }
+  }
+
+  return { widths, hiddenMask, graphWidth };
+}

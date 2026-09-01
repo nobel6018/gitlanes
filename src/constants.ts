@@ -16,14 +16,15 @@ export const LANE_COLORS = [
   "#A2BF66",
 ] as const;
 
-/** 커밋 행 높이(px). 그래프 캔버스와 텍스트 행이 공유한다. */
-export const ROW_HEIGHT = 26;
+/** 커밋 행 높이(px). 그래프 캔버스와 텍스트 행이 공유한다.
+ *  GitKraken과 나란히 비교해 26 → 30 (곡선이 급하게 꺾이지 않을 여유) */
+export const ROW_HEIGHT = 30;
 
 /** 레인 하나의 가로 폭(px) */
-export const LANE_WIDTH = 16;
+export const LANE_WIDTH = 18;
 
-/** 커밋 점 반지름(px) */
-export const DOT_RADIUS = 4;
+/** 커밋 점 반지름(px). ROW_HEIGHT 30 / LANE_WIDTH 18 기준으로 이전 비율(행 30%, 레인 간격 50%) 유지 */
+export const DOT_RADIUS = 4.5;
 
 /** 그래프 엣지 선 굵기(px) */
 export const EDGE_WIDTH = 2;

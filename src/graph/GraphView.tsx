@@ -8,9 +8,11 @@ import { drawGraph } from "./canvas";
 import { buildPseudoLayout } from "./pseudo";
 import { buildChildrenMap, buildHighlight } from "./highlight";
 import {
+  COLUMN_FLAG,
   DEFAULT_COLUMNS,
   clampColumnWidth,
   columnStyle,
+  fitColumns,
   loadColumns,
   saveColumns,
 } from "./columns";
@@ -55,6 +57,34 @@ const FOOTER_HEIGHT = 24;
 /** theme.css를 못 읽는 환경(단독 테스트 등)에서만 쓰이는 --bg-content 기본값 */
 const BG_FALLBACK = "#1C1E23";
 
+/**
+ * 드롭된 컬럼의 정보는 항상 보이는 MESSAGE 셀 툴팁으로 흘려준다.
+ * hiddenMask가 0이면 subject만 반환해 문자열 조립을 건너뛴다.
+ */
+function messageTitle(
+  subject: string,
+  hiddenMask: number,
+  parts: { branch?: string; author?: string; sha?: string; date?: string },
+): string {
+  if (hiddenMask === 0) {
+    return subject;
+  }
+  const lines = [subject];
+  if (hiddenMask & COLUMN_FLAG.branch && parts.branch) {
+    lines.push(parts.branch);
+  }
+  if (hiddenMask & COLUMN_FLAG.author && parts.author) {
+    lines.push(parts.author);
+  }
+  if (hiddenMask & COLUMN_FLAG.sha && parts.sha) {
+    lines.push(parts.sha);
+  }
+  if (hiddenMask & COLUMN_FLAG.date && parts.date) {
+    lines.push(parts.date);
+  }
+  return lines.join("\n");
+}
+
 interface RowProps {
   row: CommitRow;
   top: number;
@@ -65,6 +95,8 @@ interface RowProps {
   branchWidth: number;
   /** 경로 강조 집합 밖이면 true */
   dimmed: boolean;
+  /** 폭이 부족해 드롭된 컬럼 비트마스크. 원시값이라 memo가 유지된다 */
+  hiddenMask: number;
   onSelect: (sha: string) => void;
   onDoubleClick: (sha: string) => void;
   onContextMenu: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
@@ -78,6 +110,7 @@ const Row = memo(function Row({
   graphWidth,
   branchWidth,
   dimmed,
+  hiddenMask,
   onSelect,
   onDoubleClick,
   onContextMenu,
@@ -88,6 +121,9 @@ const Row = memo(function Row({
     (row.isHead ? " gl-row-head" : "") +
     (dimmed ? " gl-row-dim" : "");
   const avatarColor = authorColorIndex(row.authorEmail);
+  const refsLabel = refsTitle(row.refs, showTags);
+  const shortSha = row.shortSha.slice(0, SHA_DISPLAY_LENGTH);
+  const date = formatDate(row.timestamp);
   return (
     <div
       className={className}
@@ -96,16 +132,27 @@ const Row = memo(function Row({
       onDoubleClick={() => onDoubleClick(row.sha)}
       onContextMenu={(event) => onContextMenu(row.sha, event)}
     >
-      <div className="gl-cell gl-col-branch gl-cell-branch" title={refsTitle(row.refs, showTags)}>
-        <RefPills
-          refs={row.refs}
-          laneColor={laneColor(row.color)}
-          showTags={showTags}
-          branchWidth={branchWidth}
-        />
+      <div className="gl-cell gl-col-branch gl-cell-branch" title={refsLabel}>
+        {/* 드롭된 컬럼은 display:none이지만 DOM에는 남으므로 pill 실측까지 건너뛴다 */}
+        {hiddenMask & COLUMN_FLAG.branch ? null : (
+          <RefPills
+            refs={row.refs}
+            laneColor={laneColor(row.color)}
+            showTags={showTags}
+            branchWidth={branchWidth}
+          />
+        )}
       </div>
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
-      <div className="gl-cell gl-cell-message" title={row.subject}>
+      <div
+        className="gl-cell gl-cell-message"
+        title={messageTitle(row.subject, hiddenMask, {
+          branch: refsLabel,
+          author: row.author,
+          sha: shortSha,
+          date,
+        })}
+      >
         {row.subject}
       </div>
       <div className="gl-cell gl-col-author gl-cell-author" title={row.author}>
@@ -120,12 +167,8 @@ const Row = memo(function Row({
         </span>
         <span className="gl-author-name">{row.author}</span>
       </div>
-      <div className="gl-cell gl-col-sha gl-cell-sha">
-        {row.shortSha.slice(0, SHA_DISPLAY_LENGTH)}
-      </div>
-      <div className="gl-cell gl-col-date gl-cell-date">
-        {formatDate(row.timestamp)}
-      </div>
+      <div className="gl-cell gl-col-sha gl-cell-sha">{shortSha}</div>
+      <div className="gl-cell gl-col-date gl-cell-date">{date}</div>
     </div>
   );
 });
@@ -166,6 +209,7 @@ function StashRow({
   selected,
   graphWidth,
   dimmed,
+  hiddenMask,
   onSelect,
   onDoubleClick,
   onContextMenu,
@@ -175,6 +219,7 @@ function StashRow({
   selected: boolean;
   graphWidth: number;
   dimmed: boolean;
+  hiddenMask: number;
   onSelect: (sha: string) => void;
   onDoubleClick: (sha: string) => void;
   onContextMenu: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
@@ -193,7 +238,13 @@ function StashRow({
     >
       <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
-      <div className="gl-cell gl-cell-message" title={stash.message}>
+      <div
+        className="gl-cell gl-cell-message"
+        title={messageTitle(stash.message, hiddenMask, {
+          sha: stash.shortSha.slice(0, SHA_DISPLAY_LENGTH),
+          date: formatDate(stash.timestamp),
+        })}
+      >
         {`\u2261 ${stash.message}`}
       </div>
       <div className="gl-cell gl-col-author" />
@@ -272,6 +323,8 @@ export function GraphView({
   );
   // 포인터 이벤트에서 동기적으로 읽고 쓰는 최신 폭. setColumns의 커밋을 기다리지 않는다
   const columnsRef = useRef(columns);
+  /** 화면에 실제로 적용된 폭. 드래그는 보이는 값에서 시작해야 손이 튀지 않는다 */
+  const effectiveRef = useRef(columns);
 
   const applyColumns = useCallback((next: ColumnWidths) => {
     columnsRef.current = next;
@@ -285,7 +338,7 @@ export function GraphView({
       dragRef.current = {
         column,
         startX: event.clientX,
-        startWidth: columnsRef.current[column],
+        startWidth: effectiveRef.current[column],
         // 왼쪽 경계는 끌수록 폭이 늘어야 하므로 부호를 뒤집는다
         sign: side === "right" ? 1 : -1,
       };
@@ -302,7 +355,6 @@ export function GraphView({
       const next = { ...columnsRef.current, [column]: DEFAULT_COLUMNS[column] };
       applyColumns(next);
       saveColumns(next);
-      setPillBranchWidth(next.branch);
     },
     [applyColumns],
   );
@@ -326,7 +378,6 @@ export function GraphView({
       dragRef.current = null;
       setResizing(null);
       saveColumns(columnsRef.current);
-      setPillBranchWidth(columnsRef.current.branch);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -358,7 +409,27 @@ export function GraphView({
 
   const rows = data.rows;
   const rowCount = rows.length;
-  const graphWidth = graphColumnWidth(data.laneCount);
+
+  // 컨테이너에 컬럼을 맞춘다. 행이 놓이는 실제 폭은 스크롤바를 뺀 값이고,
+  // 헤더는 같은 만큼 오른쪽 패딩을 받으므로 둘의 컬럼 위치가 일치한다
+  const layoutWidth = Math.max(0, size.width - scrollbarWidth);
+  const fit = useMemo(
+    () =>
+      fitColumns(
+        layoutWidth,
+        columns,
+        graphColumnWidth(data.laneCount),
+        graphColumnWidth(1),
+      ),
+    [layoutWidth, columns, data.laneCount],
+  );
+  const graphWidth = fit.graphWidth;
+  const hiddenMask = fit.hiddenMask;
+  const hideClass =
+    (hiddenMask & COLUMN_FLAG.branch ? " gl-hide-branch" : "") +
+    (hiddenMask & COLUMN_FLAG.author ? " gl-hide-author" : "") +
+    (hiddenMask & COLUMN_FLAG.sha ? " gl-hide-sha" : "") +
+    (hiddenMask & COLUMN_FLAG.date ? " gl-hide-date" : "");
 
   // 의사 행(WIP, 스태시)이 끼면 아래 커밋 행들의 화면 위치가 그만큼 밀린다.
   // 좌표 계산은 전부 화면 행 인덱스(display index) 기준이고 매핑은 pseudo.ts가 쥔다
@@ -387,6 +458,20 @@ export function GraphView({
     [highlight],
   );
   const totalHeight = displayCount * ROW_HEIGHT;
+
+  // 실제 적용 폭을 ref에 남긴다. 드래그 시작값과 pill 재계산이 이 값을 본다
+  useEffect(() => {
+    effectiveRef.current = fit.widths;
+  }, [fit]);
+
+  // pill 넘침 재계산은 드래그가 끝난 뒤에만 한다. 드래그 중 갱신하면 매 프레임
+  // 보이는 행 전부가 리렌더된다
+  useEffect(() => {
+    if (resizing !== null) {
+      return;
+    }
+    setPillBranchWidth(fit.widths.branch);
+  }, [resizing, fit.widths.branch]);
 
   // 부모 콜백이 매 렌더 새로 만들어져도 Row의 memo가 깨지지 않게 고정 참조로 감싼다
   const onSelectRef = useRef(onSelect);
@@ -633,6 +718,7 @@ export function GraphView({
             selected={pseudo.stash.sha === selectedSha}
             graphWidth={graphWidth}
             dimmed={isDimmed(pseudo.anchorRow)}
+            hiddenMask={hiddenMask}
             onSelect={handleSelect}
             onDoubleClick={handleDoubleClick}
             onContextMenu={handleContextMenu}
@@ -661,6 +747,7 @@ export function GraphView({
         graphWidth={graphWidth}
         branchWidth={pillBranchWidth}
         dimmed={isDimmed(rowIndex)}
+        hiddenMask={hiddenMask}
         onSelect={handleSelect}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
@@ -672,8 +759,8 @@ export function GraphView({
 
   return (
     <div
-      className={"gl-root" + (resizing !== null ? " gl-root-resizing" : "")}
-      style={columnStyle(columns)}
+      className={"gl-root" + (resizing !== null ? " gl-root-resizing" : "") + hideClass}
+      style={columnStyle(fit.widths)}
     >
       <div className="gl-header" style={{ paddingRight: scrollbarWidth }}>
         <div className="gl-cell gl-col-branch">
@@ -700,7 +787,11 @@ export function GraphView({
         <canvas
           ref={canvasRef}
           className="gl-canvas"
-          style={{ left: columns.branch, width: graphWidth, height: size.height }}
+          style={{
+            left: hiddenMask & COLUMN_FLAG.branch ? 0 : fit.widths.branch,
+            width: graphWidth,
+            height: size.height,
+          }}
         />
         <div
           className="gl-scroll"
