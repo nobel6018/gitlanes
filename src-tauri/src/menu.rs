@@ -1,7 +1,8 @@
 //! 네이티브 앱 메뉴와 단축키.
 //!
 //! macOS 기본 메뉴는 Close Window가 ⌘W를 선점해서, 탭을 닫으려는 ⌘W가 창을 닫아버린다.
-//! 기본 메뉴를 쓰지 않고 직접 구성해 Close Window를 ⌥⌘W로 옮기고 ⌘W를 Close Tab에 준다.
+//! 기본 메뉴를 쓰지 않고 직접 구성해 ⌘W를 Close Tab에 주고, Close Window는 단축키 없이
+//! 메뉴 클릭으로만 쓴다.
 //! 복사/붙여넣기처럼 웹뷰 입력에 필요한 항목은 표준 PredefinedMenuItem으로 유지한다.
 //!
 //! File 메뉴와 탭 이동 항목은 동작을 rust 쪽에서 하지 않고 웹뷰로 이벤트만 브로드캐스트한다.
@@ -54,16 +55,10 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some("CmdOrCtrl+W"),
     )?;
-    // PredefinedMenuItem::close_window는 단축키가 ⌘W로 고정이라 직접 만든다.
-    // ⇧⌘W는 muda/AppKit 경로에서 실제 키 입력에 반응하지 않는 것을 실측으로 확인해서
-    // Shift를 쓰지 않는 ⌥⌘W로 둔다. 자세한 내용은 fix_shift_accelerators 주석 참고.
-    let close_window = MenuItem::with_id(
-        app,
-        CLOSE_WINDOW_ID,
-        "Close Window",
-        true,
-        Some("Alt+CmdOrCtrl+W"),
-    )?;
+    // 단축키 없이 클릭으로만 창을 닫는다. ⌘W는 Close Tab이 쓰고, 대안이던 ⇧⌘W는
+    // muda/AppKit 경로에서 실제 키 입력에 반응하지 않는다(fix_shift_accelerators 주석 참고).
+    // 남은 조합을 억지로 붙이는 대신 accelerator를 두지 않는다.
+    let close_window = MenuItem::with_id(app, CLOSE_WINDOW_ID, "Close Window", true, None::<&str>)?;
     let refresh = MenuItem::with_id(app, "file:refresh", "Refresh", true, Some("CmdOrCtrl+R"))?;
 
     let after_open = PredefinedMenuItem::separator(app)?;
@@ -225,8 +220,9 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
 /// 않는 것을 확인했다. 같은 항목의 마우스 클릭은 정상이므로 muda/AppKit 경로에 아직
 /// 규명되지 않은 변수가 남아 있다.
 ///
-/// 그래서 **사용자 향 단축키에는 Shift 조합을 쓰지 않는다.** Close Window가 ⇧⌘W 대신
-/// ⌥⌘W인 이유다. 이 함수는 표준 항목 복구와 앞으로의 안전망으로만 남긴다.
+/// 그래서 **사용자 향 단축키에는 Shift 조합을 쓰지 않는다.** Close Window에 ⇧⌘W를 주지
+/// 못하고 accelerator 없이 둔 이유다. 이 함수는 표준 항목(Redo ⇧⌘Z) 복구와 앞으로의
+/// 안전망으로만 남긴다.
 #[cfg(target_os = "macos")]
 pub fn fix_shift_accelerators() {
     use objc2::MainThreadMarker;

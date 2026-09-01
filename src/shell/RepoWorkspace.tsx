@@ -1,7 +1,7 @@
 // 탭 하나의 작업 공간. 레포/그래프/선택/검색/사이드바 상태를 전부 여기서 들고 있다.
 // App은 이 컴포넌트를 탭마다 하나씩 마운트해두고 활성 탭만 보여준다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraphView } from "../graph";
@@ -21,7 +21,18 @@ import { BranchSidebar } from "./BranchSidebar";
 import { CommitDetailPanel } from "./CommitDetailPanel";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
+import {
+  DEFAULT_LAYOUT,
+  DETAIL_MIN,
+  detailMax,
+  readLayout,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
+  writeLayout,
+} from "./layout";
+import type { LayoutWidths } from "./layout";
 import { SearchBox } from "./SearchBox";
+import { SplitHandle } from "./SplitHandle";
 import { Toast } from "./Toast";
 import { Toolbar } from "./Toolbar";
 import { WelcomeScreen } from "./WelcomeScreen";
@@ -162,6 +173,7 @@ export function RepoWorkspace({
   const [toast, setToast] = useState<ToastState | null>(null);
   const [remoteUrl, setRemoteUrl] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [layout, setLayout] = useState<LayoutWidths>(readLayout);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
@@ -175,6 +187,8 @@ export function RepoWorkspace({
   const activeRef = useRef(active);
   const lastQuery = useRef("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  /** 드래그 중에는 이 엘리먼트의 CSS 변수만 갱신한다 (리렌더 없음) */
+  const mainRef = useRef<HTMLDivElement | null>(null);
   /** query -> search_commits 결과. Enter 연타에 재호출하지 않는다 */
   const searchCache = useRef(new Map<string, SearchMatch[]>());
   /** append 완료 후 점프할 sha */
@@ -646,6 +660,26 @@ export function RepoWorkspace({
     });
   }, []);
 
+  const previewWidth = useCallback((name: "sidebar" | "detail", width: number) => {
+    mainRef.current?.style.setProperty(`--${name}-w`, `${width}px`);
+  }, []);
+
+  const commitWidth = useCallback((name: "sidebar" | "detail", width: number) => {
+    setLayout((prev) => {
+      const next = { ...prev, [name]: width };
+      writeLayout(next);
+      return next;
+    });
+  }, []);
+
+  const resetWidth = useCallback(
+    (name: "sidebar" | "detail") => {
+      previewWidth(name, DEFAULT_LAYOUT[name]);
+      commitWidth(name, DEFAULT_LAYOUT[name]);
+    },
+    [previewWidth, commitWidth],
+  );
+
   const handleToggleSidebar = useCallback(() => {
     setSidebarOpen((prev) => {
       writeFlag(SIDEBAR_KEY, !prev);
@@ -709,14 +743,34 @@ export function RepoWorkspace({
       {banner}
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
-      <div className="main">
+      <div
+        className="main"
+        ref={mainRef}
+        style={
+          {
+            "--sidebar-w": `${layout.sidebar}px`,
+            "--detail-w": `${layout.detail}px`,
+          } as CSSProperties
+        }
+      >
         {sidebarOpen && (
-          <BranchSidebar
-            refs={refs}
-            loading={refsLoading}
-            selectedSha={selectedSha}
-            onSelectRef={handleSelectRef}
-          />
+          <>
+            <BranchSidebar
+              refs={refs}
+              loading={refsLoading}
+              selectedSha={selectedSha}
+              onSelectRef={handleSelectRef}
+            />
+            <SplitHandle
+              label="사이드바 폭 조절"
+              getWidth={() => layout.sidebar}
+              min={SIDEBAR_MIN}
+              max={() => SIDEBAR_MAX}
+              onPreview={(width) => previewWidth("sidebar", width)}
+              onCommit={(width) => commitWidth("sidebar", width)}
+              onReset={() => resetWidth("sidebar")}
+            />
+          </>
         )}
         <div className="graph-area">
           <GraphView
@@ -731,6 +785,18 @@ export function RepoWorkspace({
             onRowContextMenu={handleRowContextMenu}
           />
         </div>
+        {selectedSha !== null && (
+          <SplitHandle
+            label="상세 패널 폭 조절"
+            getWidth={() => layout.detail}
+            min={DETAIL_MIN}
+            max={detailMax}
+            invert
+            onPreview={(width) => previewWidth("detail", width)}
+            onCommit={(width) => commitWidth("detail", width)}
+            onReset={() => resetWidth("detail")}
+          />
+        )}
         {selectedSha !== null && (
           <CommitDetailPanel
             key={selectedSha}

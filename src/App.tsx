@@ -212,13 +212,8 @@ export default function App() {
       });
   }, [openInTab]);
 
-  // 빈 탭(웰컴 상태)은 앱 전체에 하나만 둔다. 이미 있으면 그 탭을 활성화한다
+  // GitKraken처럼 빈 탭도 여러 개 열 수 있다 (레포 중복 탭만 기존 탭으로 보낸다)
   const handleNewTab = useCallback(() => {
-    const empty = tabsRef.current.find((tab) => tab.path === null);
-    if (empty !== undefined) {
-      setActiveId(empty.id);
-      return;
-    }
     const created = makeTab(null);
     setTabs([...tabsRef.current, created]);
     setActiveId(created.id);
@@ -275,21 +270,12 @@ export default function App() {
     return true;
   }, []);
 
-  /**
-   * 메뉴 Open Repository…: 활성 탭이 빈 탭이면 거기서, 아니면 기존 빈 탭에서,
-   * 그것도 없을 때만 새 탭을 만들어 연다 (빈 탭은 앱 전체에 하나)
-   */
+  /** 메뉴 Open Repository…: 활성 탭이 빈 탭이면 거기서, 아니면 새 탭을 만들어 연다 */
   const handleMenuOpenRepo = useCallback(() => {
     const tabs = tabsRef.current;
     const active = tabs.find((tab) => tab.id === activeIdRef.current);
     if (active !== undefined && active.path === null) {
       bumpCommand(active.id, "open");
-      return;
-    }
-    const empty = tabs.find((tab) => tab.path === null);
-    if (empty !== undefined) {
-      setActiveId(empty.id);
-      bumpCommand(empty.id, "open");
       return;
     }
     const created = makeTab(null);
