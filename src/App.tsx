@@ -2,8 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { GraphView } from "./graph";
 import { COMMITS_PER_PAGE } from "./constants";
-import type { GraphData, RefEntry, RepoInfo } from "./types";
-import { errorMessage, getStartupRepo, listRefs, loadGraph, openRepo } from "./shell/api";
+import type { GraphData, RefEntry, RepoInfo, SearchMatch, WipInfo } from "./types";
+import {
+  errorMessage,
+  getRepoState,
+  getStartupRepo,
+  listRefs,
+  loadGraph,
+  openRepo,
+  searchCommits,
+} from "./shell/api";
+import { copyText } from "./shell/clipboard";
 import { BranchSidebar } from "./shell/BranchSidebar";
 import { CommitDetailPanel } from "./shell/CommitDetailPanel";
 import { SearchBox } from "./shell/SearchBox";
@@ -35,6 +44,18 @@ interface PageRequest {
 
 const FIRST_PAGE: PageRequest = { skip: 0, limit: COMMITS_PER_PAGE };
 
+/** 자동 새로고침 폴링 간격(ms) */
+const POLL_INTERVAL_MS = 5000;
+/** search_commits가 돌려줄 최대 매치 수 (계약 상한) */
+const GLOBAL_SEARCH_LIMIT = 500;
+
+function sameWip(a: WipInfo | null, b: WipInfo | null): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  return a.changedFiles === b.changedFiles && a.stagedFiles === b.stagedFiles;
+}
+
 function readFlag(key: string, fallback: boolean): boolean {
   try {
     const raw = localStorage.getItem(key);
@@ -58,6 +79,7 @@ function writeFlag(key: string, value: boolean): void {
 interface ToastState {
   id: number;
   message: string;
+  tone: "error" | "info";
 }
 
 /** nonce가 바뀔 때마다 GraphView가 해당 행을 뷰포트 중앙으로 스크롤한다 */
@@ -81,6 +103,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readFlag(SIDEBAR_KEY, true));
   const [query, setQuery] = useState("");
   const [matchIndex, setMatchIndex] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const [searchExhausted, setSearchExhausted] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [booting, setBooting] = useState(true);
 
@@ -93,13 +117,28 @@ export default function App() {
   const startupDone = useRef(false);
   const lastQuery = useRef("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  /** query -> search_commits 결과. Enter 연타에 재호출하지 않는다 */
+  const searchCache = useRef(new Map<string, SearchMatch[]>());
+  /** append 완료 후 점프할 sha */
+  const pendingJump = useRef<string | null>(null);
+  const rowCount = useRef(0);
+  const loadingRef = useRef(false);
+  const wipRef = useRef<WipInfo | null>(null);
 
   const data: GraphData = graph ?? EMPTY_GRAPH;
+  rowCount.current = data.rows.length;
+  loadingRef.current = graphLoading;
+  wipRef.current = data.wip;
 
-  const showError = useCallback((message: string) => {
+  const showToast = useCallback((message: string, tone: "error" | "info") => {
     toastSeq.current += 1;
-    setToast({ id: toastSeq.current, message });
+    setToast({ id: toastSeq.current, message, tone });
   }, []);
+
+  const showError = useCallback(
+    (message: string) => showToast(message, "error"),
+    [showToast],
+  );
 
   const dismissToast = useCallback(() => setToast(null), []);
 
@@ -183,6 +222,9 @@ export default function App() {
         setScrollTarget(null);
         setQuery("");
         lastQuery.current = "";
+        setSearchExhausted(false);
+        searchCache.current.clear();
+        pendingJump.current = null;
         setGraph(null);
         setRefs([]);
         setPage(FIRST_PAGE);
@@ -277,10 +319,25 @@ export default function App() {
     }
     lastQuery.current = query;
     setMatchIndex(0);
+    setSearchExhausted(false);
     if (matches.length > 0) {
       jumpTo(matches[0]);
     }
   }, [query, matches, jumpTo]);
+
+  // append가 끝나 목표 sha가 로드되면 그때 점프한다
+  useEffect(() => {
+    const sha = pendingJump.current;
+    if (sha === null || !loadedShas.has(sha)) {
+      return;
+    }
+    pendingJump.current = null;
+    const index = matches.indexOf(sha);
+    if (index >= 0) {
+      setMatchIndex(index);
+    }
+    jumpTo(sha);
+  }, [loadedShas, matches, jumpTo]);
 
   const gotoMatch = useCallback(
     (index: number) => {
@@ -294,12 +351,75 @@ export default function App() {
     [matches, jumpTo],
   );
 
-  const handleNextMatch = useCallback(() => gotoMatch(matchIndex + 1), [gotoMatch, matchIndex]);
+  /** 로컬 매치를 다 쓴 뒤 전체 히스토리에서 다음 매치를 찾아 그 지점까지 append 확장한다 */
+  const expandToGlobalMatch = useCallback(async () => {
+    if (repo === null) {
+      return;
+    }
+    const needle = query.trim();
+    if (needle === "") {
+      return;
+    }
+
+    let found = searchCache.current.get(needle);
+    if (found === undefined) {
+      setSearching(true);
+      try {
+        found = await searchCommits(repo.path, needle, GLOBAL_SEARCH_LIMIT);
+        searchCache.current.set(needle, found);
+      } catch (err) {
+        showError(errorMessage(err));
+        return;
+      } finally {
+        setSearching(false);
+      }
+    }
+
+    const loaded = rowCount.current;
+    const next = found.find((match) => match.index >= loaded);
+    if (next === undefined) {
+      // 전체에도 더 없다. 첫 매치로 순환한다
+      setSearchExhausted(true);
+      gotoMatch(0);
+      return;
+    }
+
+    pendingJump.current = next.sha;
+    setPage({ skip: loaded, limit: next.index + COMMITS_PER_PAGE });
+  }, [repo, query, gotoMatch, showError]);
+
+  const handleNextMatch = useCallback(() => {
+    if (query.trim() === "") {
+      return;
+    }
+    const atEnd = matches.length === 0 || matchIndex + 1 >= matches.length;
+    if (!atEnd) {
+      gotoMatch(matchIndex + 1);
+      return;
+    }
+    if (data.hasMore && !graphLoading && !searching) {
+      void expandToGlobalMatch();
+      return;
+    }
+    setSearchExhausted(true);
+    gotoMatch(0);
+  }, [
+    query,
+    matches.length,
+    matchIndex,
+    gotoMatch,
+    data.hasMore,
+    graphLoading,
+    searching,
+    expandToGlobalMatch,
+  ]);
   const handlePrevMatch = useCallback(() => gotoMatch(matchIndex - 1), [gotoMatch, matchIndex]);
 
   const handleClearSearch = useCallback(() => {
     setQuery("");
     setMatchIndex(0);
+    setSearchExhausted(false);
+    pendingJump.current = null;
   }, []);
 
   // ⌘F / Ctrl+F로 검색창 포커스
@@ -326,11 +446,53 @@ export default function App() {
     setPage({ skip, limit: skip + COMMITS_PER_PAGE });
   }, [graphLoading, data.hasMore, data.rows.length]);
 
-  // 새로고침은 언제나 skip=0 전체 리로드. 지금까지 불러온 깊이는 유지한다
-  const handleRefresh = useCallback(() => {
-    setPage({ skip: 0, limit: Math.max(COMMITS_PER_PAGE, data.rows.length) });
+  // 새로고침은 언제나 skip=0 전체 리로드. 지금까지 불러온 깊이는 유지한다.
+  // 수동 Refresh와 자동 새로고침이 같은 경로를 쓴다
+  const reloadFromStart = useCallback(() => {
+    setPage({ skip: 0, limit: Math.max(COMMITS_PER_PAGE, rowCount.current) });
     setReloadKey((k) => k + 1);
-  }, [data.rows.length]);
+  }, []);
+
+  // 자동 새로고침: 창이 포커스+가시 상태이고 로딩 중이 아닐 때만 5초마다 경량 폴링
+  useEffect(() => {
+    if (repo === null) {
+      return;
+    }
+    const path = repo.path;
+    const timer = window.setInterval(() => {
+      if (!document.hasFocus() || document.visibilityState !== "visible") {
+        return;
+      }
+      if (loadingRef.current) {
+        return;
+      }
+      getRepoState(path)
+        .then((state) => {
+          if (state.graphToken !== graphToken.current || !sameWip(state.wip, wipRef.current)) {
+            searchCache.current.clear();
+            reloadFromStart();
+          }
+        })
+        .catch(() => {
+          // 폴링 실패는 조용히 넘긴다. 다음 주기에 다시 시도한다
+        });
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [repo, reloadFromStart]);
+
+  /** 그래프 행 더블클릭 시 그 행의 sha를 복사한다 */
+  const handleRowDoubleClick = useCallback(
+    (sha: string) => {
+      void copyText(sha).then((ok) => {
+        if (ok) {
+          showToast(`sha 복사됨: ${shortSha(sha)}`, "info");
+          return;
+        }
+        showError("클립보드에 복사하지 못했습니다.");
+      });
+    },
+    [showToast, showError],
+  );
 
   const handleToggleTags = useCallback(() => {
     setShowTags((prev) => {
@@ -347,7 +509,9 @@ export default function App() {
   }, []);
 
   const toastNode =
-    toast === null ? null : <Toast key={toast.id} message={toast.message} onClose={dismissToast} />;
+    toast === null ? null : (
+      <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={dismissToast} />
+    );
 
   if (repo === null && booting) {
     return (
@@ -386,6 +550,8 @@ export default function App() {
             query={query}
             matchCount={matches.length}
             matchPosition={matches.length === 0 ? 0 : matchIndex + 1}
+            searching={searching}
+            exhausted={searchExhausted}
             inputRef={searchInputRef}
             onChange={setQuery}
             onNext={handleNextMatch}
@@ -399,7 +565,7 @@ export default function App() {
         showTags={showTags}
         onToggleTags={handleToggleTags}
         onOpen={handleBrowse}
-        onRefresh={handleRefresh}
+        onRefresh={reloadFromStart}
       />
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
@@ -421,6 +587,7 @@ export default function App() {
             loading={graphLoading}
             showTags={showTags}
             scrollTarget={scrollTarget}
+            onRowDoubleClick={handleRowDoubleClick}
           />
         </div>
         {selectedSha !== null && (

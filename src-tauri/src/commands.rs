@@ -1,4 +1,4 @@
-//! Tauri command 6개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
+//! Tauri command 8개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
 //!
 //! @see CONTRACTS.md
 
@@ -8,15 +8,27 @@ use crate::git;
 use crate::layout::assign_lanes;
 use crate::model::{
     short_sha, CommitDetails, CommitRow, FileChange, GraphData, RefEntry, RefInfo, RepoInfo,
-    Signature,
+    RepoState, SearchMatch, Signature,
 };
 use crate::parse::{
     graph_token, parse_commit_meta, parse_file_changes, parse_log, parse_ref_entries, parse_refs,
     parse_stashes, parse_status, LOG_FORMAT, META_FORMAT, STASH_FORMAT,
 };
+use crate::search::find_matches;
 
 /// for-each-ref 포맷. for-each-ref는 `%x1f`를 해석하지 않아 `%1f`를 쓴다.
 const REF_FORMAT: &str = "--format=%(objectname)%1f%(*objectname)%1f%(refname)%1f%(HEAD)";
+
+/// 모든 ref를 훑는 for-each-ref 인자. load_graph, list_refs, get_repo_state가 함께 쓴다.
+const REF_ARGS: [&str; 5] = [
+    "for-each-ref",
+    REF_FORMAT,
+    "refs/heads",
+    "refs/remotes",
+    "refs/tags",
+];
+const STATUS_ARGS: [&str; 3] = ["status", "--porcelain", "-z"];
+const HEAD_ARGS: [&str; 2] = ["rev-parse", "HEAD"];
 
 /// 저장소를 검증하고 루트 경로, 현재 브랜치, HEAD sha를 돌려준다.
 #[tauri::command]
@@ -84,57 +96,52 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
 
     // limit을 넘겼는지 알기 위해 한 개 더 요청한다
     let fetch = limit.saturating_add(1).to_string();
-    let log_out = git::run(
+    let log_args: [&str; 9] = [
+        "log",
+        "--branches",
+        "--remotes",
+        "--tags",
+        "HEAD",
+        "--topo-order",
+        "-n",
+        fetch.as_str(),
+        LOG_FORMAT,
+    ];
+    let stash_args: [&str; 3] = ["stash", "list", STASH_FORMAT];
+
+    // 다섯 호출은 서로 값을 주고받지 않아 동시에 돌린다. 가장 무거운 log가 벽시계를 지배한다.
+    let outputs = git::run_all(
         &path,
         &[
-            "log",
-            "--branches",
-            "--remotes",
-            "--tags",
-            "HEAD",
-            "--topo-order",
-            "-n",
-            fetch.as_str(),
-            LOG_FORMAT,
+            &log_args[..],
+            &REF_ARGS[..],
+            &HEAD_ARGS[..],
+            &STATUS_ARGS[..],
+            &stash_args[..],
         ],
-    )
-    .map_err(|e| format!("커밋 목록을 읽지 못했습니다: {e}"))?;
+    );
+    let [log_out, ref_out, head_out, status_out, stash_out] =
+        <[_; 5]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
 
+    let log_out = log_out.map_err(|e| format!("커밋 목록을 읽지 못했습니다: {e}"))?;
     let mut commits = parse_log(&log_out)?;
     let has_more = commits.len() > limit;
     commits.truncate(limit);
     let total_loaded = commits.len();
 
-    let ref_out = git::run(
-        &path,
-        &[
-            "for-each-ref",
-            REF_FORMAT,
-            "refs/heads",
-            "refs/remotes",
-            "refs/tags",
-        ],
-    )
-    .unwrap_or_default();
     // for-each-ref 결과 하나로 refs 맵과 지문을 함께 만든다 (git 호출 추가 없음)
+    let ref_out = ref_out.unwrap_or_default();
     let ref_entries = parse_ref_entries(&ref_out);
     let mut refs_by_sha = parse_refs(&ref_out);
 
-    let head_sha = git::run(&path, &["rev-parse", "HEAD"])
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-
+    let head_sha = head_out.map(|s| s.trim().to_string()).unwrap_or_default();
     let token = graph_token(&ref_entries, &head_sha);
 
     // status가 실패해도(잠긴 인덱스 등) 그래프는 보여준다
-    let wip = git::run(&path, &["status", "--porcelain", "-z"])
-        .ok()
-        .and_then(|out| parse_status(&out));
+    let wip = status_out.ok().and_then(|out| parse_status(&out));
 
     // 스태시가 없거나 명령이 실패하면 빈 배열이다
-    let stashes = git::run(&path, &["stash", "list", STASH_FORMAT])
-        .map(|out| parse_stashes(&out))
-        .unwrap_or_default();
+    let stashes = stash_out.map(|out| parse_stashes(&out)).unwrap_or_default();
 
     let layout = assign_lanes(&commits);
 
@@ -177,19 +184,61 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
 /// git 호출은 for-each-ref 1회다.
 #[tauri::command]
 pub fn list_refs(path: String) -> Result<Vec<RefEntry>, String> {
-    let out = git::run(
-        &path,
-        &[
-            "for-each-ref",
-            REF_FORMAT,
-            "refs/heads",
-            "refs/remotes",
-            "refs/tags",
-        ],
-    )
-    .map_err(|e| format!("ref 목록을 읽지 못했습니다: {e}"))?;
+    let out = git::run(&path, &REF_ARGS).map_err(|e| format!("ref 목록을 읽지 못했습니다: {e}"))?;
 
     Ok(parse_ref_entries(&out))
+}
+
+/// 전체 히스토리에서 커밋을 찾는다. 로드된 행 범위와 무관하다.
+///
+/// 레이아웃은 계산하지 않고 log를 파싱만 한다. `index`는 `load_graph`와 같은 topo 순서의
+/// 행 번호라 프론트가 그 깊이까지 추가 로드한 뒤 점프하면 된다.
+/// 결과는 최대 [`crate::search::MAX_RESULTS`]개다.
+#[tauri::command]
+pub fn search_commits(
+    path: String,
+    query: String,
+    limit: usize,
+) -> Result<Vec<SearchMatch>, String> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // load_graph와 같은 ref 집합, 같은 정렬이라 index가 그대로 대응한다. -n만 없다
+    let log_out = git::run(
+        &path,
+        &[
+            "log",
+            "--branches",
+            "--remotes",
+            "--tags",
+            "HEAD",
+            "--topo-order",
+            LOG_FORMAT,
+        ],
+    )
+    .map_err(|e| format!("커밋을 검색하지 못했습니다: {e}"))?;
+
+    let commits = parse_log(&log_out)?;
+    Ok(find_matches(&commits, &query, limit))
+}
+
+/// 자동 새로고침 폴링용 경량 상태. log를 읽지 않아 대형 저장소에서도 싸다.
+/// git 호출은 for-each-ref, rev-parse, status 3회이고 동시에 돌린다.
+#[tauri::command]
+pub fn get_repo_state(path: String) -> Result<RepoState, String> {
+    let outputs = git::run_all(&path, &[&REF_ARGS[..], &HEAD_ARGS[..], &STATUS_ARGS[..]]);
+    let [ref_out, head_out, status_out] =
+        <[_; 3]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
+
+    // 저장소 자체가 아니면 for-each-ref가 실패한다. 폴링이 조용히 성공하면 안 된다
+    let ref_out = ref_out.map_err(|e| format!("저장소 상태를 읽지 못했습니다: {e}"))?;
+    let head_sha = head_out.map(|s| s.trim().to_string()).unwrap_or_default();
+
+    Ok(RepoState {
+        graph_token: graph_token(&parse_ref_entries(&ref_out), &head_sha),
+        wip: status_out.ok().and_then(|out| parse_status(&out)),
+    })
 }
 
 /// 커밋 메타데이터와 변경 파일 목록을 돌려준다. git 호출은 2회다.
@@ -762,6 +811,96 @@ mod integration_tests {
         let empty =
             get_file_diff(repo.path(), "HEAD".to_string(), "m.txt".to_string(), None).unwrap();
         assert!(empty.trim().is_empty(), "{empty}");
+    }
+
+    #[test]
+    fn search_commits는_전체_히스토리를_훑고_topo_index를_돌려준다() {
+        let repo = fixture();
+        let full = load_graph(repo.path(), 100, 0).unwrap();
+
+        // 로드 범위를 1행으로 좁혀도 전체에서 찾는다
+        let hits = search_commits(repo.path(), "root".to_string(), 0).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].index, 4, "루트 커밋은 topo 순서 마지막이다");
+        assert_eq!(hits[0].sha, full.rows[4].sha);
+
+        // index+1까지 로드하면 실제로 그 행이 존재한다
+        let page = load_graph(repo.path(), hits[0].index + 1, 0).unwrap();
+        assert_eq!(page.rows[hits[0].index].sha, hits[0].sha);
+    }
+
+    #[test]
+    fn search_commits는_대소문자와_한글과_sha_prefix를_모두_다룬다() {
+        let repo = fixture();
+        let head = repo.rev("HEAD");
+
+        // subject 대소문자 무시 (공백이 낀 구절도 그대로)
+        let shouting = search_commits(repo.path(), "MERGE FEATURE".to_string(), 0).unwrap();
+        assert_eq!(shouting.len(), 1, "subject가 'Merge feature'다");
+        assert_eq!(shouting[0].index, 0);
+
+        let hits = search_commits(repo.path(), "merge".to_string(), 0).unwrap();
+        assert_eq!(hits, shouting);
+
+        // author 이름(한글)
+        let by_author = search_commits(repo.path(), "테스터".to_string(), 0).unwrap();
+        assert_eq!(by_author.len(), 5, "모든 커밋의 author가 테스터다");
+
+        // sha prefix
+        let by_sha = search_commits(repo.path(), head[..8].to_uppercase(), 0).unwrap();
+        assert_eq!(by_sha.len(), 1);
+        assert_eq!(by_sha[0].sha, head);
+    }
+
+    #[test]
+    fn search_commits는_빈_질의와_무매치를_빈_목록으로_돌려준다() {
+        let repo = fixture();
+        assert!(search_commits(repo.path(), "   ".to_string(), 0)
+            .unwrap()
+            .is_empty());
+        assert!(search_commits(repo.path(), "없는문구".to_string(), 0)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn search_commits는_limit으로_결과를_줄인다() {
+        let repo = fixture();
+        let all = search_commits(repo.path(), "테스터".to_string(), 0).unwrap();
+        assert_eq!(all.len(), 5);
+
+        let capped = search_commits(repo.path(), "테스터".to_string(), 2).unwrap();
+        assert_eq!(capped.len(), 2);
+        assert_eq!(capped[0], all[0], "앞에서부터 자른다");
+        assert_eq!(capped[1], all[1]);
+    }
+
+    #[test]
+    fn get_repo_state는_load_graph와_같은_지문과_wip을_돌려준다() {
+        let repo = fixture();
+        let graph = load_graph(repo.path(), 100, 0).unwrap();
+        let state = get_repo_state(repo.path()).unwrap();
+
+        assert_eq!(state.graph_token, graph.graph_token);
+        assert_eq!(state.wip, graph.wip);
+        assert_eq!(state.wip, None, "깨끗한 저장소다");
+
+        // 작업 트리가 더러워지면 wip만 바뀐다
+        repo.write("m.txt", "m\ndirty\n");
+        let dirty = get_repo_state(repo.path()).unwrap();
+        assert_eq!(dirty.graph_token, state.graph_token, "refs는 그대로다");
+        assert_eq!(dirty.wip.unwrap().changed_files, 1);
+
+        // 브랜치가 생기면 지문이 바뀐다
+        repo.git(&["branch", "polling"]);
+        let branched = get_repo_state(repo.path()).unwrap();
+        assert_ne!(branched.graph_token, state.graph_token);
+    }
+
+    #[test]
+    fn get_repo_state는_저장소가_아니면_오류다() {
+        let err = get_repo_state("/definitely/not/a/repo/gitlanes".to_string()).unwrap_err();
+        assert!(err.contains("저장소 상태를 읽지 못했습니다"), "{err}");
     }
 
     #[test]

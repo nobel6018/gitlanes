@@ -50,7 +50,20 @@ impl ColorPicker {
         }
     }
 
-    fn acquire(&mut self) -> usize {
+    /// `blocked`(좌우 인접 레인의 색)와 겹치지 않는 후보를 우선 고른다.
+    ///
+    /// 후보 순서(미사용 색 먼저, 그다음 반납 FIFO)는 그대로 두고 충돌하는 것만 건너뛴다.
+    /// 후보가 전부 겹치거나 색풀이 비면 기존 규칙으로 떨어진다.
+    fn acquire_avoiding(&mut self, blocked: &[usize]) -> usize {
+        if let Some(position) = self
+            .available
+            .iter()
+            .position(|color| !blocked.contains(color))
+        {
+            if let Some(color) = self.available.remove(position) {
+                return color;
+            }
+        }
         if let Some(color) = self.available.pop_front() {
             return color;
         }
@@ -151,6 +164,21 @@ impl Lanes {
         Some(slot)
     }
 
+    /// 바로 왼쪽과 오른쪽 레인의 색. 새 레인 색을 고를 때 피할 대상이다.
+    ///
+    /// 빈 슬롯은 왼쪽부터 곧바로 재사용되므로 사이가 비는 일이 드물다. 멀리까지 훑으면
+    /// 커밋당 O(레인 수)가 되살아나서 바로 옆 두 칸만 본다.
+    fn neighbor_colors(&self, index: usize) -> Vec<usize> {
+        let mut colors = Vec::with_capacity(2);
+        if let Some(left) = index.checked_sub(1).and_then(|left| self.slot(left)) {
+            colors.push(left.color);
+        }
+        if let Some(right) = self.slot(index + 1) {
+            colors.push(right.color);
+        }
+        colors
+    }
+
     /// 끝쪽 빈 슬롯을 잘라 lane_count가 부풀지 않게 한다.
     fn trim(&mut self) {
         while matches!(self.slots.last(), Some(None)) {
@@ -185,7 +213,11 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
             Some(&first) => (first, lanes.slot(first).unwrap().color),
             // 기다리는 레인이 없으면 새 브랜치 tip이다.
             // alloc은 빈 슬롯만 건드리므로 아래 band 계산(활성 레인만 훑는다)에 영향이 없다.
-            None => (lanes.alloc(), picker.acquire()),
+            None => {
+                let index = lanes.alloc();
+                let color = picker.acquire_avoiding(&lanes.neighbor_colors(index));
+                (index, color)
+            }
         };
 
         // 직전 row의 band는 이번 커밋의 레인을 알아야 확정된다.
@@ -223,7 +255,7 @@ pub fn assign_lanes(commits: &[RawCommit]) -> LayoutResult {
                 }
                 None => {
                     let index = lanes.alloc();
-                    let new_color = picker.acquire();
+                    let new_color = picker.acquire_avoiding(&lanes.neighbor_colors(index));
                     lanes.set(index, parent.clone(), new_color);
                     origins.push((index, lane));
                 }
@@ -499,17 +531,90 @@ mod tests {
     }
 
     #[test]
+    fn 새_레인_색은_좌우_인접_레인_색을_피한다() {
+        // 레인 0, 1, 2가 동시에 살아 있는 구간을 만든다
+        let commits = [
+            commit("A", &["A1"]),
+            commit("B", &["B1"]),
+            commit("C", &["C1"]),
+            commit("A1", &[]),
+            commit("B1", &[]),
+            commit("C1", &[]),
+        ];
+        let result = assign_lanes(&commits);
+        assert_eq!(result.lane_count, 3);
+
+        let colors: Vec<usize> = result.rows[..3].iter().map(|r| r.color).collect();
+        assert_eq!(colors, vec![0, 1, 2]);
+
+        // 이웃한 레인끼리 색이 겹치지 않는다
+        assert_ne!(colors[0], colors[1]);
+        assert_ne!(colors[1], colors[2]);
+    }
+
+    #[test]
+    fn 반납된_색이_인접_레인과_겹치면_다음_후보를_쓴다() {
+        let mut picker = ColorPicker::new();
+        // 색풀을 반납분만 남게 만든다
+        let taken: Vec<usize> = (0..COLOR_COUNT)
+            .map(|_| picker.acquire_avoiding(&[]))
+            .collect();
+        assert_eq!(taken, (0..COLOR_COUNT).collect::<Vec<_>>());
+
+        picker.release(3);
+        picker.release(6);
+
+        // 앞 후보(3)가 인접색이면 건너뛰고 6을 쓴다
+        assert_eq!(picker.acquire_avoiding(&[3]), 6);
+        // 남은 후보는 3뿐이라 인접해도 그대로 쓴다
+        assert_eq!(picker.acquire_avoiding(&[3]), 3);
+    }
+
+    #[test]
+    fn 후보가_전부_인접색이면_기존_순서를_따른다() {
+        let mut picker = ColorPicker::new();
+        // 후보 전체를 막으면 맨 앞(0)이 나온다
+        let all: Vec<usize> = (0..COLOR_COUNT).collect();
+        assert_eq!(picker.acquire_avoiding(&all), 0);
+        assert_eq!(picker.acquire_avoiding(&all), 1);
+    }
+
+    #[test]
+    fn 새_레인이_왼쪽_빈_슬롯을_재사용해도_인접색을_피한다() {
+        // 레인 0(색 0)과 레인 2(색 2)가 살아 있고 레인 1이 비는 상황을 만든다
+        let commits = [
+            commit("A", &["A1"]), // 레인 0
+            commit("B", &[]),     // 레인 1, 바로 종료해 슬롯을 비운다
+            commit("C", &["C1"]), // 레인 1 재사용... 이 아니라 새 tip
+        ];
+        let result = assign_lanes(&commits);
+        // B가 끝나면서 레인 1이 비고, C가 그 자리를 다시 쓴다
+        assert_eq!(
+            result.rows.iter().map(|r| r.lane).collect::<Vec<_>>(),
+            vec![0, 1, 1]
+        );
+        // 왼쪽 이웃(레인 0)의 색과는 달라야 한다
+        assert_ne!(result.rows[2].color, result.rows[0].color);
+    }
+
+    #[test]
     fn color_picker는_미사용_색을_먼저_쓰고_반납된_색을_재활용한다() {
         let mut picker = ColorPicker::new();
-        let first: Vec<usize> = (0..COLOR_COUNT).map(|_| picker.acquire()).collect();
+        let first: Vec<usize> = (0..COLOR_COUNT)
+            .map(|_| picker.acquire_avoiding(&[]))
+            .collect();
         assert_eq!(first, (0..COLOR_COUNT).collect::<Vec<_>>());
 
         picker.release(4);
-        assert_eq!(picker.acquire(), 4, "반납된 색이 다음 새 레인에 쓰인다");
+        assert_eq!(
+            picker.acquire_avoiding(&[]),
+            4,
+            "반납된 색이 다음 새 레인에 쓰인다"
+        );
 
         // 색풀이 비면 0부터 순환한다
-        assert_eq!(picker.acquire(), 0);
-        assert_eq!(picker.acquire(), 1);
+        assert_eq!(picker.acquire_avoiding(&[]), 0);
+        assert_eq!(picker.acquire_avoiding(&[]), 1);
     }
 
     #[test]

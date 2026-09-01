@@ -1,16 +1,20 @@
 // GitKraken 스타일 커밋 테이블. 가상 스크롤 + 단일 캔버스 그래프.
 // 접점 계약: CONTRACTS.md의 "GraphView 컴포넌트" 절. GraphViewProps는 동결이다.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, ReactNode } from "react";
+import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { ROW_HEIGHT } from "../constants";
 import type { CommitRow, GraphData, StashInfo, WipInfo } from "../types";
 import { drawGraph } from "./canvas";
 import { buildPseudoLayout } from "./pseudo";
 import {
-  AUTHOR_COL_WIDTH,
-  BRANCH_COL_WIDTH,
-  DATE_COL_WIDTH,
-  SHA_COL_WIDTH,
+  DEFAULT_COLUMNS,
+  clampColumnWidth,
+  columnStyle,
+  loadColumns,
+  saveColumns,
+} from "./columns";
+import type { ColumnKey, ColumnWidths } from "./columns";
+import {
   authorColorIndex,
   authorInitials,
   formatDate,
@@ -31,6 +35,11 @@ export interface GraphViewProps {
   showTags: boolean;
   /** nonce가 바뀔 때마다 해당 sha 행을 뷰포트 중앙으로 스크롤. 목록에 없으면 무시 */
   scrollTarget: { sha: string; nonce: number } | null;
+  /**
+   * 커밋 행과 스태시 행 더블클릭 시 sha를 그대로 넘긴다(WIP 행 제외).
+   * 의미(체크아웃, 복사 등)는 shell이 정한다. onSelect 2회와 함께 발생한다
+   */
+  onRowDoubleClick?: (sha: string) => void;
 }
 
 /** 보이는 범위 위아래로 더 그려두는 행 수 */
@@ -49,7 +58,10 @@ interface RowProps {
   selected: boolean;
   showTags: boolean;
   graphWidth: number;
+  /** pill 넘침 판정용. 드래그가 끝난 뒤에만 갱신돼서 드래그 중 memo가 유지된다 */
+  branchWidth: number;
   onSelect: (sha: string) => void;
+  onDoubleClick: (sha: string) => void;
 }
 
 const Row = memo(function Row({
@@ -58,7 +70,9 @@ const Row = memo(function Row({
   selected,
   showTags,
   graphWidth,
+  branchWidth,
   onSelect,
+  onDoubleClick,
 }: RowProps) {
   const className =
     "gl-row" + (selected ? " gl-row-selected" : "") + (row.isHead ? " gl-row-head" : "");
@@ -68,19 +82,21 @@ const Row = memo(function Row({
       className={className}
       style={{ top, height: ROW_HEIGHT }}
       onClick={() => onSelect(row.sha)}
+      onDoubleClick={() => onDoubleClick(row.sha)}
     >
-      <div
-        className="gl-cell gl-cell-branch"
-        style={{ width: BRANCH_COL_WIDTH }}
-        title={refsTitle(row.refs, showTags)}
-      >
-        <RefPills refs={row.refs} laneColor={laneColor(row.color)} showTags={showTags} />
+      <div className="gl-cell gl-col-branch gl-cell-branch" title={refsTitle(row.refs, showTags)}>
+        <RefPills
+          refs={row.refs}
+          laneColor={laneColor(row.color)}
+          showTags={showTags}
+          branchWidth={branchWidth}
+        />
       </div>
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
       <div className="gl-cell gl-cell-message" title={row.subject}>
         {row.subject}
       </div>
-      <div className="gl-cell gl-cell-author" style={{ width: AUTHOR_COL_WIDTH }} title={row.author}>
+      <div className="gl-cell gl-col-author gl-cell-author" title={row.author}>
         <span
           className="gl-avatar"
           style={{
@@ -92,10 +108,10 @@ const Row = memo(function Row({
         </span>
         <span className="gl-author-name">{row.author}</span>
       </div>
-      <div className="gl-cell gl-cell-sha" style={{ width: SHA_COL_WIDTH }}>
+      <div className="gl-cell gl-col-sha gl-cell-sha">
         {row.shortSha.slice(0, SHA_DISPLAY_LENGTH)}
       </div>
-      <div className="gl-cell gl-cell-date" style={{ width: DATE_COL_WIDTH }}>
+      <div className="gl-cell gl-col-date gl-cell-date">
         {formatDate(row.timestamp)}
       </div>
     </div>
@@ -114,14 +130,14 @@ function WipRow({
 }) {
   return (
     <div className="gl-row gl-row-pseudo gl-row-wip" style={{ top, height: ROW_HEIGHT }}>
-      <div className="gl-cell" style={{ width: BRANCH_COL_WIDTH }} />
+      <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
       <div className="gl-cell gl-cell-message">
         {`// WIP \u2014 ${wip.changedFiles} changed files (${wip.stagedFiles} staged)`}
       </div>
-      <div className="gl-cell" style={{ width: AUTHOR_COL_WIDTH }} />
-      <div className="gl-cell" style={{ width: SHA_COL_WIDTH }} />
-      <div className="gl-cell" style={{ width: DATE_COL_WIDTH }} />
+      <div className="gl-cell gl-col-author" />
+      <div className="gl-cell gl-col-sha" />
+      <div className="gl-cell gl-col-date" />
     </div>
   );
 }
@@ -133,32 +149,63 @@ function StashRow({
   selected,
   graphWidth,
   onSelect,
+  onDoubleClick,
 }: {
   stash: StashInfo;
   top: number;
   selected: boolean;
   graphWidth: number;
   onSelect: (sha: string) => void;
+  onDoubleClick: (sha: string) => void;
 }) {
   return (
     <div
       className={"gl-row gl-row-pseudo" + (selected ? " gl-row-selected" : "")}
       style={{ top, height: ROW_HEIGHT }}
       onClick={() => onSelect(stash.sha)}
+      onDoubleClick={() => onDoubleClick(stash.sha)}
     >
-      <div className="gl-cell" style={{ width: BRANCH_COL_WIDTH }} />
+      <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
       <div className="gl-cell gl-cell-message" title={stash.message}>
         {`\u2261 ${stash.message}`}
       </div>
-      <div className="gl-cell" style={{ width: AUTHOR_COL_WIDTH }} />
-      <div className="gl-cell gl-cell-sha" style={{ width: SHA_COL_WIDTH }}>
+      <div className="gl-cell gl-col-author" />
+      <div className="gl-cell gl-col-sha gl-cell-sha">
         {stash.shortSha.slice(0, SHA_DISPLAY_LENGTH)}
       </div>
-      <div className="gl-cell gl-cell-date" style={{ width: DATE_COL_WIDTH }}>
+      <div className="gl-cell gl-col-date gl-cell-date">
         {formatDate(stash.timestamp)}
       </div>
     </div>
+  );
+}
+
+/**
+ * 컬럼 경계 드래그 핸들. MESSAGE가 flex라 BRANCH는 오른쪽 경계를,
+ * AUTHOR/SHA/DATE는 왼쪽 경계를 잡는다. 어느 쪽이든 MESSAGE 반대 방향으로 끌면 넓어진다.
+ */
+function Resizer({
+  column,
+  side,
+  active,
+  onStart,
+  onReset,
+}: {
+  column: ColumnKey;
+  side: "left" | "right";
+  active: boolean;
+  onStart: (column: ColumnKey, side: "left" | "right", event: PointerEvent<HTMLDivElement>) => void;
+  onReset: (column: ColumnKey) => void;
+}) {
+  return (
+    <div
+      className={
+        `gl-resizer gl-resizer-${side}` + (active ? " gl-resizer-active" : "")
+      }
+      onPointerDown={(event) => onStart(column, side, event)}
+      onDoubleClick={() => onReset(column)}
+    />
   );
 }
 
@@ -170,6 +217,7 @@ export function GraphView({
   loading,
   showTags,
   scrollTarget,
+  onRowDoubleClick,
 }: GraphViewProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -184,6 +232,84 @@ export function GraphView({
   const [size, setSize] = useState({ width: 0, height: 0 });
   /** 스크롤바가 차지하는 실제 폭. macOS 오버레이 스크롤바면 0이라 헤더가 그대로다 */
   const [scrollbarWidth, setScrollbarWidth] = useState(0);
+
+  const [columns, setColumns] = useState<ColumnWidths>(loadColumns);
+  const [resizing, setResizing] = useState<ColumnKey | null>(null);
+  /**
+   * pill 넘침 판정에 쓰는 BRANCH 폭. 드래그가 끝날 때만 갱신한다.
+   * 매 프레임 갱신하면 Row prop이 바뀌어 memo가 깨지고 보이는 행 전부가 리렌더된다
+   */
+  const [pillBranchWidth, setPillBranchWidth] = useState(columns.branch);
+  const dragRef = useRef<{ column: ColumnKey; startX: number; startWidth: number; sign: number } | null>(
+    null,
+  );
+  // 포인터 이벤트에서 동기적으로 읽고 쓰는 최신 폭. setColumns의 커밋을 기다리지 않는다
+  const columnsRef = useRef(columns);
+
+  const applyColumns = useCallback((next: ColumnWidths) => {
+    columnsRef.current = next;
+    setColumns(next);
+  }, []);
+
+  const startResize = useCallback(
+    (column: ColumnKey, side: "left" | "right", event: PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dragRef.current = {
+        column,
+        startX: event.clientX,
+        startWidth: columnsRef.current[column],
+        // 왼쪽 경계는 끌수록 폭이 늘어야 하므로 부호를 뒤집는다
+        sign: side === "right" ? 1 : -1,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setResizing(column);
+    },
+    [],
+  );
+
+  const resetColumn = useCallback(
+    (column: ColumnKey) => {
+      dragRef.current = null;
+      setResizing(null);
+      const next = { ...columnsRef.current, [column]: DEFAULT_COLUMNS[column] };
+      applyColumns(next);
+      saveColumns(next);
+      setPillBranchWidth(next.branch);
+    },
+    [applyColumns],
+  );
+
+  // 포인터가 헤더 밖으로 나가도 드래그가 이어지도록 window에서 받는다
+  useEffect(() => {
+    if (resizing === null) {
+      return;
+    }
+    const onMove = (event: globalThis.PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) {
+        return;
+      }
+      const width = clampColumnWidth(drag.startWidth + drag.sign * (event.clientX - drag.startX));
+      if (columnsRef.current[drag.column] !== width) {
+        applyColumns({ ...columnsRef.current, [drag.column]: width });
+      }
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      setResizing(null);
+      saveColumns(columnsRef.current);
+      setPillBranchWidth(columnsRef.current.branch);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [resizing, applyColumns]);
 
   const measure = useCallback(() => {
     const body = bodyRef.current;
@@ -230,6 +356,14 @@ export function GraphView({
     onSelectRef.current = onSelect;
   }, [onSelect]);
   const handleSelect = useCallback((sha: string) => onSelectRef.current(sha), []);
+
+  const onDoubleClickRef = useRef(onRowDoubleClick);
+  useEffect(() => {
+    onDoubleClickRef.current = onRowDoubleClick;
+  }, [onRowDoubleClick]);
+  const handleDoubleClick = useCallback((sha: string) => {
+    onDoubleClickRef.current?.(sha);
+  }, []);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -445,6 +579,7 @@ export function GraphView({
             selected={pseudo.stash.sha === selectedSha}
             graphWidth={graphWidth}
             onSelect={handleSelect}
+            onDoubleClick={handleDoubleClick}
           />
         ) : (
           <WipRow key={pseudo.key} wip={pseudo.wip} top={top} graphWidth={graphWidth} />
@@ -461,7 +596,9 @@ export function GraphView({
         selected={row.sha === selectedSha}
         showTags={showTags}
         graphWidth={graphWidth}
+        branchWidth={pillBranchWidth}
         onSelect={handleSelect}
+        onDoubleClick={handleDoubleClick}
       />,
     );
   }
@@ -469,20 +606,27 @@ export function GraphView({
   const showFooter = loading || data.hasMore;
 
   return (
-    <div className="gl-root">
+    <div
+      className={"gl-root" + (resizing !== null ? " gl-root-resizing" : "")}
+      style={columnStyle(columns)}
+    >
       <div className="gl-header" style={{ paddingRight: scrollbarWidth }}>
-        <div className="gl-cell" style={{ width: BRANCH_COL_WIDTH }}>
+        <div className="gl-cell gl-col-branch">
           Branch / Tag
+          <Resizer column="branch" side="right" active={resizing === "branch"} onStart={startResize} onReset={resetColumn} />
         </div>
         <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
         <div className="gl-cell gl-cell-message">Message</div>
-        <div className="gl-cell" style={{ width: AUTHOR_COL_WIDTH }}>
+        <div className="gl-cell gl-col-author">
+          <Resizer column="author" side="left" active={resizing === "author"} onStart={startResize} onReset={resetColumn} />
           Author
         </div>
-        <div className="gl-cell" style={{ width: SHA_COL_WIDTH }}>
+        <div className="gl-cell gl-col-sha">
+          <Resizer column="sha" side="left" active={resizing === "sha"} onStart={startResize} onReset={resetColumn} />
           Sha
         </div>
-        <div className="gl-cell" style={{ width: DATE_COL_WIDTH }}>
+        <div className="gl-cell gl-col-date">
+          <Resizer column="date" side="left" active={resizing === "date"} onStart={startResize} onReset={resetColumn} />
           Date
         </div>
       </div>
@@ -491,7 +635,7 @@ export function GraphView({
         <canvas
           ref={canvasRef}
           className="gl-canvas"
-          style={{ left: BRANCH_COL_WIDTH, width: graphWidth, height: size.height }}
+          style={{ left: columns.branch, width: graphWidth, height: size.height }}
         />
         <div
           className="gl-scroll"

@@ -47,6 +47,37 @@ where
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// 여러 git 호출을 동시에 실행한다.
+///
+/// `load_graph`가 쓰는 log, for-each-ref, rev-parse, status, stash list는 서로 값을 주고받지
+/// 않아 순차로 돌릴 이유가 없다. 전부 읽기 전용이고 `--no-optional-locks`라 인덱스 잠금도
+/// 건드리지 않는다. 결과는 넘긴 순서 그대로 돌아온다.
+pub fn run_all<P, S>(repo: P, commands: &[&[S]]) -> Vec<Result<String, String>>
+where
+    P: AsRef<OsStr> + Sync,
+    S: AsRef<OsStr> + Sync,
+{
+    if commands.len() <= 1 {
+        return commands.iter().map(|args| run(&repo, args)).collect();
+    }
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = commands
+            .iter()
+            .map(|args| scope.spawn(|| run(&repo, args)))
+            .collect();
+
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("git 호출 중 내부 오류가 발생했습니다".to_string()))
+            })
+            .collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +89,31 @@ mod tests {
         if let Err(message) = err {
             assert!(!message.is_empty());
         }
+    }
+
+    #[test]
+    fn run_all은_넘긴_순서대로_결과를_돌려준다() {
+        let results = run_all(
+            ".",
+            &[
+                &["--version"] as &[&str],
+                &["rev-parse", "--is-inside-work-tree"],
+                &["--version"],
+            ],
+        );
+        assert_eq!(results.len(), 3);
+        assert!(results[0].as_ref().unwrap().starts_with("git version"));
+        assert!(results[2].as_ref().unwrap().starts_with("git version"));
+    }
+
+    #[test]
+    fn run_all은_실패한_호출만_오류로_남긴다() {
+        let results = run_all(
+            ".",
+            &[&["--version"] as &[&str], &["definitely-not-a-git-command"]],
+        );
+        assert!(results[0].is_ok());
+        assert!(results[1].is_err());
     }
 
     #[test]

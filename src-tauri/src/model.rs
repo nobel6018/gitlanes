@@ -108,6 +108,25 @@ pub struct GraphData {
     pub stashes: Vec<StashInfo>,
 }
 
+/// `search_commits` 응답 항목.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchMatch {
+    pub sha: String,
+    /// load_graph와 같은 topo 순서에서의 행 인덱스.
+    /// 프론트는 이 값+1 이상으로 limit을 늘려 그 행을 로드한다
+    pub index: usize,
+}
+
+/// `get_repo_state` 응답. 자동 새로고침 폴링용이라 log를 읽지 않는다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoState {
+    /// `GraphData.graph_token`과 같은 refs 지문
+    pub graph_token: String,
+    pub wip: Option<WipInfo>,
+}
+
 /// `list_refs` 응답 항목. 사이드바용이라 로드된 커밋 범위와 무관하게 전체를 담는다.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -244,6 +263,39 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&entry).unwrap(),
             r#"{"name":"origin/main","kind":"remoteBranch","sha":"abc","isHead":false}"#
+        );
+    }
+
+    #[test]
+    fn search_match와_repo_state는_camel_case_키를_쓴다() {
+        let hit = SearchMatch {
+            sha: "abc".into(),
+            index: 42,
+        };
+        assert_eq!(
+            serde_json::to_string(&hit).unwrap(),
+            r#"{"sha":"abc","index":42}"#
+        );
+
+        let state = RepoState {
+            graph_token: "deadbeef".into(),
+            wip: Some(WipInfo {
+                changed_files: 2,
+                staged_files: 1,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_string(&state).unwrap(),
+            r#"{"graphToken":"deadbeef","wip":{"changedFiles":2,"stagedFiles":1}}"#
+        );
+
+        let clean = RepoState {
+            graph_token: "deadbeef".into(),
+            wip: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&clean).unwrap(),
+            r#"{"graphToken":"deadbeef","wip":null}"#
         );
     }
 

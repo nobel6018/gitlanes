@@ -37,6 +37,21 @@ list_refs(path: string) -> RefEntry[]
 - GraphView 스태시 렌더: baseSha 행 **바로 위**에 의사 행 삽입 (WIP와 같은 display-index 방식, 삽입이 여러 개일 수 있으니 일반화). GRAPH에는 base 레인 위치에 점선 다이아몬드(또는 대시 링) + base 점까지 점선 엣지, MESSAGE는 fg-2 이탤릭 `≡ <message>`, SHA/DATE 표시. **클릭 가능**: onSelect(stash.sha) → 상세 패널이 기존 get_commit_details로 동작. baseSha가 로드 범위 밖이면 그 스태시는 표시하지 않음. WIP와 같은 커밋 위에 겹치면 WIP가 더 위
 - DiffView(ui-shell): 줄 수 1,000 초과 diff는 가상 스크롤로 렌더 (고정 줄 높이, 보이는 범위 ±30줄만 DOM)
 
+## v0.5 확장 (전체 검색, 자동 새로고침, 컬럼 리사이즈)
+
+```
+search_commits(path: string, query: string, limit: number) -> SearchMatch[]
+    // subject/author명/sha prefix 대소문자 무시 부분일치. topo 순서 index 포함, 최대 500개
+get_repo_state(path: string) -> RepoState
+    // refs 지문 + wip 요약만 계산하는 경량 폴링용 (log 파싱 없음)
+```
+
+- 검색 흐름(ui-shell): 로컬 rows 매치는 기존대로 즉시. Enter로 마지막 로컬 매치를 넘어가는데 hasMore면 `search_commits` 호출 → 다음 매치의 index를 받아 limit을 index+1 이상으로 append 확장 후 점프. 전체에도 없으면 카운터를 "N/N (전체)"로 표시
+- 자동 새로고침(ui-shell): 창이 포커스/가시 상태일 때만 5초마다 `get_repo_state` 폴링. graphToken 또는 wip이 보관값과 다르면 load_graph(skip=0, 현재 깊이 유지) + list_refs 재로드. 로딩 중에는 폴링 스킵
+- 컬럼 리사이즈(ui-graph): 헤더 경계 드래그로 BRANCH/AUTHOR/SHA/DATE 폭 조절(MESSAGE는 flex 유지), 최소 폭 60px, localStorage `gitlanes.columns`에 저장, 더블클릭으로 기본값 복원
+- 색 배정(rust-core): 새 레인에 색을 줄 때 좌우 인접 활성 레인의 색과 겹치지 않는 후보를 우선 선택 (풀이 바닥나면 기존 규칙대로). Edge.color/CommitRow.color 의미는 불변
+- `GraphViewProps`에 옵션 prop 추가: `onRowDoubleClick?: (sha: string) => void` — 커밋/스태시 행 더블클릭 시 호출 (의사 행 WIP 제외). ui-shell은 이걸로 sha 복사를 연결
+
 ## v0.2 확장 (WIP 행, 스크롤 타깃, 키보드)
 
 - `GraphData.wip: WipInfo | null`: rust-core가 `git status --porcelain -z` 1회로 채운다. 깨끗하면 null
