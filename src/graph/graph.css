@@ -96,6 +96,12 @@
   font-weight: 700;
 }
 
+/* 경로 강조 밖의 행. 텍스트, 아바타, pill이 한꺼번에 흐려진다.
+   캔버스 쪽 dim은 canvas.ts의 DIM_ALPHA와 같은 값을 쓴다 */
+.gl-row-dim {
+  opacity: 0.35;
+}
+
 /* 의사 행(WIP, 스태시): fg-2 이탤릭 */
 .gl-row-pseudo {
   color: var(--fg-2);

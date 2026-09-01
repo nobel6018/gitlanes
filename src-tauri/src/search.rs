@@ -6,37 +6,40 @@
 //!
 //! @see CONTRACTS.md
 
-use crate::model::SearchMatch;
 use crate::parse::RawCommit;
 
 /// 결과 상한. 프론트가 더 큰 값을 요청해도 여기서 잘린다.
 pub const MAX_RESULTS: usize = 500;
 
-/// subject, author 이름, sha로 커밋을 찾는다.
-///
-/// subject와 author는 부분일치, sha는 prefix 일치다. 셋 다 ASCII 대소문자를 무시한다.
-/// 빈 질의는 결과가 없다.
-pub fn find_matches(commits: &[RawCommit], query: &str, limit: usize) -> Vec<SearchMatch> {
-    let query = query.trim();
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let needle = query.to_ascii_lowercase();
-    let cap = effective_limit(limit);
+/// 한 번 준비해두고 커밋마다 재사용하는 매처. 질의 소문자 변환을 한 번만 한다.
+#[derive(Debug, Clone)]
+pub struct Matcher {
+    needle: String,
+    cap: usize,
+}
 
-    let mut matches = Vec::new();
-    for (index, commit) in commits.iter().enumerate() {
-        if matches.len() >= cap {
-            break;
+impl Matcher {
+    /// 빈 질의면 None. `limit` 0은 상한 없음으로 보고 [`MAX_RESULTS`]를 쓴다.
+    pub fn new(query: &str, limit: usize) -> Option<Self> {
+        let query = query.trim();
+        if query.is_empty() {
+            return None;
         }
-        if matches_commit(commit, &needle) {
-            matches.push(SearchMatch {
-                sha: commit.sha.clone(),
-                index,
-            });
-        }
+        Some(Self {
+            needle: query.to_ascii_lowercase(),
+            cap: effective_limit(limit),
+        })
     }
-    matches
+
+    /// 모을 결과 개수의 상한.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
+    /// subject와 author는 부분일치, sha는 prefix 일치다. 셋 다 ASCII 대소문자를 무시한다.
+    pub fn matches(&self, commit: &RawCommit) -> bool {
+        matches_commit(commit, &self.needle)
+    }
 }
 
 /// 0은 "상한 없음"으로 보고 [`MAX_RESULTS`]를 쓴다. 그 밖에는 요청값과 상한 중 작은 쪽.
@@ -80,6 +83,29 @@ fn starts_with_ignore_ascii_case(haystack: &str, needle_lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::SearchMatch;
+
+    /// 이미 파싱된 목록을 훑는다. 프로덕션은 [`Matcher`]에 스트리밍으로 커밋을 공급하지만,
+    /// 매칭 규칙과 상한 처리는 이 경로로도 똑같이 검증된다.
+    fn find_matches(commits: &[RawCommit], query: &str, limit: usize) -> Vec<SearchMatch> {
+        let Some(matcher) = Matcher::new(query, limit) else {
+            return Vec::new();
+        };
+
+        let mut matches = Vec::new();
+        for (index, commit) in commits.iter().enumerate() {
+            if matches.len() >= matcher.cap() {
+                break;
+            }
+            if matcher.matches(commit) {
+                matches.push(SearchMatch {
+                    sha: commit.sha.clone(),
+                    index,
+                });
+            }
+        }
+        matches
+    }
 
     fn commit(sha: &str, subject: &str, author: &str) -> RawCommit {
         RawCommit {

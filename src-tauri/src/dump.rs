@@ -60,6 +60,9 @@ where
 }
 
 /// dump를 실행해 `out`에 쓴다. 요약 한 줄 뒤에 처음 [`PREVIEW_ROWS`]행을 찍는다.
+///
+/// 엣지는 `출발레인>도착레인:색[링크 자식 행, 링크 부모 행]` 형태다. 부모 행 -1은
+/// 부모가 로드 범위 밖이라는 뜻이다.
 pub fn run(request: &DumpRequest, out: &mut impl Write) -> Result<(), String> {
     let started = Instant::now();
     let data = load_graph(request.repo.clone(), request.limit, 0)?;
@@ -83,7 +86,12 @@ pub fn run(request: &DumpRequest, out: &mut impl Write) -> Result<(), String> {
         let edges = row
             .edges
             .iter()
-            .map(|e| format!("{}>{}:{}", e.from_lane, e.to_lane, e.color))
+            .map(|e| {
+                format!(
+                    "{}>{}:{}[{},{}]",
+                    e.from_lane, e.to_lane, e.color, e.child_row, e.parent_row
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         let refs = row

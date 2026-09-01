@@ -29,12 +29,17 @@ export interface RefInfo {
 /**
  * row i와 row i+1 사이 구간에 그릴 엣지 선분.
  * fromLane === toLane 이면 수직 통과선, 다르면 곡선.
+ * 모든 선분은 정확히 하나의 "자식 커밋 → 부모 커밋" 링크에 속한다.
  */
 export interface Edge {
   fromLane: number;
   toLane: number;
   /** LANE_COLORS 인덱스 (0..9) */
   color: number;
+  /** 이 선분이 속한 링크의 자식 커밋 행 인덱스 (skip과 무관한 전역 topo 인덱스) */
+  childRow: number;
+  /** 링크의 부모 커밋 행 인덱스. 부모가 로드 범위(limit) 밖이면 -1 */
+  parentRow: number;
 }
 
 export interface CommitRow {
@@ -151,6 +156,10 @@ export interface RepoState {
   /** 현재 워킹 디렉토리 상태 */
   wip: WipInfo | null;
 }
+
+// get_remote_url(path) -> string | null
+//   origin remote를 웹 URL로 정규화 (git@host:a/b.git → https://host/a/b).
+//   origin이 없으면 첫 remote, remote가 없으면 null.
 
 // get_file_diff(path, sha, file, oldFile) -> string (unified diff 원문)
 //   oldFile: rename/copy 커밋에서 FileChange.oldPath를 그대로 전달 (아니면 null).

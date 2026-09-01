@@ -1,4 +1,4 @@
-//! Tauri command 8개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
+//! Tauri command 9개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
 //!
 //! @see CONTRACTS.md
 
@@ -11,10 +11,12 @@ use crate::model::{
     RepoState, SearchMatch, Signature,
 };
 use crate::parse::{
-    graph_token, parse_commit_meta, parse_file_changes, parse_log, parse_ref_entries, parse_refs,
-    parse_stashes, parse_status, LOG_FORMAT, META_FORMAT, STASH_FORMAT,
+    graph_token, parse_commit_meta, parse_file_changes, parse_log_record, parse_ref_entries,
+    parse_refs, parse_stashes, parse_status, RawCommit, LOG_FORMAT, META_FORMAT, RECORD_SEPARATOR,
+    STASH_FORMAT,
 };
-use crate::search::find_matches;
+use crate::remote::normalize_remote_url;
+use crate::search::Matcher;
 
 /// for-each-ref 포맷. for-each-ref는 `%x1f`를 해석하지 않아 `%1f`를 쓴다.
 const REF_FORMAT: &str = "--format=%(objectname)%1f%(*objectname)%1f%(refname)%1f%(HEAD)";
@@ -95,7 +97,8 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
     }
 
     // limit을 넘겼는지 알기 위해 한 개 더 요청한다
-    let fetch = limit.saturating_add(1).to_string();
+    let want = limit.saturating_add(1);
+    let fetch = want.to_string();
     let log_args: [&str; 9] = [
         "log",
         "--branches",
@@ -109,22 +112,29 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
     ];
     let stash_args: [&str; 3] = ["stash", "list", STASH_FORMAT];
 
-    // 다섯 호출은 서로 값을 주고받지 않아 동시에 돌린다. 가장 무거운 log가 벽시계를 지배한다.
-    let outputs = git::run_all(
-        &path,
-        &[
-            &log_args[..],
-            &REF_ARGS[..],
-            &HEAD_ARGS[..],
-            &STATUS_ARGS[..],
-            &stash_args[..],
-        ],
-    );
-    let [log_out, ref_out, head_out, status_out, stash_out] =
-        <[_; 5]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
+    // 다섯 호출은 서로 값을 주고받지 않아 동시에 돌린다. log는 읽으면서 바로 파싱해
+    // git 실행 시간과 파싱 시간을 겹친다. 벽시계는 가장 무거운 log가 결정한다.
+    let (log_result, outputs) = std::thread::scope(|scope| {
+        let log = scope.spawn(|| stream_commits(&path, &log_args, want));
+        let outputs = git::run_all(
+            &path,
+            &[
+                &REF_ARGS[..],
+                &HEAD_ARGS[..],
+                &STATUS_ARGS[..],
+                &stash_args[..],
+            ],
+        );
+        let log_result = log
+            .join()
+            .unwrap_or_else(|_| Err("커밋 목록을 읽는 중 내부 오류가 발생했습니다".to_string()));
+        (log_result, outputs)
+    });
 
-    let log_out = log_out.map_err(|e| format!("커밋 목록을 읽지 못했습니다: {e}"))?;
-    let mut commits = parse_log(&log_out)?;
+    let [ref_out, head_out, status_out, stash_out] =
+        <[_; 4]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
+
+    let mut commits = log_result?;
     let has_more = commits.len() > limit;
     commits.truncate(limit);
     let total_loaded = commits.len();
@@ -191,7 +201,8 @@ pub fn list_refs(path: String) -> Result<Vec<RefEntry>, String> {
 
 /// 전체 히스토리에서 커밋을 찾는다. 로드된 행 범위와 무관하다.
 ///
-/// 레이아웃은 계산하지 않고 log를 파싱만 한다. `index`는 `load_graph`와 같은 topo 순서의
+/// 레이아웃은 계산하지 않고 log를 스트리밍으로 파싱만 한다. 상한에 닿으면 그 자리에서
+/// git을 끊어 남은 히스토리를 읽지 않는다. `index`는 `load_graph`와 같은 topo 순서의
 /// 행 번호라 프론트가 그 깊이까지 추가 로드한 뒤 점프하면 된다.
 /// 결과는 최대 [`crate::search::MAX_RESULTS`]개다.
 #[tauri::command]
@@ -200,27 +211,114 @@ pub fn search_commits(
     query: String,
     limit: usize,
 ) -> Result<Vec<SearchMatch>, String> {
-    if query.trim().is_empty() {
+    let Some(matcher) = Matcher::new(&query, limit) else {
         return Ok(Vec::new());
-    }
+    };
 
     // load_graph와 같은 ref 집합, 같은 정렬이라 index가 그대로 대응한다. -n만 없다
-    let log_out = git::run(
+    let args: [&str; 7] = [
+        "log",
+        "--branches",
+        "--remotes",
+        "--tags",
+        "HEAD",
+        "--topo-order",
+        LOG_FORMAT,
+    ];
+
+    let mut matches: Vec<SearchMatch> = Vec::new();
+    let mut index = 0usize;
+    let mut failure: Option<String> = None;
+
+    git::stream_records(
         &path,
-        &[
-            "log",
-            "--branches",
-            "--remotes",
-            "--tags",
-            "HEAD",
-            "--topo-order",
-            LOG_FORMAT,
-        ],
+        &args,
+        RECORD_SEPARATOR,
+        |record| match parse_log_record(record) {
+            Ok(None) => git::Flow::Continue,
+            Ok(Some(commit)) => {
+                if matcher.matches(&commit) {
+                    matches.push(SearchMatch {
+                        sha: commit.sha,
+                        index,
+                    });
+                }
+                index += 1;
+                if matches.len() >= matcher.cap() {
+                    git::Flow::Stop
+                } else {
+                    git::Flow::Continue
+                }
+            }
+            Err(message) => {
+                failure = Some(message);
+                git::Flow::Stop
+            }
+        },
     )
     .map_err(|e| format!("커밋을 검색하지 못했습니다: {e}"))?;
 
-    let commits = parse_log(&log_out)?;
-    Ok(find_matches(&commits, &query, limit))
+    match failure {
+        Some(message) => Err(message),
+        None => Ok(matches),
+    }
+}
+
+/// origin remote(없으면 첫 remote)의 웹 URL. 열 주소가 없으면 None이다.
+///
+/// 저장소가 아니거나 remote가 없거나 로컬 경로 remote면 모두 None으로 떨어진다.
+/// 컨텍스트 메뉴의 "Open on GitHub" 표시 여부를 정하는 용도라 오류를 따로 올리지 않는다.
+#[tauri::command]
+pub fn get_remote_url(path: String) -> Option<String> {
+    if let Some(url) = remote_url_of(&path, "origin") {
+        return Some(url);
+    }
+
+    // origin이 없으면 등록된 첫 remote를 쓴다
+    let first = git::run(&path, &["remote"]).ok()?;
+    let first = first.lines().map(str::trim).find(|name| !name.is_empty())?;
+    remote_url_of(&path, first)
+}
+
+fn remote_url_of(path: &str, name: &str) -> Option<String> {
+    let raw = git::run(path, &["remote", "get-url", name]).ok()?;
+    normalize_remote_url(raw.trim())
+}
+
+/// git log를 스트리밍으로 읽어 커밋 `want`개까지 모은다.
+///
+/// 출력을 통째로 받지 않고 레코드 단위로 파싱해 git 실행과 파싱을 겹친다.
+/// `want`에 닿으면 남은 출력을 버리고 프로세스를 정리한다.
+fn stream_commits(path: &str, args: &[&str], want: usize) -> Result<Vec<RawCommit>, String> {
+    let mut commits: Vec<RawCommit> = Vec::with_capacity(want.min(8192));
+    let mut failure: Option<String> = None;
+
+    git::stream_records(
+        path,
+        args,
+        RECORD_SEPARATOR,
+        |record| match parse_log_record(record) {
+            Ok(None) => git::Flow::Continue,
+            Ok(Some(commit)) => {
+                commits.push(commit);
+                if commits.len() >= want {
+                    git::Flow::Stop
+                } else {
+                    git::Flow::Continue
+                }
+            }
+            Err(message) => {
+                failure = Some(message);
+                git::Flow::Stop
+            }
+        },
+    )
+    .map_err(|e| format!("커밋 목록을 읽지 못했습니다: {e}"))?;
+
+    match failure {
+        Some(message) => Err(message),
+        None => Ok(commits),
+    }
 }
 
 /// 자동 새로고침 폴링용 경량 상태. log를 읽지 않아 대형 저장소에서도 싸다.
@@ -813,6 +911,144 @@ mod integration_tests {
         assert!(empty.trim().is_empty(), "{empty}");
     }
 
+    /// 스트리밍 조기 중단을 눈으로 확인할 만큼 커밋을 쌓은 저장소.
+    fn deep_fixture(count: usize) -> TempRepo {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!("gitlanes-deep-{}-{id}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = TempRepo { root };
+
+        repo.git(&["init", "-q", "-b", "main"]);
+        repo.git(&["config", "user.name", "테스터"]);
+        repo.git(&["config", "user.email", "tester@example.com"]);
+        repo.git(&["config", "commit.gpgsign", "false"]);
+        for i in 0..count {
+            repo.write("counter.txt", &format!("{i}\n"));
+            repo.git(&["add", "-A"]);
+            repo.git(&["commit", "-qm", &format!("commit {i}")]);
+        }
+        repo
+    }
+
+    #[test]
+    fn 스트리밍은_필요한_만큼만_읽고_git을_끊는다() {
+        let repo = deep_fixture(60);
+
+        // stream_commits가 want에 닿는 순간 멈추는지: 60개짜리 히스토리에서 3개만 읽는다
+        let args: [&str; 9] = [
+            "log",
+            "--branches",
+            "--remotes",
+            "--tags",
+            "HEAD",
+            "--topo-order",
+            "-n",
+            "61",
+            LOG_FORMAT,
+        ];
+        let few = stream_commits(&repo.path(), &args, 3).unwrap();
+        assert_eq!(few.len(), 3, "want를 넘겨 읽지 않는다");
+        assert_eq!(few[0].subject, "commit 59", "topo 순서 선두부터다");
+
+        // 조기 중단 뒤에도 같은 저장소를 다시 온전히 읽을 수 있다 (프로세스 정리 확인)
+        let all = stream_commits(&repo.path(), &args, 1000).unwrap();
+        assert_eq!(all.len(), 60);
+        assert_eq!(all[..3], few[..], "앞부분은 같은 결과다");
+
+        // 반복해도 좀비나 핸들이 쌓여 실패하지 않는다
+        for _ in 0..30 {
+            assert_eq!(stream_commits(&repo.path(), &args, 2).unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn limit이_작으면_load_graph도_그만큼만_읽는다() {
+        let repo = deep_fixture(60);
+        let page = load_graph(repo.path(), 2, 0).unwrap();
+
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.total_loaded, 2);
+        assert!(page.has_more);
+        assert_eq!(page.rows[0].subject, "commit 59");
+
+        // 전체를 읽으면 60개가 그대로 나온다
+        let full = load_graph(repo.path(), 1000, 0).unwrap();
+        assert_eq!(full.total_loaded, 60);
+        assert!(!full.has_more);
+        assert_eq!(
+            full.rows[..2].iter().map(|r| &r.sha).collect::<Vec<_>>(),
+            page.rows.iter().map(|r| &r.sha).collect::<Vec<_>>()
+        );
+
+        // 잘린 끝에서는 링크의 부모가 로드 범위 밖이라 -1이고, 전체 로드에서는 실제 행이다
+        assert_eq!(page.rows[1].edges[0].parent_row, -1);
+        assert_eq!(full.rows[1].edges[0].parent_row, 2);
+    }
+
+    #[test]
+    fn search_commits는_상한에_닿으면_거기서_멈춘다() {
+        let repo = deep_fixture(60);
+
+        // 60개 전부 매치하지만 5개만 받는다
+        let capped = search_commits(repo.path(), "commit".to_string(), 5).unwrap();
+        assert_eq!(capped.len(), 5);
+        assert_eq!(
+            capped.iter().map(|m| m.index).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4],
+            "index는 topo 순서 그대로다"
+        );
+
+        // 상한을 안 걸면 전부 나온다
+        let all = search_commits(repo.path(), "commit".to_string(), 0).unwrap();
+        assert_eq!(all.len(), 60);
+        assert_eq!(all[..5], capped[..]);
+    }
+
+    #[test]
+    fn get_remote_url은_origin을_웹_주소로_정규화한다() {
+        let repo = fixture();
+        // remote가 없으면 None
+        assert_eq!(get_remote_url(repo.path()), None);
+
+        repo.git(&[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:nobel6018/gitlanes.git",
+        ]);
+        assert_eq!(
+            get_remote_url(repo.path()).as_deref(),
+            Some("https://github.com/nobel6018/gitlanes")
+        );
+
+        // origin이 없으면 첫 remote를 쓴다
+        repo.git(&["remote", "remove", "origin"]);
+        repo.git(&[
+            "remote",
+            "add",
+            "upstream",
+            "https://gitlab.com/team/app.git",
+        ]);
+        assert_eq!(
+            get_remote_url(repo.path()).as_deref(),
+            Some("https://gitlab.com/team/app")
+        );
+
+        // 로컬 경로 remote는 열 웹 주소가 없다
+        repo.git(&["remote", "remove", "upstream"]);
+        repo.git(&["remote", "add", "origin", "/tmp/some/local/repo"]);
+        assert_eq!(get_remote_url(repo.path()), None);
+    }
+
+    #[test]
+    fn get_remote_url은_저장소가_아니면_none이다() {
+        assert_eq!(
+            get_remote_url("/definitely/not/a/repo/gitlanes".to_string()),
+            None
+        );
+    }
+
     #[test]
     fn search_commits는_전체_히스토리를_훑고_topo_index를_돌려준다() {
         let repo = fixture();
@@ -1138,7 +1374,7 @@ mod integration_tests {
         // 첫 행은 머지 커밋이고 main/tag ref가 붙는다
         let head = lines[1];
         assert!(head.contains(" lane=0 color=0 merge=1 "), "{head}");
-        assert!(head.contains("edges=[0>0:0, 0>1:1]"), "{head}");
+        assert!(head.contains("edges=[0>0:0[0,2], 0>1:1[0,1]]"), "{head}");
         assert!(head.contains("refs=[main, light, v1.0]"), "{head}");
         assert!(head.ends_with("Merge feature"), "{head}");
 

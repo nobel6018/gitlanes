@@ -35,6 +35,9 @@ pub struct RefInfo {
 
 /// row i와 row i+1 사이 구간에 그릴 선분 하나.
 /// `from_lane == to_lane`이면 수직 통과선이다.
+///
+/// 모든 선분은 정확히 하나의 "자식 커밋 → 부모 커밋" 링크에 속한다. 통과 수직선도
+/// 자기 링크의 값을 갖는다. 프론트는 이 값으로 경로 강조 대상을 판정한다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Edge {
@@ -42,6 +45,10 @@ pub struct Edge {
     pub to_lane: usize,
     /// LANE_COLORS 인덱스 (0..9)
     pub color: usize,
+    /// 링크의 자식 커밋 행 인덱스. skip과 무관한 전역 topo 인덱스다
+    pub child_row: usize,
+    /// 링크의 부모 커밋 행 인덱스. 부모가 로드 범위(limit) 밖이면 -1
+    pub parent_row: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -329,10 +336,12 @@ mod tests {
             from_lane: 1,
             to_lane: 2,
             color: 3,
+            child_row: 4,
+            parent_row: -1,
         };
         assert_eq!(
             serde_json::to_string(&edge).unwrap(),
-            r#"{"fromLane":1,"toLane":2,"color":3}"#
+            r#"{"fromLane":1,"toLane":2,"color":3,"childRow":4,"parentRow":-1}"#
         );
     }
 

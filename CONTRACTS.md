@@ -52,6 +52,25 @@ get_repo_state(path: string) -> RepoState
 - 색 배정(rust-core): 새 레인에 색을 줄 때 좌우 인접 활성 레인의 색과 겹치지 않는 후보를 우선 선택 (풀이 바닥나면 기존 규칙대로). Edge.color/CommitRow.color 의미는 불변
 - `GraphViewProps`에 옵션 prop 추가: `onRowDoubleClick?: (sha: string) => void` — 커밋/스태시 행 더블클릭 시 호출 (의사 행 WIP 제외). ui-shell은 이걸로 sha 복사를 연결
 
+## v0.7 확장 (레포 탭, 경로 강조, 컨텍스트 메뉴)
+
+```
+get_remote_url(path: string) -> string | null
+    // origin remote의 웹 URL로 정규화: git@github.com:a/b.git → https://github.com/a/b
+    // https URL은 .git 접미사만 제거. origin이 없으면 첫 remote, 그것도 없으면 null
+```
+
+- `GraphViewProps`에 옵션 prop 추가:
+  ```ts
+  /** 커밋/스태시 행 우클릭. 브라우저 기본 메뉴는 GraphView가 preventDefault */
+  onRowContextMenu?: (sha: string, clientX: number, clientY: number) => void;
+  ```
+- 경로 강조(ui-graph 내부): selectedSha가 있으면 그 커밋의 조상 전체(부모 재귀)와 자손 전체(자식 역추적)를 계산해, 집합 밖의 행 텍스트/점/엣지를 35% 불투명도로 dim. 선택 해제 시 원상복구. 계산은 rows의 parents로 클라이언트에서 (로드 범위 내 한정)
+- **Edge 링크 귀속(v0.7에서 추가)**: `Edge`에 `childRow`/`parentRow`(전역 topo 행 인덱스, 부모 미로드 시 -1)가 실린다. rust-core가 레인 상태에서 각 선분의 소속 링크를 기록해 채운다. 엣지 강조 판정은 `childRow ∈ 집합 && (parentRow === -1 ? childRow ∈ 집합 : parentRow ∈ 집합)` — band 양끝 행 기준 판정은 폐기
+- 알려진 한계: append 확장 후 이전 페이지 행들의 `parentRow: -1`은 갱신되지 않는다 (경계를 넘는 링크의 강조가 자식 기준으로만 판정됨). 시각적 오차가 작고, 자동 새로고침의 skip=0 전체 리로드에서 자연히 해소된다
+- 레포 탭(ui-shell): 툴바 위에 GitKraken식 탭 바. 탭마다 독립된 레포/그래프/선택/검색 상태, + 버튼으로 새 탭(웰컴 화면), 탭 close, 마지막 탭 close는 웰컴으로. 자동 새로고침 폴링은 활성 탭만. localStorage `gitlanes.tabs`에 열린 레포 경로와 활성 인덱스 저장, 시작 시 복원 (startup repo 인자가 있으면 그걸 새 탭으로)
+- 컨텍스트 메뉴(ui-shell): 항목 = Copy sha, Copy message, Open on GitHub/Remote(get_remote_url 있을 때만, `<url>/commit/<sha>` 새 브라우저 — @tauri-apps/plugin-opener), 클릭 밖/Esc로 닫힘
+
 ## v0.2 확장 (WIP 행, 스크롤 타깃, 키보드)
 
 - `GraphData.wip: WipInfo | null`: rust-core가 `git status --porcelain -z` 1회로 채운다. 깨끗하면 null

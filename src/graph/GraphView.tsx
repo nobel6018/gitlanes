@@ -1,11 +1,12 @@
 // GitKraken 스타일 커밋 테이블. 가상 스크롤 + 단일 캔버스 그래프.
 // 접점 계약: CONTRACTS.md의 "GraphView 컴포넌트" 절. GraphViewProps는 동결이다.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
+import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import { ROW_HEIGHT } from "../constants";
 import type { CommitRow, GraphData, StashInfo, WipInfo } from "../types";
 import { drawGraph } from "./canvas";
 import { buildPseudoLayout } from "./pseudo";
+import { buildChildrenMap, buildHighlight } from "./highlight";
 import {
   DEFAULT_COLUMNS,
   clampColumnWidth,
@@ -40,6 +41,8 @@ export interface GraphViewProps {
    * 의미(체크아웃, 복사 등)는 shell이 정한다. onSelect 2회와 함께 발생한다
    */
   onRowDoubleClick?: (sha: string) => void;
+  /** 커밋/스태시 행 우클릭. 브라우저 기본 메뉴는 GraphView가 preventDefault */
+  onRowContextMenu?: (sha: string, clientX: number, clientY: number) => void;
 }
 
 /** 보이는 범위 위아래로 더 그려두는 행 수 */
@@ -60,8 +63,11 @@ interface RowProps {
   graphWidth: number;
   /** pill 넘침 판정용. 드래그가 끝난 뒤에만 갱신돼서 드래그 중 memo가 유지된다 */
   branchWidth: number;
+  /** 경로 강조 집합 밖이면 true */
+  dimmed: boolean;
   onSelect: (sha: string) => void;
   onDoubleClick: (sha: string) => void;
+  onContextMenu: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
 }
 
 const Row = memo(function Row({
@@ -71,11 +77,16 @@ const Row = memo(function Row({
   showTags,
   graphWidth,
   branchWidth,
+  dimmed,
   onSelect,
   onDoubleClick,
+  onContextMenu,
 }: RowProps) {
   const className =
-    "gl-row" + (selected ? " gl-row-selected" : "") + (row.isHead ? " gl-row-head" : "");
+    "gl-row" +
+    (selected ? " gl-row-selected" : "") +
+    (row.isHead ? " gl-row-head" : "") +
+    (dimmed ? " gl-row-dim" : "");
   const avatarColor = authorColorIndex(row.authorEmail);
   return (
     <div
@@ -83,6 +94,7 @@ const Row = memo(function Row({
       style={{ top, height: ROW_HEIGHT }}
       onClick={() => onSelect(row.sha)}
       onDoubleClick={() => onDoubleClick(row.sha)}
+      onContextMenu={(event) => onContextMenu(row.sha, event)}
     >
       <div className="gl-cell gl-col-branch gl-cell-branch" title={refsTitle(row.refs, showTags)}>
         <RefPills
@@ -123,13 +135,18 @@ function WipRow({
   wip,
   top,
   graphWidth,
+  dimmed,
 }: {
   wip: WipInfo;
   top: number;
   graphWidth: number;
+  dimmed: boolean;
 }) {
   return (
-    <div className="gl-row gl-row-pseudo gl-row-wip" style={{ top, height: ROW_HEIGHT }}>
+    <div
+      className={"gl-row gl-row-pseudo gl-row-wip" + (dimmed ? " gl-row-dim" : "")}
+      style={{ top, height: ROW_HEIGHT }}
+    >
       <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
       <div className="gl-cell gl-cell-message">
@@ -148,22 +165,31 @@ function StashRow({
   top,
   selected,
   graphWidth,
+  dimmed,
   onSelect,
   onDoubleClick,
+  onContextMenu,
 }: {
   stash: StashInfo;
   top: number;
   selected: boolean;
   graphWidth: number;
+  dimmed: boolean;
   onSelect: (sha: string) => void;
   onDoubleClick: (sha: string) => void;
+  onContextMenu: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
 }) {
   return (
     <div
-      className={"gl-row gl-row-pseudo" + (selected ? " gl-row-selected" : "")}
+      className={
+        "gl-row gl-row-pseudo" +
+        (selected ? " gl-row-selected" : "") +
+        (dimmed ? " gl-row-dim" : "")
+      }
       style={{ top, height: ROW_HEIGHT }}
       onClick={() => onSelect(stash.sha)}
       onDoubleClick={() => onDoubleClick(stash.sha)}
+      onContextMenu={(event) => onContextMenu(stash.sha, event)}
     >
       <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
@@ -218,6 +244,7 @@ export function GraphView({
   showTags,
   scrollTarget,
   onRowDoubleClick,
+  onRowContextMenu,
 }: GraphViewProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -348,6 +375,17 @@ export function GraphView({
     [rows, data.wip, data.stashes, shaToRow],
   );
   const { displayCount, toDisplay, toRowIndex, pseudoAt } = layout;
+
+  // 경로 강조. 자식 맵은 rows에서 1회만 만들고, 집합은 선택이 바뀔 때만 다시 판다
+  const childrenMap = useMemo(() => buildChildrenMap(rows), [rows]);
+  const highlight = useMemo(
+    () => buildHighlight(rows, shaToRow, childrenMap, selectedSha),
+    [rows, shaToRow, childrenMap, selectedSha],
+  );
+  const isDimmed = useCallback(
+    (rowIndex: number) => highlight !== null && highlight[rowIndex] !== 1,
+    [highlight],
+  );
   const totalHeight = displayCount * ROW_HEIGHT;
 
   // 부모 콜백이 매 렌더 새로 만들어져도 Row의 memo가 깨지지 않게 고정 참조로 감싼다
@@ -365,6 +403,21 @@ export function GraphView({
     onDoubleClickRef.current?.(sha);
   }, []);
 
+  const onContextMenuRef = useRef(onRowContextMenu);
+  useEffect(() => {
+    onContextMenuRef.current = onRowContextMenu;
+  }, [onRowContextMenu]);
+  // 핸들러가 없으면 기본 메뉴를 막지 않는다
+  const handleContextMenu = useCallback((sha: string, event: MouseEvent<HTMLDivElement>) => {
+    const handler = onContextMenuRef.current;
+    if (!handler) {
+      return;
+    }
+    event.preventDefault();
+    onSelectRef.current(sha);
+    handler(sha, event.clientX, event.clientY);
+  }, []);
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) {
@@ -373,13 +426,14 @@ export function GraphView({
     drawGraph(canvas, {
       rows,
       layout,
+      highlight,
       scrollTop: scrollTopRef.current,
       width: graphWidth,
       height: size.height,
       devicePixelRatio: window.devicePixelRatio || 1,
       bgColor: bgColorRef.current,
     });
-  }, [rows, layout, graphWidth, size.height]);
+  }, [rows, layout, highlight, graphWidth, size.height]);
 
   const syncRange = useCallback(() => {
     if (size.height <= 0) {
@@ -578,16 +632,25 @@ export function GraphView({
             top={top}
             selected={pseudo.stash.sha === selectedSha}
             graphWidth={graphWidth}
+            dimmed={isDimmed(pseudo.anchorRow)}
             onSelect={handleSelect}
             onDoubleClick={handleDoubleClick}
+            onContextMenu={handleContextMenu}
           />
         ) : (
-          <WipRow key={pseudo.key} wip={pseudo.wip} top={top} graphWidth={graphWidth} />
+          <WipRow
+            key={pseudo.key}
+            wip={pseudo.wip}
+            top={top}
+            graphWidth={graphWidth}
+            dimmed={rowCount > 0 && isDimmed(pseudo.anchorRow)}
+          />
         ),
       );
       continue;
     }
-    const row = rows[toRowIndex(d)];
+    const rowIndex = toRowIndex(d);
+    const row = rows[rowIndex];
     visibleRows.push(
       <Row
         key={row.sha}
@@ -597,8 +660,10 @@ export function GraphView({
         showTags={showTags}
         graphWidth={graphWidth}
         branchWidth={pillBranchWidth}
+        dimmed={isDimmed(rowIndex)}
         onSelect={handleSelect}
         onDoubleClick={handleDoubleClick}
+        onContextMenu={handleContextMenu}
       />,
     );
   }

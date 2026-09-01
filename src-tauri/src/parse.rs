@@ -35,45 +35,48 @@ pub const STASH_FORMAT: &str = "--format=%H%x1f%P%x1f%at%x1f%gs%x1e";
 const FIELD: char = '\u{1f}';
 const RECORD: char = '\u{1e}';
 
-/// [`LOG_FORMAT`] 출력을 커밋 목록으로 만든다. topo 순서를 그대로 유지한다.
-pub fn parse_log(out: &str) -> Result<Vec<RawCommit>, String> {
-    let mut commits = Vec::new();
-    for record in out.split(RECORD) {
-        let record = record.trim_start_matches(['\n', '\r']);
-        if record.is_empty() {
-            continue;
-        }
-        let mut fields = record.splitn(6, FIELD);
-        let sha = fields.next().unwrap_or_default();
-        let parents = fields.next();
-        let author = fields.next();
-        let email = fields.next();
-        let ts = fields.next();
-        let subject = fields.next();
+/// git log 레코드 구분자. 스트리밍 파서가 이 바이트 단위로 끊어 읽는다.
+pub const RECORD_SEPARATOR: u8 = 0x1e;
 
-        let (Some(parents), Some(author), Some(email), Some(ts), Some(subject)) =
-            (parents, author, email, ts, subject)
-        else {
-            return Err(format!("git log 출력을 해석하지 못했습니다: {record:?}"));
-        };
-        if sha.is_empty() {
-            return Err("git log 출력에 커밋 해시가 없습니다".to_string());
-        }
-        let timestamp = ts
-            .trim()
-            .parse::<i64>()
-            .map_err(|_| format!("git log의 author timestamp를 숫자로 읽지 못했습니다: {ts:?}"))?;
-
-        commits.push(RawCommit {
-            sha: sha.to_string(),
-            parents: parents.split_whitespace().map(str::to_string).collect(),
-            author: author.to_string(),
-            author_email: email.to_string(),
-            timestamp,
-            subject: subject.to_string(),
-        });
+/// [`LOG_FORMAT`] 레코드 하나를 파싱한다. 빈 레코드는 `Ok(None)`이다.
+///
+/// 레코드 앞에는 직전 레코드의 개행이 남아 있을 수 있어 먼저 털어낸다.
+/// 스트리밍 파서와 [`parse_log`]가 같은 함수를 쓴다.
+pub fn parse_log_record(record: &str) -> Result<Option<RawCommit>, String> {
+    let record = record.trim_start_matches(['\n', '\r']);
+    if record.is_empty() {
+        return Ok(None);
     }
-    Ok(commits)
+
+    let mut fields = record.splitn(6, FIELD);
+    let sha = fields.next().unwrap_or_default();
+    let parents = fields.next();
+    let author = fields.next();
+    let email = fields.next();
+    let ts = fields.next();
+    let subject = fields.next();
+
+    let (Some(parents), Some(author), Some(email), Some(ts), Some(subject)) =
+        (parents, author, email, ts, subject)
+    else {
+        return Err(format!("git log 출력을 해석하지 못했습니다: {record:?}"));
+    };
+    if sha.is_empty() {
+        return Err("git log 출력에 커밋 해시가 없습니다".to_string());
+    }
+    let timestamp = ts
+        .trim()
+        .parse::<i64>()
+        .map_err(|_| format!("git log의 author timestamp를 숫자로 읽지 못했습니다: {ts:?}"))?;
+
+    Ok(Some(RawCommit {
+        sha: sha.to_string(),
+        parents: parents.split_whitespace().map(str::to_string).collect(),
+        author: author.to_string(),
+        author_email: email.to_string(),
+        timestamp,
+        subject: subject.to_string(),
+    }))
 }
 
 /// [`META_FORMAT`] 출력 한 건.
@@ -386,6 +389,18 @@ fn parse_count(raw: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 출력 전체를 한 번에 파싱한다. 프로덕션은 [`parse_log_record`]에 스트리밍으로
+    /// 레코드를 공급하지만, 파싱 규칙 자체는 이 경로로도 똑같이 검증된다.
+    fn parse_log(out: &str) -> Result<Vec<RawCommit>, String> {
+        let mut commits = Vec::new();
+        for record in out.split(RECORD) {
+            if let Some(commit) = parse_log_record(record)? {
+                commits.push(commit);
+            }
+        }
+        Ok(commits)
+    }
 
     /// 실제 git 출력과 같게 필드는 \x1f, 레코드는 \x1e + 개행으로 잇는다.
     fn log_record(fields: &[&str]) -> String {
