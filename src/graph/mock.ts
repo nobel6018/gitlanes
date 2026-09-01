@@ -1,7 +1,7 @@
 // 개발/시연용 합성 그래프. rust-core의 load_graph 응답을 대체한다.
 // 계약의 edges 의미("row i와 row i+1 사이 구간의 모든 선분")를 그대로 지킨다.
 import { LANE_COLORS } from "../constants";
-import type { CommitRow, Edge, GraphData, RefInfo } from "../types";
+import type { CommitRow, Edge, GraphData, RefInfo, StashInfo } from "../types";
 
 /** mulberry32. 렌더마다 같은 그래프가 나오도록 시드를 고정한다 */
 function makeRandom(seed: number): () => number {
@@ -226,8 +226,32 @@ export function makeMockGraph(rowCount: number): GraphData {
     timestamp -= 600 + Math.floor(rand() * 9000);
   }
 
+  // 스태시 2개: 하나는 baseSha가 로드 범위 안, 하나는 범위 밖(표시되지 않아야 한다)
+  const stashes: StashInfo[] = [];
+  if (rows.length > 0) {
+    const base = rows[Math.min(5, rows.length - 1)];
+    const stashSha = hex(rand, 40);
+    stashes.push({
+      sha: stashSha,
+      shortSha: stashSha.slice(0, 10),
+      message: `WIP on main: ${base.shortSha.slice(0, 7)} ${base.subject}`,
+      baseSha: base.sha,
+      timestamp: base.timestamp + 120,
+    });
+  }
+  const orphanSha = hex(rand, 40);
+  stashes.push({
+    sha: orphanSha,
+    shortSha: orphanSha.slice(0, 10),
+    message: "WIP on release/0.2: base commit outside loaded range",
+    baseSha: "f".repeat(40),
+    timestamp: Math.floor(Date.now() / 1000) - 86400,
+  });
+
   return {
     rows,
+    graphToken: `mock-${rowCount}`,
+    stashes,
     totalLoaded: rows.length,
     hasMore: false,
     laneCount,

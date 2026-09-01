@@ -3,9 +3,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { ROW_HEIGHT } from "../constants";
-import type { CommitRow, GraphData, WipInfo } from "../types";
+import type { CommitRow, GraphData, StashInfo, WipInfo } from "../types";
 import { drawGraph } from "./canvas";
-import type { WipMark } from "./canvas";
+import { buildPseudoLayout } from "./pseudo";
 import {
   AUTHOR_COL_WIDTH,
   BRANCH_COL_WIDTH,
@@ -109,7 +109,7 @@ function WipRow({
   graphWidth: number;
 }) {
   return (
-    <div className="gl-row gl-row-wip" style={{ top, height: ROW_HEIGHT }}>
+    <div className="gl-row gl-row-pseudo gl-row-wip" style={{ top, height: ROW_HEIGHT }}>
       <div className="gl-cell" style={{ width: BRANCH_COL_WIDTH }} />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
       <div className="gl-cell gl-cell-message">
@@ -118,6 +118,42 @@ function WipRow({
       <div className="gl-cell" style={{ width: AUTHOR_COL_WIDTH }} />
       <div className="gl-cell" style={{ width: SHA_COL_WIDTH }} />
       <div className="gl-cell" style={{ width: DATE_COL_WIDTH }} />
+    </div>
+  );
+}
+
+/** 스태시 의사 행. 실존 커밋이라 클릭해서 상세를 볼 수 있다 */
+function StashRow({
+  stash,
+  top,
+  selected,
+  graphWidth,
+  onSelect,
+}: {
+  stash: StashInfo;
+  top: number;
+  selected: boolean;
+  graphWidth: number;
+  onSelect: (sha: string) => void;
+}) {
+  return (
+    <div
+      className={"gl-row gl-row-pseudo" + (selected ? " gl-row-selected" : "")}
+      style={{ top, height: ROW_HEIGHT }}
+      onClick={() => onSelect(stash.sha)}
+    >
+      <div className="gl-cell" style={{ width: BRANCH_COL_WIDTH }} />
+      <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
+      <div className="gl-cell gl-cell-message" title={stash.message}>
+        {`\u2261 ${stash.message}`}
+      </div>
+      <div className="gl-cell" style={{ width: AUTHOR_COL_WIDTH }} />
+      <div className="gl-cell gl-cell-sha" style={{ width: SHA_COL_WIDTH }}>
+        {stash.shortSha.slice(0, SHA_DISPLAY_LENGTH)}
+      </div>
+      <div className="gl-cell gl-cell-date" style={{ width: DATE_COL_WIDTH }}>
+        {formatDate(stash.timestamp)}
+      </div>
     </div>
   );
 }
@@ -148,42 +184,22 @@ export function GraphView({
   const rowCount = rows.length;
   const graphWidth = graphColumnWidth(data.laneCount);
 
-  // WIP 의사 행은 HEAD 커밋 행 바로 위에 들어간다. isHead 행이 없으면 맨 위.
-  // 아래 좌표 계산은 전부 "화면 행 인덱스(display index)" 기준이고,
-  // 커밋 배열 인덱스와는 wipInsertAt 이후로 1만큼 어긋난다
-  const wip = data.wip;
-  const headIndex = useMemo(
-    () => (wip ? rows.findIndex((row) => row.isHead) : -1),
-    [wip, rows],
-  );
-  const wipInsertAt = wip ? Math.max(headIndex, 0) : -1;
-  const hasWip = wipInsertAt >= 0;
-  const displayCount = rowCount + (hasWip ? 1 : 0);
-  const totalHeight = displayCount * ROW_HEIGHT;
-
-  const toDisplay = useCallback(
-    (rowIndex: number) => (hasWip && rowIndex >= wipInsertAt ? rowIndex + 1 : rowIndex),
-    [hasWip, wipInsertAt],
-  );
-  const toRowIndex = useCallback(
-    (displayIndex: number) =>
-      hasWip && displayIndex > wipInsertAt ? displayIndex - 1 : displayIndex,
-    [hasWip, wipInsertAt],
-  );
-
-  const wipMark: WipMark | null = useMemo(() => {
-    if (!wip) {
-      return null;
+  // 의사 행(WIP, 스태시)이 끼면 아래 커밋 행들의 화면 위치가 그만큼 밀린다.
+  // 좌표 계산은 전부 화면 행 인덱스(display index) 기준이고 매핑은 pseudo.ts가 쥔다
+  const shaToRow = useMemo(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < rows.length; i++) {
+      map.set(rows[i].sha, i);
     }
-    const anchor = headIndex >= 0 ? rows[headIndex] : rows[0];
-    return {
-      index: wipInsertAt,
-      lane: anchor ? anchor.lane : 0,
-      color: anchor ? anchor.color : 0,
-      // HEAD 행이 없으면 이을 점이 없으므로 엣지를 생략한다
-      connected: headIndex >= 0,
-    };
-  }, [wip, headIndex, rows, wipInsertAt]);
+    return map;
+  }, [rows]);
+
+  const layout = useMemo(
+    () => buildPseudoLayout(rows, data.wip, data.stashes, shaToRow),
+    [rows, data.wip, data.stashes, shaToRow],
+  );
+  const { displayCount, toDisplay, toRowIndex, pseudoAt } = layout;
+  const totalHeight = displayCount * ROW_HEIGHT;
 
   // 부모 콜백이 매 렌더 새로 만들어져도 Row의 memo가 깨지지 않게 고정 참조로 감싼다
   const onSelectRef = useRef(onSelect);
@@ -199,15 +215,14 @@ export function GraphView({
     }
     drawGraph(canvas, {
       rows,
-      wipInsertAt,
-      wip: wipMark,
+      layout,
       scrollTop: scrollTopRef.current,
       width: graphWidth,
       height: size.height,
       devicePixelRatio: window.devicePixelRatio || 1,
       bgColor: bgColorRef.current,
     });
-  }, [rows, wipInsertAt, wipMark, graphWidth, size.height]);
+  }, [rows, layout, graphWidth, size.height]);
 
   const syncRange = useCallback(() => {
     if (size.height <= 0) {
@@ -303,37 +318,72 @@ export function GraphView({
       return;
     }
     lastNonceRef.current = scrollTarget.nonce;
-    const index = rows.findIndex((row) => row.sha === scrollTarget.sha);
-    if (index < 0) {
+    const index = shaToRow.get(scrollTarget.sha);
+    if (index !== undefined) {
+      scrollToDisplayIndex(toDisplay(index), "center");
       return;
     }
-    scrollToDisplayIndex(toDisplay(index), "center");
-  }, [scrollTarget, rows, toDisplay, scrollToDisplayIndex]);
+    // 커밋 행에 없으면 스태시 의사 행을 찾아본다
+    const pseudo = layout.pseudos.find(
+      (item) => item.kind === "stash" && item.stash.sha === scrollTarget.sha,
+    );
+    if (pseudo) {
+      scrollToDisplayIndex(pseudo.displayIndex, "center");
+    }
+  }, [scrollTarget, shaToRow, layout, toDisplay, scrollToDisplayIndex]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
         return;
       }
-      // 커밋 행 인덱스로만 움직이므로 WIP 의사 행은 자연히 건너뛴다
       event.preventDefault();
       if (rowCount === 0) {
         return;
       }
-      const current = selectedSha === null ? -1 : rows.findIndex((row) => row.sha === selectedSha);
-      let next: number;
-      if (current < 0) {
-        next = 0;
-      } else {
-        next = event.key === "ArrowDown" ? current + 1 : current - 1;
+      const step = event.key === "ArrowDown" ? 1 : -1;
+
+      // 현재 선택 위치를 화면 행 인덱스로 옮긴다. 스태시가 선택돼 있으면 그 의사 행에서 출발
+      let from = -1;
+      if (selectedSha !== null) {
+        const rowIndex = shaToRow.get(selectedSha);
+        if (rowIndex !== undefined) {
+          from = toDisplay(rowIndex);
+        } else {
+          const pseudo = layout.pseudos.find(
+            (item) => item.kind === "stash" && item.stash.sha === selectedSha,
+          );
+          from = pseudo ? pseudo.displayIndex : -1;
+        }
       }
-      if (next < 0 || next >= rowCount) {
+      if (from < 0) {
+        onSelectRef.current(rows[0].sha);
+        scrollToDisplayIndex(toDisplay(0), "nearest");
         return;
       }
-      onSelectRef.current(rows[next].sha);
-      scrollToDisplayIndex(toDisplay(next), "nearest");
+
+      // 의사 행(WIP, 스태시)은 건너뛰고 다음 커밋 행으로 간다
+      for (let next = from + step; next >= 0 && next < displayCount; next += step) {
+        if (pseudoAt(next)) {
+          continue;
+        }
+        onSelectRef.current(rows[toRowIndex(next)].sha);
+        scrollToDisplayIndex(next, "nearest");
+        return;
+      }
     },
-    [rows, rowCount, selectedSha, toDisplay, scrollToDisplayIndex],
+    [
+      rows,
+      rowCount,
+      selectedSha,
+      shaToRow,
+      layout,
+      displayCount,
+      toDisplay,
+      toRowIndex,
+      pseudoAt,
+      scrollToDisplayIndex,
+    ],
   );
 
   const handleScroll = useCallback(() => {
@@ -363,9 +413,22 @@ export function GraphView({
 
   const visibleRows: ReactNode[] = [];
   for (let d = range.start; d < range.end && d < displayCount; d++) {
-    if (hasWip && d === wipInsertAt && wip) {
+    const pseudo = pseudoAt(d);
+    if (pseudo) {
+      const top = d * ROW_HEIGHT;
       visibleRows.push(
-        <WipRow key="wip" wip={wip} top={d * ROW_HEIGHT} graphWidth={graphWidth} />,
+        pseudo.kind === "stash" ? (
+          <StashRow
+            key={pseudo.key}
+            stash={pseudo.stash}
+            top={top}
+            selected={pseudo.stash.sha === selectedSha}
+            graphWidth={graphWidth}
+            onSelect={handleSelect}
+          />
+        ) : (
+          <WipRow key={pseudo.key} wip={pseudo.wip} top={top} graphWidth={graphWidth} />
+        ),
       );
       continue;
     }

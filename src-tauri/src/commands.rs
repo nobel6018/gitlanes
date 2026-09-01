@@ -7,15 +7,13 @@ use std::path::Path;
 use crate::git;
 use crate::layout::assign_lanes;
 use crate::model::{
-    CommitDetails, CommitRow, FileChange, GraphData, RefEntry, RefInfo, RepoInfo, Signature,
+    short_sha, CommitDetails, CommitRow, FileChange, GraphData, RefEntry, RefInfo, RepoInfo,
+    Signature,
 };
 use crate::parse::{
-    parse_commit_meta, parse_file_changes, parse_log, parse_ref_entries, parse_refs, parse_status,
-    LOG_FORMAT, META_FORMAT,
+    graph_token, parse_commit_meta, parse_file_changes, parse_log, parse_ref_entries, parse_refs,
+    parse_stashes, parse_status, LOG_FORMAT, META_FORMAT, STASH_FORMAT,
 };
-
-/// short sha 길이. `src/types.ts`의 `CommitRow.shortSha` 주석과 맞춘다.
-const SHORT_SHA_LEN: usize = 10;
 
 /// for-each-ref 포맷. for-each-ref는 `%x1f`를 해석하지 않아 `%1f`를 쓴다.
 const REF_FORMAT: &str = "--format=%(objectname)%1f%(*objectname)%1f%(refname)%1f%(HEAD)";
@@ -64,9 +62,14 @@ pub fn open_repo(path: String) -> Result<RepoInfo, String> {
 }
 
 /// 커밋 그래프를 topo 순서로 읽어 레인/색/엣지까지 계산해 돌려준다.
-/// git 호출은 log, for-each-ref, rev-parse, status 4회다.
+///
+/// 레이아웃은 언제나 처음부터 `limit`까지 계산하고, `rows`만 `[skip, limit)` 구간을 담는다.
+/// 레인과 엣지가 앞 커밋들에 의존하기 때문에 중간부터 계산할 수 없다.
+/// `total_loaded`, `has_more`, `lane_count`, `wip`, `graph_token`, `stashes`는 전체 기준이다.
+///
+/// git 호출은 log, for-each-ref, rev-parse, status, stash list 5회다.
 #[tauri::command]
-pub fn load_graph(path: String, limit: usize) -> Result<GraphData, String> {
+pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, String> {
     if limit == 0 {
         return Ok(GraphData {
             rows: Vec::new(),
@@ -74,6 +77,8 @@ pub fn load_graph(path: String, limit: usize) -> Result<GraphData, String> {
             has_more: false,
             lane_count: 1,
             wip: None,
+            graph_token: String::new(),
+            stashes: Vec::new(),
         });
     }
 
@@ -98,6 +103,7 @@ pub fn load_graph(path: String, limit: usize) -> Result<GraphData, String> {
     let mut commits = parse_log(&log_out)?;
     let has_more = commits.len() > limit;
     commits.truncate(limit);
+    let total_loaded = commits.len();
 
     let ref_out = git::run(
         &path,
@@ -110,22 +116,32 @@ pub fn load_graph(path: String, limit: usize) -> Result<GraphData, String> {
         ],
     )
     .unwrap_or_default();
+    // for-each-ref 결과 하나로 refs 맵과 지문을 함께 만든다 (git 호출 추가 없음)
+    let ref_entries = parse_ref_entries(&ref_out);
     let mut refs_by_sha = parse_refs(&ref_out);
 
     let head_sha = git::run(&path, &["rev-parse", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
+    let token = graph_token(&ref_entries, &head_sha);
+
     // status가 실패해도(잠긴 인덱스 등) 그래프는 보여준다
     let wip = git::run(&path, &["status", "--porcelain", "-z"])
         .ok()
         .and_then(|out| parse_status(&out));
+
+    // 스태시가 없거나 명령이 실패하면 빈 배열이다
+    let stashes = git::run(&path, &["stash", "list", STASH_FORMAT])
+        .map(|out| parse_stashes(&out))
+        .unwrap_or_default();
 
     let layout = assign_lanes(&commits);
 
     let rows: Vec<CommitRow> = commits
         .into_iter()
         .zip(layout.rows)
+        .skip(skip)
         .map(|(commit, row)| {
             let refs: Vec<RefInfo> = refs_by_sha.remove(&commit.sha).unwrap_or_default();
             CommitRow {
@@ -147,11 +163,13 @@ pub fn load_graph(path: String, limit: usize) -> Result<GraphData, String> {
         .collect();
 
     Ok(GraphData {
-        total_loaded: rows.len(),
+        rows,
+        total_loaded,
         has_more,
         lane_count: layout.lane_count,
         wip,
-        rows,
+        graph_token: token,
+        stashes,
     })
 }
 
@@ -348,22 +366,9 @@ fn validate_rev(sha: &str) -> Result<String, String> {
     Ok(sha.to_string())
 }
 
-fn short_sha(sha: &str) -> String {
-    sha.chars().take(SHORT_SHA_LEN).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn short_sha는_10자리다() {
-        assert_eq!(
-            short_sha("ff362da2fa5b5d45b1b53354e085b920039aa4d8"),
-            "ff362da2fa"
-        );
-        assert_eq!(short_sha("abc"), "abc");
-    }
 
     #[test]
     fn 옵션처럼_생긴_rev는_거부한다() {
@@ -420,7 +425,7 @@ mod tests {
 
     #[test]
     fn limit이_0이면_빈_그래프를_돌려준다() {
-        let data = load_graph(".".to_string(), 0).unwrap();
+        let data = load_graph(".".to_string(), 0, 0).unwrap();
         assert!(data.rows.is_empty());
         assert_eq!(data.total_loaded, 0);
         assert!(!data.has_more);
@@ -582,7 +587,7 @@ mod integration_tests {
     #[test]
     fn load_graph는_refs와_레인과_엣지를_채운다() {
         let repo = fixture();
-        let data = load_graph(repo.path(), 100).unwrap();
+        let data = load_graph(repo.path(), 100, 0).unwrap();
 
         assert_eq!(data.total_loaded, 5);
         assert!(!data.has_more);
@@ -635,7 +640,7 @@ mod integration_tests {
     #[test]
     fn limit을_넘기면_잘라내고_has_more를_켠다() {
         let repo = fixture();
-        let data = load_graph(repo.path(), 2).unwrap();
+        let data = load_graph(repo.path(), 2, 0).unwrap();
         assert_eq!(data.rows.len(), 2);
         assert_eq!(data.total_loaded, 2);
         assert!(data.has_more);
@@ -760,9 +765,130 @@ mod integration_tests {
     }
 
     #[test]
+    fn skip은_레이아웃을_유지한_채_구간만_잘라_돌려준다() {
+        let repo = fixture();
+        let full = load_graph(repo.path(), 100, 0).unwrap();
+        assert_eq!(full.rows.len(), 5);
+        assert_eq!(full.total_loaded, 5);
+
+        // 중간부터: 레인/색/엣지가 전체 계산 결과와 같아야 한다
+        let tail = load_graph(repo.path(), 100, 2).unwrap();
+        assert_eq!(tail.rows.len(), 3);
+        assert_eq!(tail.rows, full.rows[2..]);
+
+        // skip과 무관한 필드는 전체 기준을 유지한다
+        assert_eq!(tail.total_loaded, 5, "totalLoaded는 계산된 전체 행 수다");
+        assert_eq!(tail.lane_count, full.lane_count);
+        assert_eq!(tail.has_more, full.has_more);
+        assert_eq!(tail.graph_token, full.graph_token);
+        assert_eq!(tail.wip, full.wip);
+    }
+
+    #[test]
+    fn skip_경계값을_처리한다() {
+        let repo = fixture();
+        let full = load_graph(repo.path(), 100, 0).unwrap();
+
+        // 마지막 한 행
+        let last = load_graph(repo.path(), 100, 4).unwrap();
+        assert_eq!(last.rows.len(), 1);
+        assert_eq!(last.rows[0], full.rows[4]);
+
+        // 전체 행 수와 같으면 빈 목록
+        let exact = load_graph(repo.path(), 100, 5).unwrap();
+        assert!(exact.rows.is_empty());
+        assert_eq!(exact.total_loaded, 5);
+
+        // 넘어서면 빈 목록 (패닉 없이)
+        let over = load_graph(repo.path(), 100, 9999).unwrap();
+        assert!(over.rows.is_empty());
+        assert_eq!(over.total_loaded, 5);
+        assert_eq!(over.lane_count, full.lane_count);
+    }
+
+    #[test]
+    fn skip은_limit과_함께_동작한다() {
+        let repo = fixture();
+        // limit 3으로 자른 뒤 뒤쪽 2행만
+        let page = load_graph(repo.path(), 3, 1).unwrap();
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.total_loaded, 3);
+        assert!(page.has_more, "limit에 걸렸으니 hasMore다");
+
+        let whole_page = load_graph(repo.path(), 3, 0).unwrap();
+        assert_eq!(page.rows, whole_page.rows[1..]);
+    }
+
+    #[test]
+    fn graph_token은_브랜치_추가_전후로_달라진다() {
+        let repo = fixture();
+        let before = load_graph(repo.path(), 100, 0).unwrap().graph_token;
+        assert!(!before.is_empty());
+
+        // 같은 커밋을 가리키는 브랜치를 새로 만들어도 지문이 바뀐다
+        repo.git(&["branch", "another"]);
+        let after = load_graph(repo.path(), 100, 0).unwrap().graph_token;
+        assert_ne!(after, before);
+
+        // 지우면 원래대로 돌아온다
+        repo.git(&["branch", "-D", "another"]);
+        assert_eq!(load_graph(repo.path(), 100, 0).unwrap().graph_token, before);
+
+        // tip이 움직여도 바뀐다
+        repo.write("tokentest.txt", "x\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "move tip"]);
+        assert_ne!(load_graph(repo.path(), 100, 0).unwrap().graph_token, before);
+    }
+
+    #[test]
+    fn 스태시가_없으면_빈_배열이다() {
+        let repo = fixture();
+        assert!(load_graph(repo.path(), 100, 0).unwrap().stashes.is_empty());
+    }
+
+    #[test]
+    fn 스태시_목록을_채운다() {
+        let repo = fixture();
+        let base = repo.rev("HEAD");
+
+        repo.write("m.txt", "m\nstashed\n");
+        repo.git(&["stash", "push", "-qm", "fix: 한글 메시지 콜론 포함"]);
+
+        let data = load_graph(repo.path(), 100, 0).unwrap();
+        assert_eq!(data.stashes.len(), 1);
+
+        let stash = &data.stashes[0];
+        assert_eq!(stash.base_sha, base, "첫 부모가 기반 커밋이다");
+        assert_eq!(stash.short_sha.len(), 10);
+        assert!(stash.sha.starts_with(&stash.short_sha));
+        assert!(stash.timestamp > 0);
+        assert!(
+            stash.message.contains("fix: 한글 메시지 콜론 포함"),
+            "{}",
+            stash.message
+        );
+
+        // 스태시 커밋은 실존 커밋이라 상세 조회가 그대로 된다
+        let details = get_commit_details(repo.path(), stash.sha.clone()).unwrap();
+        assert!(details.files.iter().any(|f| f.path == "m.txt"));
+
+        // 스태시가 늘면 최신이 앞에 온다
+        repo.write("m.txt", "m\nsecond\n");
+        repo.git(&["stash", "push", "-qm", "두 번째"]);
+        let data = load_graph(repo.path(), 100, 0).unwrap();
+        assert_eq!(data.stashes.len(), 2);
+        assert!(
+            data.stashes[0].message.contains("두 번째"),
+            "{:?}",
+            data.stashes
+        );
+    }
+
+    #[test]
     fn 깨끗한_저장소는_wip이_없다() {
         let repo = fixture();
-        let data = load_graph(repo.path(), 100).unwrap();
+        let data = load_graph(repo.path(), 100, 0).unwrap();
         assert_eq!(data.wip, None);
     }
 
@@ -776,7 +902,7 @@ mod integration_tests {
         repo.git(&["add", "staged.txt"]); // staged 추가
         repo.git(&["rm", "-q", "--cached", "f.txt"]); // staged 삭제 + untracked로 남음
 
-        let wip = load_graph(repo.path(), 100)
+        let wip = load_graph(repo.path(), 100, 0)
             .unwrap()
             .wip
             .expect("wip이 있어야 한다");
@@ -789,14 +915,14 @@ mod integration_tests {
         // 되돌리면 다시 깨끗해진다
         repo.git(&["reset", "-q", "--hard", "HEAD"]);
         repo.git(&["clean", "-qfd"]);
-        assert_eq!(load_graph(repo.path(), 100).unwrap().wip, None);
+        assert_eq!(load_graph(repo.path(), 100, 0).unwrap().wip, None);
     }
 
     #[test]
     fn staged_rename은_파일_하나로_센다() {
         let repo = fixture();
         repo.git(&["mv", "m.txt", "moved.txt"]);
-        let wip = load_graph(repo.path(), 100).unwrap().wip.unwrap();
+        let wip = load_graph(repo.path(), 100, 0).unwrap().wip.unwrap();
         assert_eq!(wip.changed_files, 1);
         assert_eq!(wip.staged_files, 1);
     }
@@ -865,6 +991,7 @@ mod integration_tests {
             lines[0].contains("wip=none"),
             "깨끗한 저장소는 wip=none이다: {text}"
         );
+        assert!(lines[0].contains("stashes=0"), "{text}");
 
         // 25행 이하라 생략 줄이 없다
         assert_eq!(lines.len(), 6, "{text}");

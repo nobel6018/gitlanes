@@ -7,7 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{FileChange, FileStatus, RefEntry, RefInfo, RefKind, WipInfo};
+use crate::model::{
+    short_sha, FileChange, FileStatus, RefEntry, RefInfo, RefKind, StashInfo, WipInfo,
+};
 
 /// `git log` 한 레코드. 레인 배치 입력이기도 하다.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +28,9 @@ pub const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1e";
 /// `git show -s`에 넘기는 pretty format. 필드 순서가 [`parse_commit_meta`]와 짝을 이룬다.
 pub const META_FORMAT: &str =
     "--format=%H%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%P%x1f%s%x1f%b";
+
+/// `git stash list`에 넘기는 pretty format. stash list는 git log라 `%x1f`가 그대로 통한다.
+pub const STASH_FORMAT: &str = "--format=%H%x1f%P%x1f%at%x1f%gs%x1e";
 
 const FIELD: char = '\u{1f}';
 const RECORD: char = '\u{1e}';
@@ -180,6 +185,73 @@ pub fn parse_refs(out: &str) -> HashMap<String, Vec<RefInfo>> {
         });
     }
     map
+}
+
+/// [`STASH_FORMAT`] 출력을 스태시 목록으로 만든다. `git stash list` 순서(최신 우선)를 유지한다.
+///
+/// 스태시 커밋은 부모가 2~3개다(base, index 상태, untracked). 첫 부모가 기반 커밋이다.
+pub fn parse_stashes(out: &str) -> Vec<StashInfo> {
+    let mut stashes = Vec::new();
+    for record in out.split(RECORD) {
+        let record = record.trim_start_matches(['\n', '\r']);
+        if record.is_empty() {
+            continue;
+        }
+        // message(%gs)에 콜론이 흔해 필드 구분자는 \x1f를 쓴다. 메시지는 마지막 필드라 그대로 남는다
+        let fields: Vec<&str> = record.splitn(4, FIELD).collect();
+        if fields.len() < 4 || fields[0].is_empty() {
+            continue;
+        }
+        let Ok(timestamp) = fields[2].trim().parse::<i64>() else {
+            continue;
+        };
+
+        stashes.push(StashInfo {
+            short_sha: short_sha(fields[0]),
+            sha: fields[0].to_string(),
+            message: fields[3].to_string(),
+            base_sha: fields[1]
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+            timestamp,
+        });
+    }
+    stashes
+}
+
+/// refs 상태 지문. ref 하나라도 이름, 종류, 가리키는 커밋이 바뀌면 값이 달라진다.
+///
+/// 프론트는 skip 페이징 도중 이 값이 바뀌면 누적분을 버리고 전체를 다시 읽는다.
+/// 입력 순서는 [`parse_ref_entries`]의 정렬(종류 → 이름)이라 실행마다 고정된다.
+/// 의존성을 늘리지 않으려고 FNV-1a 64비트를 직접 쓴다. 충돌 내성은 필요 없고
+/// "바뀌었는가"만 보면 되는 용도다.
+pub fn graph_token(refs: &[RefEntry], head_sha: &str) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = OFFSET;
+    let mut absorb = |bytes: &[u8]| {
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    };
+
+    for entry in refs {
+        // 종류까지 섞어야 같은 이름의 로컬/원격 브랜치가 구분된다
+        absorb(format!("{:?}", entry.kind).as_bytes());
+        absorb(b"\x1f");
+        absorb(entry.name.as_bytes());
+        absorb(b"\x1f");
+        absorb(entry.sha.as_bytes());
+        absorb(b"\x1e");
+    }
+    absorb(b"HEAD\x1f");
+    absorb(head_sha.as_bytes());
+
+    format!("{hash:016x}")
 }
 
 /// `git status --porcelain -z` 출력을 세어 미커밋 변경 요약을 만든다. 깨끗하면 None.
@@ -462,6 +534,101 @@ mod tests {
         assert!(entries[1].is_head, "체크아웃된 main만 is_head다");
         assert!(!entries[0].is_head);
         assert!(!entries[2].is_head);
+    }
+
+    #[test]
+    fn stash_list_출력을_파싱한다() {
+        // git stash list --format=%H%x1f%P%x1f%at%x1f%gs%x1e 실측 형태
+        let out = [
+            [
+                "3505d9ecae466f207e9b0b2057c383ab8f1f0cba",
+                "cbbb7657b34c5ae0eb345684c7826d0597911918 9b135c5f2e1cf3cbdafc58490c3fbeea14f26163",
+                "1788225688",
+                "WIP on main: cbbb765 base commit",
+            ]
+            .join("\u{1f}"),
+            [
+                "a218d2cac1125df48edbc9f4d0000000000000aa",
+                "cbbb7657b34c5ae0eb345684c7826d0597911918 1111111111111111111111111111111111111111",
+                "1788225700",
+                "On main: fix: 한글 메시지 콜론 포함",
+            ]
+            .join("\u{1f}"),
+        ]
+        .join("\u{1e}\n")
+            + "\u{1e}\n";
+
+        let stashes = parse_stashes(&out);
+        assert_eq!(stashes.len(), 2);
+
+        assert_eq!(stashes[0].sha, "3505d9ecae466f207e9b0b2057c383ab8f1f0cba");
+        assert_eq!(stashes[0].short_sha, "3505d9ecae");
+        assert_eq!(stashes[0].message, "WIP on main: cbbb765 base commit");
+        assert_eq!(
+            stashes[0].base_sha, "cbbb7657b34c5ae0eb345684c7826d0597911918",
+            "첫 부모가 기반 커밋이다"
+        );
+        assert_eq!(stashes[0].timestamp, 1788225688);
+
+        // 메시지에 콜론이 여러 개고 한글이 섞여도 잘리지 않는다
+        assert_eq!(stashes[1].message, "On main: fix: 한글 메시지 콜론 포함");
+        assert_eq!(stashes[1].base_sha, stashes[0].base_sha);
+    }
+
+    #[test]
+    fn 스태시가_없으면_빈_목록이다() {
+        assert!(parse_stashes("").is_empty());
+        assert!(parse_stashes("\n").is_empty());
+    }
+
+    #[test]
+    fn graph_token은_ref가_바뀌면_달라진다() {
+        let base = vec![
+            RefEntry {
+                name: "main".into(),
+                kind: RefKind::LocalBranch,
+                sha: "aaa".into(),
+                is_head: true,
+            },
+            RefEntry {
+                name: "v1.0".into(),
+                kind: RefKind::Tag,
+                sha: "aaa".into(),
+                is_head: false,
+            },
+        ];
+        let token = graph_token(&base, "aaa");
+
+        assert_eq!(token.len(), 16, "16자리 hex다");
+        assert_eq!(graph_token(&base, "aaa"), token, "같은 입력은 같은 값이다");
+
+        // 브랜치 추가 (기존 커밋을 가리켜도 달라져야 한다)
+        let mut added = base.clone();
+        added.push(RefEntry {
+            name: "feature".into(),
+            kind: RefKind::LocalBranch,
+            sha: "aaa".into(),
+            is_head: false,
+        });
+        assert_ne!(graph_token(&added, "aaa"), token);
+
+        // tip 이동
+        let mut moved = base.clone();
+        moved[0].sha = "bbb".into();
+        assert_ne!(graph_token(&moved, "aaa"), token);
+
+        // 브랜치 이름 변경
+        let mut renamed = base.clone();
+        renamed[0].name = "master".into();
+        assert_ne!(graph_token(&renamed, "aaa"), token);
+
+        // 같은 이름의 로컬/원격 구분
+        let mut kind_swapped = base.clone();
+        kind_swapped[0].kind = RefKind::RemoteBranch;
+        assert_ne!(graph_token(&kind_swapped, "aaa"), token);
+
+        // detached HEAD 이동
+        assert_ne!(graph_token(&base, "ccc"), token);
     }
 
     #[test]

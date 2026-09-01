@@ -62,7 +62,7 @@ where
 /// dump를 실행해 `out`에 쓴다. 요약 한 줄 뒤에 처음 [`PREVIEW_ROWS`]행을 찍는다.
 pub fn run(request: &DumpRequest, out: &mut impl Write) -> Result<(), String> {
     let started = Instant::now();
-    let data = load_graph(request.repo.clone(), request.limit)?;
+    let data = load_graph(request.repo.clone(), request.limit, 0)?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let wip = match data.wip {
@@ -71,8 +71,11 @@ pub fn run(request: &DumpRequest, out: &mut impl Write) -> Result<(), String> {
     };
     writeln!(
         out,
-        "load_graph: {elapsed_ms:.1}ms totalLoaded={} laneCount={} hasMore={} wip={wip}",
-        data.total_loaded, data.lane_count, data.has_more
+        "load_graph: {elapsed_ms:.1}ms totalLoaded={} laneCount={} hasMore={} wip={wip} stashes={}",
+        data.total_loaded,
+        data.lane_count,
+        data.has_more,
+        data.stashes.len()
     )
     .map_err(write_failed)?;
 

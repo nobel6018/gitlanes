@@ -66,10 +66,23 @@ export interface WipInfo {
   stagedFiles: number;
 }
 
-/** Tauri command: load_graph(path, limit) */
+/** 스태시 항목. 그래프에서 base 커밋 위에 의사 행으로 표시 */
+export interface StashInfo {
+  /** 스태시 커밋 sha (실존 커밋 — get_commit_details/get_file_diff 그대로 사용 가능) */
+  sha: string;
+  shortSha: string;
+  /** "WIP on main: ..." 형태의 스태시 메시지 */
+  message: string;
+  /** 스태시가 만들어진 기반 커밋(첫 부모) sha */
+  baseSha: string;
+  /** unix seconds */
+  timestamp: number;
+}
+
+/** Tauri command: load_graph(path, limit, skip) */
 export interface GraphData {
   rows: CommitRow[];
-  /** rows.length */
+  /** skip 적용 전, 이번 limit까지 계산된 전체 행 수 (rows.length + skip과 일치) */
   totalLoaded: number;
   /** limit에 걸려 잘렸으면 true */
   hasMore: boolean;
@@ -77,6 +90,11 @@ export interface GraphData {
   laneCount: number;
   /** 미커밋 변경. 없으면 null. GraphView가 HEAD 행 위에 WIP 행으로 렌더 */
   wip: WipInfo | null;
+  /** refs 상태 지문 (모든 ref tip sha의 해시). skip 페이징 중 이 값이 바뀌면
+   *  프론트는 누적분을 버리고 skip=0으로 전체 리로드한다 */
+  graphToken: string;
+  /** 스태시 목록 (skip과 무관하게 항상 전체) */
+  stashes: StashInfo[];
 }
 
 /** Tauri command: list_refs(path) — 사이드바용 전체 refs (로드된 커밋 범위와 무관) */

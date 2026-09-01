@@ -397,9 +397,25 @@
 }
 
 .diff-line {
+  height: 18px; /* DiffView의 LINE_HEIGHT와 일치해야 한다 */
   padding: 0 10px;
   white-space: pre;
   min-width: max-content;
+}
+
+/* 가상 스크롤 모드: spacer가 전체 높이를 만들고, 보이는 줄만 절대 배치한다 */
+.diff.virt {
+  padding: 0;
+}
+
+.diff-spacer {
+  position: relative;
+}
+
+.diff-window {
+  position: absolute;
+  left: 0;
+  min-width: 100%;
 }
 
 .diff-line.add {
@@ -845,4 +861,17 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.stash-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--modified);
+  border-radius: 3px;
+  color: var(--modified);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  vertical-align: 1px;
 }

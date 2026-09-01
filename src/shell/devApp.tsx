@@ -5,13 +5,24 @@ import { createRoot } from "react-dom/client";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import App from "../App";
 import { makeMockGraph } from "../graph";
-import type { CommitDetails, FileChange, GraphData, RefEntry, RepoInfo } from "../types";
+import type {
+  CommitDetails,
+  FileChange,
+  GraphData,
+  RefEntry,
+  RepoInfo,
+  StashInfo,
+} from "../types";
 import "../theme.css";
 
 const MOCK_PATH = "/mock/awesome-project";
 const MOCK_PICK_PATH = "/mock/picked-from-dialog";
 /** 전체 커밋 수. limit이 이 값보다 작으면 hasMore가 켜진다. */
 const TOTAL_COMMITS = 12340;
+/** refs 지문. mock에서는 고정이라 append 페이징이 항상 성립한다 */
+const GRAPH_TOKEN = "mock-graph-token-v1";
+/** 이 파일을 열면 5,000줄짜리 diff가 와서 DiffView 가상 스크롤을 검증할 수 있다 */
+const HUGE_DIFF_FILE = "src/generated/api-schema.ts";
 
 const REPO: RepoInfo = {
   path: MOCK_PATH,
@@ -36,22 +47,51 @@ function hashOf(text: string): number {
 
 const graphCache = new Map<number, GraphData>();
 
-function mockGraph(limit: number): GraphData {
-  const cached = graphCache.get(limit);
-  if (cached !== undefined) {
-    return cached;
+function fakeSha(seed: string): string {
+  let out = "";
+  let h = hashOf(seed);
+  while (out.length < 40) {
+    h = (Math.imul(h, 0x01000193) ^ out.length) >>> 0;
+    out += h.toString(16).padStart(8, "0");
   }
+  return out.slice(0, 40);
+}
+
+function mockStashes(rows: GraphData["rows"]): StashInfo[] {
+  const picks = [3, 12].filter((i) => i < rows.length);
+  return picks.map((rowIndex, i) => {
+    const sha = fakeSha(`stash-${i}`);
+    return {
+      sha,
+      shortSha: sha.slice(0, 10),
+      message: i === 0
+        ? "WIP on main: 8f2c1a9 레인 색 재활용 실험"
+        : "On feat/graph-canvas: 캔버스 DPR 스케일 임시 저장",
+      baseSha: rows[rowIndex].sha,
+      timestamp: rows[rowIndex].timestamp + 60,
+    };
+  });
+}
+
+/** limit까지 레이아웃을 만들어 캐시하고, rows는 [skip, limit) 구간만 잘라 돌려준다 */
+function mockGraph(limit: number, skip: number): GraphData {
   const count = Math.min(limit, TOTAL_COMMITS);
-  const base = makeMockGraph(count);
-  const data: GraphData = {
+  let base = graphCache.get(count);
+  if (base === undefined) {
+    base = makeMockGraph(count);
+    graphCache.set(count, base);
+  }
+  return {
     ...base,
+    rows: base.rows.slice(Math.max(0, skip)),
+    // totalLoaded/hasMore/laneCount/wip/graphToken/stashes는 전체 기준
     totalLoaded: base.rows.length,
     hasMore: count < TOTAL_COMMITS,
     // 워킹 디렉토리가 더러운 상태 — GraphView가 HEAD 위에 WIP 행을 그린다
     wip: { changedFiles: 7, stagedFiles: 3 },
+    graphToken: GRAPH_TOKEN,
+    stashes: mockStashes(base.rows),
   };
-  graphCache.set(limit, data);
-  return data;
 }
 
 /** 로컬 5 + origin 20 + 태그 5. makeMockGraph가 만든 refs를 먼저 흡수해 그래프 pill과 어긋나지 않게 한다. */
@@ -94,7 +134,7 @@ function mockRefs(): RefEntry[] {
   if (refsCache !== null) {
     return refsCache;
   }
-  const rows = mockGraph(1000).rows;
+  const rows = mockGraph(1000, 0).rows;
   const byName = new Map<string, RefEntry>();
 
   // 1) 그래프가 실제로 붙여둔 ref를 먼저 채운다
@@ -162,6 +202,8 @@ function mockFiles(seed: number): FileChange[] {
     { path: "src/graph/lane-layout.ts", oldPath: "src/graph/layout.ts", status: "R", additions: 9, deletions: 4 },
     { path: "src/legacy/OldGraph.tsx", oldPath: null, status: "D", additions: 0, deletions: 212 },
     { path: "docs/graph-rendering.md", oldPath: null, status: "A", additions: 47, deletions: 0 },
+    // 가상 스크롤 검증용 대형 diff
+    { path: HUGE_DIFF_FILE, oldPath: null, status: "M", additions: 2480, deletions: 2470 },
   ];
 }
 
@@ -197,7 +239,36 @@ function mockDetails(sha: string): CommitDetails {
   };
 }
 
+/** 5,000줄짜리 합성 diff. 500줄마다 hunk 헤더가 들어간다 */
+function hugeDiff(file: string): string {
+  const out: string[] = [
+    `diff --git a/${file} b/${file}`,
+    "index 1c0ffee..0ddba11 100644",
+    `--- a/${file}`,
+    `+++ b/${file}`,
+  ];
+  for (let i = 0; i < 5000; i++) {
+    if (i % 500 === 0) {
+      const at = i + 12;
+      out.push(`@@ -${at},500 +${at},500 @@ export interface ApiSchema {`);
+      continue;
+    }
+    const kind = i % 7;
+    if (kind === 1 || kind === 4) {
+      out.push(`+  field${i}: string | null;`);
+    } else if (kind === 2) {
+      out.push(`-  field${i}: string;`);
+    } else {
+      out.push(`   readonly field${i}: number;`);
+    }
+  }
+  return out.join("\n");
+}
+
 function mockDiff(file: string, oldFile: string | null): string {
+  if (file === HUGE_DIFF_FILE) {
+    return hugeDiff(file);
+  }
   const header = oldFile === null
     ? `diff --git a/${file} b/${file}\nindex 3a91c04..7de2b18 100644\n--- a/${file}\n+++ b/${file}`
     : `diff --git a/${oldFile} b/${file}\nsimilarity index 86%\nrename from ${oldFile}\nrename to ${file}\nindex 3a91c04..7de2b18 100644\n--- a/${oldFile}\n+++ b/${file}`;
@@ -264,7 +335,8 @@ mockIPC(async (cmd, payload) => {
     case "load_graph": {
       await sleep(220);
       const limit = Number(readArg(payload, "limit") ?? 0);
-      return mockGraph(limit);
+      const skip = Number(readArg(payload, "skip") ?? 0);
+      return mockGraph(limit, skip);
     }
 
     case "list_refs":

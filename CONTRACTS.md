@@ -29,6 +29,14 @@ list_refs(path: string) -> RefEntry[]
     // 사이드바용 전체 refs. 로드된 커밋 범위와 무관하게 모든 브랜치/태그
 ```
 
+## v0.3 확장 (skip 페이징, 스태시, diff 가상화)
+
+- `load_graph(path, limit, skip)`: 레이아웃은 항상 처음부터 limit까지 계산하되 **rows는 [skip, limit) 구간만 직렬화**해 반환한다. totalLoaded/hasMore/laneCount/wip/graphToken/stashes는 전체 기준. skip=0이 전체 로드
+- 프론트 페이징 흐름: 더 보기 시 `skip=현재 rows 길이, limit=skip+COMMITS_PER_PAGE`로 호출해 **append**. 응답의 graphToken이 보관값과 다르면 append하지 않고 skip=0 전체 리로드
+- `GraphData.stashes`: rust-core가 `git stash list`에서 채움 (없으면 빈 배열)
+- GraphView 스태시 렌더: baseSha 행 **바로 위**에 의사 행 삽입 (WIP와 같은 display-index 방식, 삽입이 여러 개일 수 있으니 일반화). GRAPH에는 base 레인 위치에 점선 다이아몬드(또는 대시 링) + base 점까지 점선 엣지, MESSAGE는 fg-2 이탤릭 `≡ <message>`, SHA/DATE 표시. **클릭 가능**: onSelect(stash.sha) → 상세 패널이 기존 get_commit_details로 동작. baseSha가 로드 범위 밖이면 그 스태시는 표시하지 않음. WIP와 같은 커밋 위에 겹치면 WIP가 더 위
+- DiffView(ui-shell): 줄 수 1,000 초과 diff는 가상 스크롤로 렌더 (고정 줄 높이, 보이는 범위 ±30줄만 DOM)
+
 ## v0.2 확장 (WIP 행, 스크롤 타깃, 키보드)
 
 - `GraphData.wip: WipInfo | null`: rust-core가 `git status --porcelain -z` 1회로 채운다. 깨끗하면 null

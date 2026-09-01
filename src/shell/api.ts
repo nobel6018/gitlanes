@@ -6,8 +6,9 @@ export function openRepo(path: string): Promise<RepoInfo> {
   return invoke<RepoInfo>("open_repo", { path });
 }
 
-export function loadGraph(path: string, limit: number): Promise<GraphData> {
-  return invoke<GraphData>("load_graph", { path, limit });
+/** skip>0이면 rows는 [skip, limit) 구간만 온다. 나머지 필드는 전체 기준 */
+export function loadGraph(path: string, limit: number, skip: number): Promise<GraphData> {
+  return invoke<GraphData>("load_graph", { path, limit, skip });
 }
 
 export function getCommitDetails(path: string, sha: string): Promise<CommitDetails> {
