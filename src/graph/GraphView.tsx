@@ -18,7 +18,7 @@ import {
   laneColor,
   laneColorAlpha,
 } from "./layout";
-import { RefPills } from "./RefPills";
+import { RefPills, refsTitle } from "./RefPills";
 import "./graph.css";
 
 export interface GraphViewProps {
@@ -69,7 +69,11 @@ const Row = memo(function Row({
       style={{ top, height: ROW_HEIGHT }}
       onClick={() => onSelect(row.sha)}
     >
-      <div className="gl-cell gl-cell-branch" style={{ width: BRANCH_COL_WIDTH }}>
+      <div
+        className="gl-cell gl-cell-branch"
+        style={{ width: BRANCH_COL_WIDTH }}
+        title={refsTitle(row.refs, showTags)}
+      >
         <RefPills refs={row.refs} laneColor={laneColor(row.color)} showTags={showTags} />
       </div>
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
@@ -178,6 +182,25 @@ export function GraphView({
   const loadMoreFiredAtRef = useRef(-1);
 
   const [size, setSize] = useState({ width: 0, height: 0 });
+  /** 스크롤바가 차지하는 실제 폭. macOS 오버레이 스크롤바면 0이라 헤더가 그대로다 */
+  const [scrollbarWidth, setScrollbarWidth] = useState(0);
+
+  const measure = useCallback(() => {
+    const body = bodyRef.current;
+    if (body) {
+      const rect = body.getBoundingClientRect();
+      setSize((prev) =>
+        Math.abs(prev.width - rect.width) < 0.5 && Math.abs(prev.height - rect.height) < 0.5
+          ? prev
+          : { width: rect.width, height: rect.height },
+      );
+    }
+    const scroller = scrollRef.current;
+    if (scroller) {
+      const bar = scroller.offsetWidth - scroller.clientWidth;
+      setScrollbarWidth((prev) => (prev === bar ? prev : bar));
+    }
+  }, []);
   const [range, setRange] = useState({ start: 0, end: 0 });
 
   const rows = data.rows;
@@ -245,19 +268,16 @@ export function GraphView({
       bgColorRef.current = value || BG_FALLBACK;
     };
     readBg();
-    const measure = () => {
-      const rect = body.getBoundingClientRect();
-      setSize((prev) =>
-        Math.abs(prev.width - rect.width) < 0.5 && Math.abs(prev.height - rect.height) < 0.5
-          ? prev
-          : { width: rect.width, height: rect.height },
-      );
-    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(body);
     return () => observer.disconnect();
-  }, []);
+  }, [measure]);
+
+  // 행 수가 변하면 스크롤바가 생기거나 사라진다. 헤더 패딩을 다시 맞춘다
+  useEffect(() => {
+    measure();
+  }, [measure, displayCount]);
 
   // data 교체(다른 레포 열기 등)로 브라우저가 scrollTop을 클램프했을 수 있으니 실제 값을 다시 읽는다.
   // 스크롤 핸들러 경로에서는 강제 리플로우를 피하려고 ref 값을 그대로 쓴다
@@ -450,7 +470,7 @@ export function GraphView({
 
   return (
     <div className="gl-root">
-      <div className="gl-header">
+      <div className="gl-header" style={{ paddingRight: scrollbarWidth }}>
         <div className="gl-cell" style={{ width: BRANCH_COL_WIDTH }}>
           Branch / Tag
         </div>
