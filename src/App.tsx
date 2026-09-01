@@ -292,6 +292,20 @@ export default function App() {
     handleCloseTab(activeIdRef.current);
   }, [handleCloseTab]);
 
+  /** 활성 탭 기준 좌우 이동. 양끝에서는 순환한다 */
+  const handleCycleTab = useCallback((direction: -1 | 1) => {
+    const tabs = tabsRef.current;
+    if (tabs.length < 2) {
+      return;
+    }
+    const index = tabs.findIndex((tab) => tab.id === activeIdRef.current);
+    if (index < 0) {
+      return;
+    }
+    const next = (index + direction + tabs.length) % tabs.length;
+    setActiveId(tabs[next].id);
+  }, []);
+
   /** ⌘1~⌘8은 그 순번 탭, ⌘9는 마지막 탭 */
   const handleGotoTab = useCallback((slot: number) => {
     const tabs = tabsRef.current;
@@ -318,6 +332,7 @@ export default function App() {
     closeTab: handleMenuCloseTab,
     refresh: handleMenuRefresh,
     gotoTab: handleGotoTab,
+    cycleTab: handleCycleTab,
   });
   menuHandlers.current = {
     newTab: handleNewTab,
@@ -325,6 +340,7 @@ export default function App() {
     closeTab: handleMenuCloseTab,
     refresh: handleMenuRefresh,
     gotoTab: handleGotoTab,
+    cycleTab: handleCycleTab,
   };
 
   useEffect(() => {
@@ -353,6 +369,8 @@ export default function App() {
     track(
       listen<number>("menu:goto-tab", (event) => menuHandlers.current.gotoTab(event.payload)),
     );
+    track(listen("menu:prev-tab", () => menuHandlers.current.cycleTab(-1)));
+    track(listen("menu:next-tab", () => menuHandlers.current.cycleTab(1)));
 
     return () => {
       disposed = true;
@@ -363,6 +381,29 @@ export default function App() {
     };
   }, []);
 
+  // ⌘⇧[ / ⌘⇧]는 macOS 네이티브 메뉴 accelerator로 잡을 수 없어(AppKit이 Shift 적용된 "{"로 비교)
+  // 키 이벤트가 웹뷰까지 내려온다. 그래서 Tauri 여부와 무관하게 항상 여기서 처리한다.
+  // 네이티브 메뉴는 ⌥⌘← / ⌥⌘→로 등록돼 있어 조합이 겹치지 않는다
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.shiftKey || (!event.metaKey && !event.ctrlKey)) {
+        return;
+      }
+      // key 값은 레이아웃에 따라 "{"/"}"로 오므로 물리 키로 판정한다
+      if (event.code === "BracketLeft") {
+        event.preventDefault();
+        menuHandlers.current.cycleTab(-1);
+        return;
+      }
+      if (event.code === "BracketRight") {
+        event.preventDefault();
+        menuHandlers.current.cycleTab(1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   // 하네스 전용 폴백. ⌘W는 브라우저가 선점하므로 다루지 않는다
   useEffect(() => {
     if (!menuFallback) {
@@ -370,6 +411,9 @@ export default function App() {
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.metaKey && !event.ctrlKey) {
+        return;
+      }
+      if (event.shiftKey) {
         return;
       }
       const key = event.key.toLowerCase();

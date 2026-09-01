@@ -7,7 +7,7 @@
 //!
 //! File 메뉴와 탭 이동 항목은 동작을 rust 쪽에서 하지 않고 웹뷰로 이벤트만 브로드캐스트한다.
 //! 탭 상태는 프론트가 들고 있어서 무엇을 닫고 무엇을 새로 열지는 프론트가 판단한다.
-//! File 메뉴 이벤트는 payload가 없고, 탭 이동(`menu:goto-tab`)만 1~9 숫자를 함께 보낸다.
+//! 탭 번호 이동(`menu:goto-tab`)만 1~9 숫자를 payload로 보내고, 나머지는 payload가 없다.
 //!
 //! @see CONTRACTS.md
 
@@ -34,6 +34,12 @@ const TAB_ID_PREFIX: &str = "window:goto-tab:";
 
 /// 탭 이동 이벤트. 다른 메뉴 이벤트와 달리 payload(1~9 숫자)가 붙는다.
 const GOTO_TAB_EVENT: &str = "menu:goto-tab";
+
+/// 탭 순환 항목. (메뉴 항목 id, emit할 이벤트 이름). payload는 없다.
+const TAB_CYCLE_EVENTS: [(&str, &str); 2] = [
+    ("window:prev-tab", "menu:prev-tab"),
+    ("window:next-tab", "menu:next-tab"),
+];
 
 /// ⌘1~⌘9. 마지막 슬롯(9)은 번호가 아니라 "마지막 탭"이다.
 const TAB_SLOTS: u8 = 9;
@@ -140,11 +146,38 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         })
         .collect::<tauri::Result<_>>()?;
 
+    // 브라우저 관례는 ⇧⌘[ / ⇧⌘]인데 muda가 keyEquivalent를 "["/"]"로 등록하고 AppKit은
+    // Shift가 적용된 "{"/"}"와 비교해서 매칭되지 않는다(NSMenu 직접 실험으로 확인).
+    // fix_shift_accelerators는 알파벳만 고치므로 이 항목도 구제하지 못한다.
+    // Safari의 대체 조합인 ⌥⌘←/→로 둔다. Shift를 쓰지 않아 매칭이 성립한다.
+    let prev_tab = MenuItem::with_id(
+        app,
+        TAB_CYCLE_EVENTS[0].0,
+        "Previous Tab",
+        true,
+        Some("Alt+CmdOrCtrl+Left"),
+    )?;
+    let next_tab = MenuItem::with_id(
+        app,
+        TAB_CYCLE_EVENTS[1].0,
+        "Next Tab",
+        true,
+        Some("Alt+CmdOrCtrl+Right"),
+    )?;
+
     let minimize = PredefinedMenuItem::minimize(app, None)?;
     let zoom = PredefinedMenuItem::maximize(app, None)?;
+    let before_cycle = PredefinedMenuItem::separator(app)?;
     let before_tabs = PredefinedMenuItem::separator(app)?;
 
-    let mut window_items: Vec<&dyn IsMenuItem<R>> = vec![&minimize, &zoom, &before_tabs];
+    let mut window_items: Vec<&dyn IsMenuItem<R>> = vec![
+        &minimize,
+        &zoom,
+        &before_cycle,
+        &prev_tab,
+        &next_tab,
+        &before_tabs,
+    ];
     window_items.extend(tabs.iter().map(|item| item as &dyn IsMenuItem<R>));
 
     let window = Submenu::with_items(app, "Window", true, &window_items)?;
@@ -193,7 +226,12 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
         return;
     }
 
-    if let Some((_, name)) = FILE_EVENTS.iter().find(|(item, _)| *item == id) {
+    let payloadless = FILE_EVENTS
+        .iter()
+        .chain(TAB_CYCLE_EVENTS.iter())
+        .find(|(item, _)| *item == id);
+
+    if let Some((_, name)) = payloadless {
         if let Err(error) = app.emit(name, ()) {
             eprintln!("메뉴 이벤트 {name}을 보내지 못했습니다: {error}");
         }
