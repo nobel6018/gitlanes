@@ -1,6 +1,8 @@
 // 탭 컨테이너. 탭 목록/활성 탭/영속화만 담당하고, 레포 상태는 각 RepoWorkspace가 가진다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { errorMessage, getStartupRepo } from "./shell/api";
 import { basename } from "./shell/format";
 import { RepoWorkspace } from "./shell/RepoWorkspace";
@@ -57,6 +59,22 @@ function writeStoredTabs(tabs: TabInfo[], activeId: number): void {
   }
 }
 
+/** 탭별 메뉴 명령 카운터. 값이 오른 탭만 그 명령을 실행한다 */
+interface TabCommands {
+  open: number;
+  refresh: number;
+}
+
+const NO_COMMANDS: TabCommands = { open: 0, refresh: 0 };
+
+/** 탭 스피너 최소 표시 시간(ms). 로컬 레포는 30ms에 끝나 번쩍임만 남는다 */
+const MIN_SPINNER_MS = 250;
+
+/** Tauri 웹뷰인가. 하네스(브라우저)에서는 메뉴 이벤트가 없어 keydown 폴백을 쓴다 */
+function hasTauriInternals(): boolean {
+  return typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== "undefined";
+}
+
 let nextTabId = 1;
 
 function makeTab(path: string | null): TabInfo {
@@ -86,6 +104,11 @@ export default function App() {
   const [tabs, setTabs] = useState<TabInfo[]>(initialTabs);
   const [activeId, setActiveId] = useState<number>(() => initialActiveId(tabs));
   const startupDone = useRef(false);
+  const [commands, setCommands] = useState<Record<number, TabCommands>>({});
+  const [tabLoading, setTabLoading] = useState<Record<number, boolean>>({});
+  const loadingStartedAt = useRef<Record<number, number>>({});
+  const loadingTimers = useRef<Record<number, number>>({});
+  const [menuFallback, setMenuFallback] = useState(() => !hasTauriInternals());
   // 업데이트 확인은 탭 수와 무관하게 앱 전역에서 하나만 돈다
   const updater = useUpdateChecker();
 
@@ -97,6 +120,8 @@ export default function App() {
   /** 콜백에서 최신 탭 목록을 읽기 위한 거울. 콜백 identity를 안정적으로 유지한다 */
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
 
   /** 이미 열린 탭이 있으면 활성화, 빈 웰컴 탭이 있으면 거기에, 아니면 새 탭 */
   const openInTab = useCallback((path: string) => {
@@ -119,6 +144,56 @@ export default function App() {
     setActiveId(created.id);
   }, []);
 
+  /** 워크스페이스의 로딩 상태를 받아 최소 250ms는 스피너가 보이도록 늦춰 끈다 */
+  const handleLoadingChange = useCallback((tabId: number, loading: boolean) => {
+    const timer = loadingTimers.current[tabId];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete loadingTimers.current[tabId];
+    }
+    if (loading) {
+      loadingStartedAt.current[tabId] = Date.now();
+      setTabLoading((prev) => (prev[tabId] === true ? prev : { ...prev, [tabId]: true }));
+      return;
+    }
+    const elapsed = Date.now() - (loadingStartedAt.current[tabId] ?? 0);
+    const remaining = Math.max(0, MIN_SPINNER_MS - elapsed);
+    if (remaining === 0) {
+      setTabLoading((prev) => (prev[tabId] === true ? { ...prev, [tabId]: false } : prev));
+      return;
+    }
+    loadingTimers.current[tabId] = window.setTimeout(() => {
+      delete loadingTimers.current[tabId];
+      setTabLoading((prev) => ({ ...prev, [tabId]: false }));
+    }, remaining);
+  }, []);
+
+  useEffect(() => {
+    const timers = loadingTimers.current;
+    return () => {
+      for (const id of Object.keys(timers)) {
+        window.clearTimeout(timers[Number(id)]);
+      }
+    };
+  }, []);
+
+  const loadingIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const [id, loading] of Object.entries(tabLoading)) {
+      if (loading) {
+        ids.add(Number(id));
+      }
+    }
+    return ids;
+  }, [tabLoading]);
+
+  const bumpCommand = useCallback((tabId: number, key: keyof TabCommands) => {
+    setCommands((prev) => {
+      const current = prev[tabId] ?? NO_COMMANDS;
+      return { ...prev, [tabId]: { ...current, [key]: current[key] + 1 } };
+    });
+  }, []);
+
   // 시작 레포(CLI 인자/환경변수)는 앱 전체에서 1회만 확인한다
   useEffect(() => {
     if (startupDone.current) {
@@ -137,13 +212,33 @@ export default function App() {
       });
   }, [openInTab]);
 
+  // 빈 탭(웰컴 상태)은 앱 전체에 하나만 둔다. 이미 있으면 그 탭을 활성화한다
   const handleNewTab = useCallback(() => {
+    const empty = tabsRef.current.find((tab) => tab.path === null);
+    if (empty !== undefined) {
+      setActiveId(empty.id);
+      return;
+    }
     const created = makeTab(null);
     setTabs([...tabsRef.current, created]);
     setActiveId(created.id);
   }, []);
 
   const handleCloseTab = useCallback((id: number) => {
+    const timer = loadingTimers.current[id];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete loadingTimers.current[id];
+    }
+    delete loadingStartedAt.current[id];
+    setTabLoading((current) => {
+      if (!(id in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
     const prev = tabsRef.current;
     const index = prev.findIndex((tab) => tab.id === id);
     if (index < 0) {
@@ -180,6 +275,138 @@ export default function App() {
     return true;
   }, []);
 
+  /**
+   * 메뉴 Open Repository…: 활성 탭이 빈 탭이면 거기서, 아니면 기존 빈 탭에서,
+   * 그것도 없을 때만 새 탭을 만들어 연다 (빈 탭은 앱 전체에 하나)
+   */
+  const handleMenuOpenRepo = useCallback(() => {
+    const tabs = tabsRef.current;
+    const active = tabs.find((tab) => tab.id === activeIdRef.current);
+    if (active !== undefined && active.path === null) {
+      bumpCommand(active.id, "open");
+      return;
+    }
+    const empty = tabs.find((tab) => tab.path === null);
+    if (empty !== undefined) {
+      setActiveId(empty.id);
+      bumpCommand(empty.id, "open");
+      return;
+    }
+    const created = makeTab(null);
+    setTabs([...tabs, created]);
+    setActiveId(created.id);
+    bumpCommand(created.id, "open");
+  }, [bumpCommand]);
+
+  const handleMenuRefresh = useCallback(() => {
+    bumpCommand(activeIdRef.current, "refresh");
+  }, [bumpCommand]);
+
+  const handleMenuCloseTab = useCallback(() => {
+    handleCloseTab(activeIdRef.current);
+  }, [handleCloseTab]);
+
+  /** ⌘1~⌘8은 그 순번 탭, ⌘9는 마지막 탭 */
+  const handleGotoTab = useCallback((slot: number) => {
+    const tabs = tabsRef.current;
+    if (tabs.length === 0) {
+      return;
+    }
+    if (slot === 9) {
+      setActiveId(tabs[tabs.length - 1].id);
+      return;
+    }
+    if (slot < 1 || slot > 8) {
+      return;
+    }
+    const target = tabs[slot - 1];
+    if (target !== undefined) {
+      setActiveId(target.id);
+    }
+  }, []);
+
+  // 네이티브 메뉴 이벤트 구독. 핸들러는 ref로 읽어 재구독을 피한다
+  const menuHandlers = useRef({
+    newTab: handleNewTab,
+    openRepo: handleMenuOpenRepo,
+    closeTab: handleMenuCloseTab,
+    refresh: handleMenuRefresh,
+    gotoTab: handleGotoTab,
+  });
+  menuHandlers.current = {
+    newTab: handleNewTab,
+    openRepo: handleMenuOpenRepo,
+    closeTab: handleMenuCloseTab,
+    refresh: handleMenuRefresh,
+    gotoTab: handleGotoTab,
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: UnlistenFn[] = [];
+
+    const track = (pending: Promise<UnlistenFn>) => {
+      pending
+        .then((unlisten) => {
+          if (disposed) {
+            unlisten();
+            return;
+          }
+          unlisteners.push(unlisten);
+        })
+        .catch(() => {
+          // Tauri 웹뷰가 아니면 구독이 실패한다. keydown 폴백으로 넘어간다
+          setMenuFallback(true);
+        });
+    };
+
+    track(listen("menu:new-tab", () => menuHandlers.current.newTab()));
+    track(listen("menu:open-repo", () => menuHandlers.current.openRepo()));
+    track(listen("menu:close-tab", () => menuHandlers.current.closeTab()));
+    track(listen("menu:refresh", () => menuHandlers.current.refresh()));
+    track(
+      listen<number>("menu:goto-tab", (event) => menuHandlers.current.gotoTab(event.payload)),
+    );
+
+    return () => {
+      disposed = true;
+      for (const unlisten of unlisteners) {
+        unlisten();
+      }
+      unlisteners.length = 0;
+    };
+  }, []);
+
+  // 하네스 전용 폴백. ⌘W는 브라우저가 선점하므로 다루지 않는다
+  useEffect(() => {
+    if (!menuFallback) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.metaKey && !event.ctrlKey) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (key === "t") {
+        event.preventDefault();
+        menuHandlers.current.newTab();
+        return;
+      }
+      if (key === "r") {
+        // 브라우저 새로고침을 막는다
+        event.preventDefault();
+        menuHandlers.current.refresh();
+        return;
+      }
+      if (key >= "1" && key <= "9") {
+        event.preventDefault();
+        menuHandlers.current.gotoTab(Number.parseInt(key, 10));
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [menuFallback]);
+
   const updateProps: WorkspaceUpdateProps = useMemo(
     () => ({
       tag: updater.update === null ? null : updater.update.tag,
@@ -204,6 +431,7 @@ export default function App() {
       <TabBar
         tabs={tabs}
         activeId={activeId}
+        loadingIds={loadingIds}
         onActivate={setActiveId}
         onClose={handleCloseTab}
         onNewTab={handleNewTab}
@@ -217,6 +445,8 @@ export default function App() {
           onRequestOpen={handleRequestOpen}
           update={updateProps}
           banner={tab.id === activeId ? banner : null}
+          commands={commands[tab.id] ?? NO_COMMANDS}
+          onLoadingChange={handleLoadingChange}
         />
       ))}
       <UpdatePill checking={updater.checking} result={updater.result} />
@@ -232,6 +462,8 @@ interface TabPanelProps {
   update: WorkspaceUpdateProps;
   /** 활성 탭에만 실제 배너가 내려온다 */
   banner: ReactNode;
+  commands: TabCommands;
+  onLoadingChange: (tabId: number, loading: boolean) => void;
 }
 
 /**
@@ -239,7 +471,16 @@ interface TabPanelProps {
  * hidden이면 display:none이라 GraphView는 ResizeObserver로 0높이를 보고 쉬다가,
  * 다시 보일 때 크기를 새로 잰다.
  */
-function TabPanel({ tab, active, onRepoOpened, onRequestOpen, update, banner }: TabPanelProps) {
+function TabPanel({
+  tab,
+  active,
+  onRepoOpened,
+  onRequestOpen,
+  update,
+  banner,
+  commands,
+  onLoadingChange,
+}: TabPanelProps) {
   const handleRepoOpened = useCallback(
     (path: string, name: string) => onRepoOpened(tab.id, path, name),
     [onRepoOpened, tab.id],
@@ -247,6 +488,10 @@ function TabPanel({ tab, active, onRepoOpened, onRequestOpen, update, banner }: 
   const handleRequestOpen = useCallback(
     (path: string) => onRequestOpen(tab.id, path),
     [onRequestOpen, tab.id],
+  );
+  const handleLoadingChange = useCallback(
+    (loading: boolean) => onLoadingChange(tab.id, loading),
+    [onLoadingChange, tab.id],
   );
 
   return (
@@ -258,6 +503,9 @@ function TabPanel({ tab, active, onRepoOpened, onRequestOpen, update, banner }: 
         requestOpen={handleRequestOpen}
         update={update}
         banner={banner}
+        openDialogNonce={commands.open}
+        refreshNonce={commands.refresh}
+        onLoadingChange={handleLoadingChange}
       />
     </div>
   );

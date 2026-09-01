@@ -6,6 +6,8 @@ mod commands;
 mod dump;
 mod git;
 mod layout;
+#[cfg(desktop)]
+mod menu;
 mod model;
 mod parse;
 mod remote;
@@ -28,9 +30,22 @@ pub fn run() {
         return;
     }
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_dialog::init());
+
+    // 기본 메뉴를 쓰면 macOS의 Close Window가 ⌘W를 선점해 탭 대신 창이 닫힌다
+    #[cfg(desktop)]
+    let builder = builder.menu(menu::build).on_menu_event(menu::handle);
+
+    // 메뉴가 설치된 뒤에야 AppKit 쪽 보정이 가능하다
+    #[cfg(target_os = "macos")]
+    let builder = builder.setup(|_app| {
+        menu::fix_shift_accelerators();
+        Ok(())
+    });
+
+    builder
         .invoke_handler(tauri::generate_handler![
             commands::open_repo,
             commands::load_graph,
