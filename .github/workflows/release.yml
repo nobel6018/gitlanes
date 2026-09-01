@@ -9,8 +9,10 @@ permissions:
 
 jobs:
   # 태그 형태로 빌드 범위를 정한다:
-  #   v1.2.3       → 4개 플랫폼 전부, 정식 릴리스
-  #   v1.2.3-rc.1  → macOS arm64만, 프리릴리스 (하이픈이 기준)
+  #   v1.2.3       → macOS universal + Linux + Windows, 정식 릴리스
+  #   v1.2.3-rc.1  → macOS universal만, 프리릴리스 (하이픈이 기준)
+  # macOS는 인텔 러너(macos-13, 사실상 은퇴로 대기열 무한) 대신
+  # arm 러너에서 universal 바이너리(arm64+x86_64)를 크로스 빌드한다.
   plan:
     runs-on: ubuntu-latest
     outputs:
@@ -20,10 +22,10 @@ jobs:
       - id: set
         run: |
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
-            echo 'matrix=[{"platform":"macos-latest"}]' >> "$GITHUB_OUTPUT"
+            echo 'matrix=[{"platform":"macos-latest","args":"--target universal-apple-darwin"}]' >> "$GITHUB_OUTPUT"
             echo 'prerelease=true' >> "$GITHUB_OUTPUT"
           else
-            echo 'matrix=[{"platform":"macos-latest"},{"platform":"macos-13"},{"platform":"ubuntu-22.04"},{"platform":"windows-latest"}]' >> "$GITHUB_OUTPUT"
+            echo 'matrix=[{"platform":"macos-latest","args":"--target universal-apple-darwin"},{"platform":"ubuntu-22.04","args":""},{"platform":"windows-latest","args":""}]' >> "$GITHUB_OUTPUT"
             echo 'prerelease=false' >> "$GITHUB_OUTPUT"
           fi
 
@@ -43,6 +45,8 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       # shared-key를 ci.yml의 dev-build와 맞춰 main에서 데운 캐시를 재사용한다
       - uses: swatinem/rust-cache@v2
@@ -72,3 +76,4 @@ jobs:
           releaseName: "GitLanes ${{ github.ref_name }}"
           releaseDraft: false
           prerelease: ${{ needs.plan.outputs.prerelease }}
+          args: ${{ matrix.args }}
