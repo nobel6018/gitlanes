@@ -183,8 +183,8 @@
 /* ---------- 상세 패널 ---------- */
 
 .detail-panel {
-  flex: 0 0 360px;
-  width: 360px;
+  flex: 0 0 var(--detail-w, 360px);
+  width: var(--detail-w, 360px);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -732,8 +732,8 @@
 /* ---------- 브랜치 사이드바 ---------- */
 
 .sidebar {
-  flex: 0 0 220px;
-  width: 220px;
+  flex: 0 0 var(--sidebar-w, 220px);
+  width: var(--sidebar-w, 220px);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1293,4 +1293,45 @@
 
 .tab.loading:hover .tab-close {
   display: inline-flex;
+}
+
+/* ---------- 세로 스플리터 ---------- */
+
+.split-handle {
+  flex: 0 0 5px;
+  position: relative;
+  z-index: 1;
+  cursor: col-resize;
+  background: transparent;
+  /* 얇은 핸들도 잡기 쉽게 좌우로 살짝 넓힌다 */
+  margin: 0 -2px;
+}
+
+.split-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: transparent;
+  transition: background 90ms ease-out;
+}
+
+.split-handle:hover::after,
+.split-handle.dragging::after {
+  left: 1px;
+  width: 3px;
+  background: var(--accent);
+}
+
+/* 드래그 중에는 문서 전체에서 선택과 커서 변화를 막는다 */
+body.resizing {
+  cursor: col-resize;
+}
+
+body.resizing * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  cursor: col-resize !important;
 }
