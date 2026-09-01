@@ -137,6 +137,21 @@ export interface CommitDetails {
   files: FileChange[];
 }
 
+/** Tauri command: search_commits(path, query, limit) — 전체 히스토리 검색 */
+export interface SearchMatch {
+  sha: string;
+  /** load_graph와 같은 topo 순서에서의 행 인덱스 (이 값+1 이상 limit로 로드하면 행이 존재) */
+  index: number;
+}
+
+/** Tauri command: get_repo_state(path) — 자동 새로고침용 경량 폴링 */
+export interface RepoState {
+  /** GraphData.graphToken과 같은 refs 지문 */
+  graphToken: string;
+  /** 현재 워킹 디렉토리 상태 */
+  wip: WipInfo | null;
+}
+
 // get_file_diff(path, sha, file, oldFile) -> string (unified diff 원문)
 //   oldFile: rename/copy 커밋에서 FileChange.oldPath를 그대로 전달 (아니면 null).
 //   pathspec에 old/new 경로를 함께 걸어 rename이 "new file"로 보이지 않게 한다.

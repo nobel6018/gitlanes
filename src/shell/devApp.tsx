@@ -11,7 +11,10 @@ import type {
   GraphData,
   RefEntry,
   RepoInfo,
+  RepoState,
+  SearchMatch,
   StashInfo,
+  WipInfo,
 } from "../types";
 import "../theme.css";
 
@@ -19,8 +22,22 @@ const MOCK_PATH = "/mock/awesome-project";
 const MOCK_PICK_PATH = "/mock/picked-from-dialog";
 /** 전체 커밋 수. limit이 이 값보다 작으면 hasMore가 켜진다. */
 const TOTAL_COMMITS = 12340;
-/** refs 지문. mock에서는 고정이라 append 페이징이 항상 성립한다 */
-const GRAPH_TOKEN = "mock-graph-token-v1";
+/** 하네스 시작 후 이 시간이 지나면 토큰과 wip이 한 번 바뀐다 (자동 새로고침 검증용) */
+const TOKEN_FLIP_MS = 30_000;
+const STARTED_AT = Date.now();
+
+function flipped(): boolean {
+  return Date.now() - STARTED_AT >= TOKEN_FLIP_MS;
+}
+
+/** refs 지문. 30초 전후로 한 번만 바뀌므로 자동 새로고침이 무한 반복하지 않는다 */
+function currentToken(): string {
+  return flipped() ? "mock-graph-token-v2" : "mock-graph-token-v1";
+}
+
+function currentWip(): WipInfo {
+  return flipped() ? { changedFiles: 9, stagedFiles: 4 } : { changedFiles: 7, stagedFiles: 3 };
+}
 /** 이 파일을 열면 5,000줄짜리 diff가 와서 DiffView 가상 스크롤을 검증할 수 있다 */
 const HUGE_DIFF_FILE = "src/generated/api-schema.ts";
 
@@ -88,8 +105,8 @@ function mockGraph(limit: number, skip: number): GraphData {
     totalLoaded: base.rows.length,
     hasMore: count < TOTAL_COMMITS,
     // 워킹 디렉토리가 더러운 상태 — GraphView가 HEAD 위에 WIP 행을 그린다
-    wip: { changedFiles: 7, stagedFiles: 3 },
-    graphToken: GRAPH_TOKEN,
+    wip: currentWip(),
+    graphToken: currentToken(),
     stashes: mockStashes(base.rows),
   };
 }
@@ -192,6 +209,27 @@ function mockRefs(): RefEntry[] {
 
   refsCache = all;
   return all;
+}
+
+/** 전체 히스토리(12,340행) 대상 검색. 반환 index는 load_graph의 topo 인덱스와 같다 */
+function mockSearch(query: string, limit: number): SearchMatch[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") {
+    return [];
+  }
+  const rows = mockGraph(TOTAL_COMMITS, 0).rows;
+  const out: SearchMatch[] = [];
+  for (let i = 0; i < rows.length && out.length < limit; i++) {
+    const row = rows[i];
+    if (
+      row.subject.toLowerCase().includes(needle) ||
+      row.author.toLowerCase().includes(needle) ||
+      row.sha.toLowerCase().startsWith(needle)
+    ) {
+      out.push({ sha: row.sha, index: i });
+    }
+  }
+  return out;
 }
 
 function mockFiles(seed: number): FileChange[] {
@@ -337,6 +375,19 @@ mockIPC(async (cmd, payload) => {
       const limit = Number(readArg(payload, "limit") ?? 0);
       const skip = Number(readArg(payload, "skip") ?? 0);
       return mockGraph(limit, skip);
+    }
+
+    case "search_commits": {
+      await sleep(160);
+      const query = String(readArg(payload, "query") ?? "");
+      const limit = Math.min(Number(readArg(payload, "limit") ?? 500), 500);
+      return mockSearch(query, limit);
+    }
+
+    case "get_repo_state": {
+      await sleep(30);
+      const state: RepoState = { graphToken: currentToken(), wip: currentWip() };
+      return state;
     }
 
     case "list_refs":

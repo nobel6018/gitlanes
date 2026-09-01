@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CommitDetails, FileChange, Signature } from "../types";
 import { errorMessage, getCommitDetails, getFileDiff } from "./api";
+import { copyText } from "./clipboard";
 import { DiffView } from "./DiffView";
 import { formatTimestamp, shortSha, splitPath, statusLabel } from "./format";
 
@@ -124,7 +125,10 @@ export function CommitDetailPanel({
         <section className="panel-section">
           <div className="meta-row">
             <span className="meta-label">Commit</span>
-            <span className="meta-value mono selectable">{details.sha}</span>
+            <span className="meta-value mono selectable">
+              {details.sha}
+              <CopyShaButton sha={details.sha} onError={onError} />
+            </span>
           </div>
           <SignatureRow label="Author" sig={details.author} />
           {isDistinct(details.author, details.committer) && (
@@ -167,6 +171,62 @@ export function CommitDetailPanel({
         </section>
       </div>
     </aside>
+  );
+}
+
+/** sha 복사 버튼. 성공하면 1.5초간 체크 표시 */
+function CopyShaButton({ sha, onError }: { sha: string; onError: (message: string) => void }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timer.current !== null) {
+        window.clearTimeout(timer.current);
+      }
+    };
+  }, []);
+
+  async function handleCopy() {
+    const ok = await copyText(sha);
+    if (!ok) {
+      onError("클립보드에 복사하지 못했습니다.");
+      return;
+    }
+    setCopied(true);
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current);
+    }
+    timer.current = window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <button
+      className={copied ? "copy-btn copied" : "copy-btn"}
+      onClick={handleCopy}
+      title="Copy full sha"
+      aria-label="Copy full sha"
+    >
+      {copied ? (
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+          <path
+            d="M3 8.6 6.2 12 13 4.8"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+          <g fill="none" stroke="currentColor" strokeWidth="1.3">
+            <rect x="5.4" y="5.4" width="8.2" height="8.2" rx="1.5" />
+            <path d="M10.6 5.4V3.9a1.5 1.5 0 0 0-1.5-1.5H3.9a1.5 1.5 0 0 0-1.5 1.5v5.2a1.5 1.5 0 0 0 1.5 1.5h1.5" />
+          </g>
+        </svg>
+      )}
+    </button>
   );
 }
 

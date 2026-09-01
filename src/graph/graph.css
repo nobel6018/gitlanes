@@ -121,6 +121,24 @@
   text-overflow: ellipsis;
 }
 
+/* 폭만 담당하는 클래스. 헤더 셀과 행 셀이 같은 변수를 보므로 항상 정렬된다.
+   드래그 중에는 .gl-root의 인라인 변수만 갱신돼서 행 리렌더가 없다 */
+.gl-col-branch {
+  width: var(--col-branch);
+}
+
+.gl-col-author {
+  width: var(--col-author);
+}
+
+.gl-col-sha {
+  width: var(--col-sha);
+}
+
+.gl-col-date {
+  width: var(--col-date);
+}
+
 .gl-cell-branch {
   display: flex;
   align-items: center;
@@ -175,6 +193,56 @@
 .gl-cell-date {
   color: var(--fg-2);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── 컬럼 리사이즈 핸들 ─────────────────────────── */
+
+.gl-resizer {
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.gl-resizer-right {
+  right: 0;
+}
+
+.gl-resizer-left {
+  left: 0;
+}
+
+.gl-resizer::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  width: 1px;
+  background: var(--border-1);
+}
+
+.gl-resizer-right::after {
+  right: 0;
+}
+
+.gl-resizer-left::after {
+  left: 0;
+}
+
+.gl-resizer:hover::after,
+.gl-root-resizing .gl-resizer-active::after {
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+}
+
+/* 드래그 중에는 포인터가 핸들 밖으로 나가도 커서와 선택 방지가 유지되어야 한다 */
+.gl-root-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 /* ── ref pill ───────────────────────────────────── */

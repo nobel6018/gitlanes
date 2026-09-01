@@ -875,3 +875,39 @@
   letter-spacing: 0.4px;
   vertical-align: 1px;
 }
+
+.search-spinner {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-2);
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 16px;
+  margin-left: 2px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  vertical-align: -2px;
+}
+
+.copy-btn:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.copy-btn.copied {
+  color: var(--added);
+}
+
+.toast.info {
+  border-color: var(--border-1);
+}
+
+.toast.info .toast-icon {
+  background: var(--added);
+}

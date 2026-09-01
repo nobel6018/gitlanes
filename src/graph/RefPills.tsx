@@ -1,6 +1,5 @@
 // BRANCH / TAG 컬럼의 ref pill. GitKraken처럼 그래프 밖 왼쪽 컬럼에 놓는다.
 import type { RefInfo } from "../types";
-import { BRANCH_COL_WIDTH } from "./layout";
 import { measureText } from "./text";
 
 interface RefPillsProps {
@@ -8,6 +7,8 @@ interface RefPillsProps {
   /** 이 행의 레인 색. localBranch/remoteBranch pill 테두리에 쓴다 */
   laneColor: string;
   showTags: boolean;
+  /** BRANCH 컬럼의 현재 폭. 리사이즈되므로 상수가 아니다 */
+  branchWidth: number;
 }
 
 /** pill 정렬: HEAD → 로컬 → 원격 → 태그 */
@@ -32,8 +33,8 @@ const ICON_WIDTH = 9;
 const CHECK_WIDTH = 8;
 /** .gl-cell-branch의 gap */
 const CELL_GAP = 3;
-/** .gl-cell의 좌우 padding 8+8을 뺀 나머지 */
-const AVAILABLE = BRANCH_COL_WIDTH - 16;
+/** .gl-cell의 좌우 padding 8+8 */
+const CELL_PADDING = 16;
 
 function pillWidth(ref: RefInfo): number {
   const font = ref.isHead ? PILL_FONT_HEAD : PILL_FONT;
@@ -114,22 +115,23 @@ function CheckIcon() {
   );
 }
 
-export function RefPills({ refs, laneColor, showTags }: RefPillsProps) {
+export function RefPills({ refs, laneColor, showTags, branchWidth }: RefPillsProps) {
   const sorted = sortedVisibleRefs(refs, showTags);
   if (sorted.length === 0) {
     return null;
   }
 
+  const available = branchWidth - CELL_PADDING;
   const widths = sorted.map(pillWidth);
   const total = widths.reduce((sum, width) => sum + width + CELL_GAP, -CELL_GAP);
 
   const shown: RefInfo[] = [];
-  if (total <= AVAILABLE) {
+  if (total <= available) {
     shown.push(...sorted);
   } else {
     // "+N" 배지 자리를 먼저 뺀다. N은 담아봐야 알므로 최댓값 기준으로 폭을 잡는다
     const badge = PILL_CHROME + measureText(`+${sorted.length}`, MORE_FONT) + CELL_GAP;
-    const budget = AVAILABLE - badge;
+    const budget = available - badge;
     let used = 0;
     for (let i = 0; i < sorted.length; i++) {
       const next = used + widths[i] + (shown.length > 0 ? CELL_GAP : 0);

@@ -8,6 +8,7 @@ mod git;
 mod layout;
 mod model;
 mod parse;
+mod search;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -34,6 +35,8 @@ pub fn run() {
             commands::get_file_diff,
             commands::get_startup_repo,
             commands::list_refs,
+            commands::search_commits,
+            commands::get_repo_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

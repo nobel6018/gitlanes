@@ -6,6 +6,10 @@ export interface SearchBoxProps {
   matchCount: number;
   /** 현재 매치의 1-based 위치. 매치 없으면 0 */
   matchPosition: number;
+  /** 전체 히스토리 검색 진행 중 */
+  searching: boolean;
+  /** 전체 히스토리까지 뒤졌고 더 없음 (카운터에 "(전체)" 표기) */
+  exhausted: boolean;
   inputRef: RefObject<HTMLInputElement | null>;
   onChange: (query: string) => void;
   onNext: () => void;
@@ -17,6 +21,8 @@ export function SearchBox({
   query,
   matchCount,
   matchPosition,
+  searching,
+  exhausted,
   inputRef,
   onChange,
   onNext,
@@ -24,7 +30,7 @@ export function SearchBox({
   onClear,
 }: SearchBoxProps) {
   const hasQuery = query !== "";
-  const noMatch = hasQuery && matchCount === 0;
+  const noMatch = hasQuery && matchCount === 0 && !searching;
 
   return (
     <div className={noMatch ? "search no-match" : "search"}>
@@ -60,9 +66,24 @@ export function SearchBox({
       />
       {hasQuery && (
         <>
-          <span className="search-count">
-            {matchCount === 0 ? "0/0" : `${matchPosition}/${matchCount}`}
-          </span>
+          {searching ? (
+            <span className="search-spinner" title="Searching full history" aria-label="Searching">
+              <svg viewBox="0 0 16 16" width="11" height="11" className="spin" aria-hidden="true">
+                <path
+                  d="M14 8a6 6 0 1 1-1.8-4.3"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </span>
+          ) : (
+            <span className="search-count">
+              {matchCount === 0 ? "0/0" : `${matchPosition}/${matchCount}`}
+              {exhausted && matchCount > 0 ? " (전체)" : ""}
+            </span>
+          )}
           <button className="search-nav" onClick={onPrev} title="Previous match (Shift+Enter)">
             ‹
           </button>
