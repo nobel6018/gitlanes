@@ -75,16 +75,37 @@ pub struct WipInfo {
     pub staged_files: usize,
 }
 
+/// 스태시 항목. 그래프에서 base 커밋 위에 의사 행으로 표시한다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashInfo {
+    /// 스태시 커밋 sha. 실존 커밋이라 get_commit_details/get_file_diff를 그대로 쓴다
+    pub sha: String,
+    pub short_sha: String,
+    /// "WIP on main: ..." 형태의 스태시 메시지
+    pub message: String,
+    /// 스태시가 만들어진 기반 커밋(첫 부모) sha
+    pub base_sha: String,
+    /// unix seconds
+    pub timestamp: i64,
+}
+
 /// `load_graph` 응답.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphData {
+    /// skip을 적용한 [skip, limit) 구간
     pub rows: Vec<CommitRow>,
+    /// skip과 무관하게 레이아웃을 계산한 전체 행 수
     pub total_loaded: usize,
     pub has_more: bool,
     pub lane_count: usize,
     /// 미커밋 변경. 깨끗하면 None
     pub wip: Option<WipInfo>,
+    /// refs 상태 지문. 페이징 중 값이 바뀌면 프론트가 skip=0으로 전체 리로드한다
+    pub graph_token: String,
+    /// 스태시 목록. skip과 무관하게 항상 전체
+    pub stashes: Vec<StashInfo>,
 }
 
 /// `list_refs` 응답 항목. 사이드바용이라 로드된 커밋 범위와 무관하게 전체를 담는다.
@@ -96,6 +117,14 @@ pub struct RefEntry {
     /// 가리키는 커밋 sha (annotated tag는 역참조된 커밋)
     pub sha: String,
     pub is_head: bool,
+}
+
+/// short sha 길이. `src/types.ts`의 `shortSha` 주석과 맞춘다.
+pub const SHORT_SHA_LEN: usize = 10;
+
+/// 표시용 축약 sha. sha가 더 짧으면 그대로 둔다.
+pub fn short_sha(sha: &str) -> String {
+    sha.chars().take(SHORT_SHA_LEN).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -219,6 +248,30 @@ mod tests {
     }
 
     #[test]
+    fn stash_info는_camel_case_키를_쓴다() {
+        let stash = StashInfo {
+            sha: "3505d9ec".into(),
+            short_sha: "3505d9ec".into(),
+            message: "WIP on main: cbbb765 base".into(),
+            base_sha: "cbbb765".into(),
+            timestamp: 1788225688,
+        };
+        let json = serde_json::to_value(&stash).unwrap();
+        for key in ["sha", "shortSha", "message", "baseSha", "timestamp"] {
+            assert!(json.get(key).is_some(), "{key} 키가 없다");
+        }
+    }
+
+    #[test]
+    fn short_sha는_10자리다() {
+        assert_eq!(
+            short_sha("ff362da2fa5b5d45b1b53354e085b920039aa4d8"),
+            "ff362da2fa"
+        );
+        assert_eq!(short_sha("abc"), "abc", "짧으면 그대로 둔다");
+    }
+
+    #[test]
     fn edge는_camel_case_키로_직렬화된다() {
         let edge = Edge {
             from_lane: 1,
@@ -265,9 +318,19 @@ mod tests {
             has_more: false,
             lane_count: 1,
             wip: None,
+            graph_token: "0".into(),
+            stashes: vec![],
         };
         let json = serde_json::to_value(&data).unwrap();
-        for key in ["rows", "totalLoaded", "hasMore", "laneCount", "wip"] {
+        for key in [
+            "rows",
+            "totalLoaded",
+            "hasMore",
+            "laneCount",
+            "wip",
+            "graphToken",
+            "stashes",
+        ] {
             assert!(json.get(key).is_some(), "{key} 키가 없다");
         }
         assert!(json.get("wip").unwrap().is_null(), "깨끗하면 null이다");

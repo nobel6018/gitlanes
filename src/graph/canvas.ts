@@ -3,22 +3,12 @@
 import { DOT_RADIUS, EDGE_WIDTH, ROW_HEIGHT } from "../constants";
 import type { CommitRow } from "../types";
 import { laneColor, laneX } from "./layout";
-
-/** WIP 의사 행. index는 커밋 행이 아니라 화면 행(display index) 기준이다 */
-export interface WipMark {
-  /** WIP 행이 삽입된 화면 행 인덱스 */
-  index: number;
-  lane: number;
-  color: number;
-  /** HEAD 점까지 점선 수직 엣지를 그릴지. isHead 행이 없으면 false */
-  connected: boolean;
-}
+import type { PseudoLayout, PseudoRow } from "./pseudo";
 
 export interface DrawParams {
   rows: CommitRow[];
-  /** WIP 행이 삽입된 커밋 행 인덱스. 없으면 -1 */
-  wipInsertAt: number;
-  wip: WipMark | null;
+  /** 의사 행(WIP, 스태시) 삽입으로 밀린 화면 행 매핑 */
+  layout: PseudoLayout;
   /** 스크롤 컨테이너의 현재 scrollTop */
   scrollTop: number;
   /** CSS px 기준 캔버스 크기 */
@@ -31,7 +21,7 @@ export interface DrawParams {
 
 /** 화면 밖 한 행씩 여유를 둬서 절단된 곡선이 보이지 않게 한다 */
 const EDGE_OVERSCAN_ROWS = 2;
-const WIP_DASH = [3, 3];
+const PSEUDO_DASH = [3, 3];
 
 export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   const ctx = canvas.getContext("2d");
@@ -50,27 +40,31 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   ctx.clearRect(0, 0, p.width, p.height);
 
   const rows = p.rows;
+  const { toDisplay, toRowIndex } = p.layout;
   const centerY = (displayIndex: number) =>
     displayIndex * ROW_HEIGHT + ROW_HEIGHT / 2 - p.scrollTop;
-  // WIP 행이 끼면 그 아래 커밋 행들의 화면 위치가 한 행씩 밀린다
-  const toDisplay = (rowIndex: number) =>
-    p.wipInsertAt >= 0 && rowIndex >= p.wipInsertAt ? rowIndex + 1 : rowIndex;
-  const toRow = (displayIndex: number) =>
-    p.wipInsertAt >= 0 && displayIndex > p.wipInsertAt ? displayIndex - 1 : displayIndex;
 
   const firstDisplay = Math.floor(p.scrollTop / ROW_HEIGHT) - EDGE_OVERSCAN_ROWS;
   const lastDisplay = Math.ceil((p.scrollTop + p.height) / ROW_HEIGHT) + EDGE_OVERSCAN_ROWS;
 
-  if (p.wip && p.wip.index >= firstDisplay && p.wip.index <= lastDisplay) {
-    drawWip(ctx, p.wip, centerY);
-  }
+  const drawPseudos = () => {
+    for (const pseudo of p.layout.pseudos) {
+      if (pseudo.displayIndex > lastDisplay) {
+        break;
+      }
+      if (pseudo.displayIndex >= firstDisplay) {
+        drawPseudoMark(ctx, pseudo, centerY);
+      }
+    }
+  };
 
   if (rows.length === 0) {
+    drawPseudos();
     return;
   }
 
-  const first = Math.max(0, toRow(firstDisplay));
-  const last = Math.min(rows.length - 1, toRow(lastDisplay));
+  const first = Math.max(0, toRowIndex(firstDisplay));
+  const last = Math.min(rows.length - 1, toRowIndex(lastDisplay));
 
   // 색상별로 Path2D를 모아 stroke 호출 수를 색 개수(<=10)로 줄인다
   const paths = new Map<number, Path2D>();
@@ -112,6 +106,9 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
     ctx.stroke(path);
   }
 
+  // 의사 행 마크는 통과선 위에, 커밋 점은 그보다도 위에 얹는다
+  drawPseudos();
+
   // 곡선이 점 위를 지나지 않도록 점은 마지막에 그린다
   for (let i = first; i <= last; i++) {
     const row = rows[i];
@@ -145,32 +142,44 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   }
 }
 
-/** WIP 의사 행: 채움 없는 점선 링 + HEAD 점까지 점선 수직 엣지 */
-function drawWip(
+/**
+ * 의사 행 마크. WIP은 점선 원, 스태시는 점선 다이아몬드로 형태를 구분한다.
+ * connected면 바로 아래 행(다음 의사 행 또는 앵커 커밋 점)까지 점선으로 잇는다.
+ */
+function drawPseudoMark(
   ctx: CanvasRenderingContext2D,
-  wip: WipMark,
+  pseudo: PseudoRow,
   centerY: (displayIndex: number) => number,
 ): void {
-  const x = laneX(wip.lane);
-  const y = centerY(wip.index);
-  const color = laneColor(wip.color);
+  const x = laneX(pseudo.lane);
+  const y = centerY(pseudo.displayIndex);
+  const color = laneColor(pseudo.color);
 
   ctx.save();
-  ctx.setLineDash(WIP_DASH);
+  ctx.setLineDash(PSEUDO_DASH);
   ctx.strokeStyle = color;
   ctx.lineCap = "butt";
 
-  if (wip.connected) {
+  if (pseudo.connected) {
     ctx.lineWidth = EDGE_WIDTH;
     ctx.beginPath();
     ctx.moveTo(x, y);
-    ctx.lineTo(x, centerY(wip.index + 1));
+    ctx.lineTo(x, centerY(pseudo.displayIndex + 1));
     ctx.stroke();
   }
 
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.arc(x, y, DOT_RADIUS, 0, Math.PI * 2);
+  if (pseudo.kind === "stash") {
+    const r = DOT_RADIUS + 1;
+    ctx.moveTo(x, y - r);
+    ctx.lineTo(x + r, y);
+    ctx.lineTo(x, y + r);
+    ctx.lineTo(x - r, y);
+    ctx.closePath();
+  } else {
+    ctx.arc(x, y, DOT_RADIUS, 0, Math.PI * 2);
+  }
   ctx.stroke();
   ctx.restore();
 }

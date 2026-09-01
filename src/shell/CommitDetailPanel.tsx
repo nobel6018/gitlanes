@@ -7,6 +7,8 @@ import { formatTimestamp, shortSha, splitPath, statusLabel } from "./format";
 export interface CommitDetailPanelProps {
   repoPath: string;
   sha: string;
+  /** 선택된 커밋이 스태시면 제목 옆에 STASH 뱃지를 붙인다 */
+  isStash: boolean;
   /** parent short sha 클릭 시 해당 커밋 선택 */
   onSelectSha: (sha: string) => void;
   onError: (message: string) => void;
@@ -20,6 +22,7 @@ interface DiffState {
 export function CommitDetailPanel({
   repoPath,
   sha,
+  isStash,
   onSelectSha,
   onError,
 }: CommitDetailPanelProps) {
@@ -109,7 +112,10 @@ export function CommitDetailPanel({
     <aside className="detail-panel">
       <div className="panel-scroll">
         <section className="panel-section">
-          <h2 className="commit-subject selectable">{details.subject}</h2>
+          <h2 className="commit-subject selectable">
+            {isStash && <span className="stash-badge">STASH</span>}
+            {details.subject}
+          </h2>
           {details.body.trim() !== "" && (
             <pre className="commit-body selectable">{details.body.trimEnd()}</pre>
           )}

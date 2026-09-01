@@ -96,18 +96,20 @@
   font-weight: 700;
 }
 
-/* WIP 의사 행: 커밋이 아니므로 선택도 hover 강조도 없다 */
-.gl-row-wip {
+/* 의사 행(WIP, 스태시): fg-2 이탤릭 */
+.gl-row-pseudo {
+  color: var(--fg-2);
+}
+
+/* 이탤릭은 MESSAGE에만. sha/date까지 기울이면 모노스페이스가 흐트러진다 */
+.gl-row-pseudo .gl-cell-message {
   color: var(--fg-2);
   font-style: italic;
 }
 
+/* WIP은 커밋이 아니라 선택도 hover 강조도 없다. 스태시는 클릭 가능하므로 그대로 둔다 */
 .gl-row-wip:hover {
   background: transparent;
-}
-
-.gl-row-wip .gl-cell-message {
-  color: var(--fg-2);
 }
 
 .gl-cell {

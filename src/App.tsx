@@ -23,7 +23,17 @@ const EMPTY_GRAPH: GraphData = {
   hasMore: false,
   laneCount: 0,
   wip: null,
+  graphToken: "",
+  stashes: [],
 };
+
+/** load_graph 요청 한 건. skip>0이면 응답 rows를 기존 rows 뒤에 붙인다 */
+interface PageRequest {
+  skip: number;
+  limit: number;
+}
+
+const FIRST_PAGE: PageRequest = { skip: 0, limit: COMMITS_PER_PAGE };
 
 function readFlag(key: string, fallback: boolean): boolean {
   try {
@@ -61,7 +71,7 @@ export default function App() {
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [refs, setRefs] = useState<RefEntry[]>([]);
   const [refsLoading, setRefsLoading] = useState(false);
-  const [limit, setLimit] = useState(COMMITS_PER_PAGE);
+  const [page, setPage] = useState<PageRequest>(FIRST_PAGE);
   const [reloadKey, setReloadKey] = useState(0);
   const [graphLoading, setGraphLoading] = useState(false);
   const [opening, setOpening] = useState(false);
@@ -77,6 +87,7 @@ export default function App() {
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
   const graphReq = useRef(0);
+  const graphToken = useRef("");
   const refsReq = useRef(0);
   const scrollSeq = useRef(0);
   const startupDone = useRef(false);
@@ -92,21 +103,36 @@ export default function App() {
 
   const dismissToast = useCallback(() => setToast(null), []);
 
-  // 레포/limit/새로고침 키가 바뀌면 그래프를 다시 가져온다.
-  // graphReq로 뒤늦게 도착한 이전 요청 응답을 버린다.
+  // 레포/페이지 요청/새로고침 키가 바뀌면 load_graph를 부른다.
+  // skip=0은 교체, skip>0은 append. graphReq로 뒤늦게 도착한 이전 요청 응답을 버린다.
   useEffect(() => {
     if (repo === null) {
       setGraph(null);
+      graphToken.current = "";
       return;
     }
     const reqId = graphReq.current + 1;
     graphReq.current = reqId;
     setGraphLoading(true);
-    loadGraph(repo.path, limit)
+    loadGraph(repo.path, page.limit, page.skip)
       .then((loaded) => {
-        if (graphReq.current === reqId) {
-          setGraph(loaded);
+        if (graphReq.current !== reqId) {
+          return;
         }
+        if (page.skip === 0) {
+          graphToken.current = loaded.graphToken;
+          setGraph(loaded);
+          return;
+        }
+        if (loaded.graphToken !== graphToken.current) {
+          // 페이징 도중 레포 상태가 바뀌었다. 누적분을 버리고 처음부터 다시 읽는다
+          setPage({ skip: 0, limit: page.limit });
+          return;
+        }
+        setGraph((prev) => ({
+          ...loaded,
+          rows: prev === null ? loaded.rows : [...prev.rows, ...loaded.rows],
+        }));
       })
       .catch((err: unknown) => {
         if (graphReq.current === reqId) {
@@ -118,7 +144,7 @@ export default function App() {
           setGraphLoading(false);
         }
       });
-  }, [repo, limit, reloadKey, showError]);
+  }, [repo, page, reloadKey, showError]);
 
   // 사이드바 refs는 로드된 커밋 범위와 무관하므로 limit 변화에는 다시 부르지 않는다
   useEffect(() => {
@@ -159,7 +185,8 @@ export default function App() {
         lastQuery.current = "";
         setGraph(null);
         setRefs([]);
-        setLimit(COMMITS_PER_PAGE);
+        setPage(FIRST_PAGE);
+        graphToken.current = "";
         setRepo(info);
       } catch (err) {
         showError(errorMessage(err));
@@ -292,13 +319,18 @@ export default function App() {
   }, []);
 
   const handleLoadMore = useCallback(() => {
-    if (graphLoading) {
+    if (graphLoading || !data.hasMore) {
       return;
     }
-    setLimit((prev) => prev + COMMITS_PER_PAGE);
-  }, [graphLoading]);
+    const skip = data.rows.length;
+    setPage({ skip, limit: skip + COMMITS_PER_PAGE });
+  }, [graphLoading, data.hasMore, data.rows.length]);
 
-  const handleRefresh = useCallback(() => setReloadKey((k) => k + 1), []);
+  // 새로고침은 언제나 skip=0 전체 리로드. 지금까지 불러온 깊이는 유지한다
+  const handleRefresh = useCallback(() => {
+    setPage({ skip: 0, limit: Math.max(COMMITS_PER_PAGE, data.rows.length) });
+    setReloadKey((k) => k + 1);
+  }, [data.rows.length]);
 
   const handleToggleTags = useCallback(() => {
     setShowTags((prev) => {
@@ -396,6 +428,7 @@ export default function App() {
             key={selectedSha}
             repoPath={repo.path}
             sha={selectedSha}
+            isStash={data.stashes.some((stash) => stash.sha === selectedSha)}
             onSelectSha={setSelectedSha}
             onError={showError}
           />
