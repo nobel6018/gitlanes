@@ -8,15 +8,31 @@ permissions:
   contents: write
 
 jobs:
+  # 태그 형태로 빌드 범위를 정한다:
+  #   v1.2.3       → 4개 플랫폼 전부, 정식 릴리스
+  #   v1.2.3-rc.1  → macOS arm64만, 프리릴리스 (하이픈이 기준)
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      prerelease: ${{ steps.set.outputs.prerelease }}
+    steps:
+      - id: set
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            echo 'matrix=[{"platform":"macos-latest"}]' >> "$GITHUB_OUTPUT"
+            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix=[{"platform":"macos-latest"},{"platform":"macos-13"},{"platform":"ubuntu-22.04"},{"platform":"windows-latest"}]' >> "$GITHUB_OUTPUT"
+            echo 'prerelease=false' >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: macos-latest # arm64
-          - platform: macos-13 # x86_64
-          - platform: ubuntu-22.04
-          - platform: windows-latest
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -28,9 +44,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # shared-key를 ci.yml의 dev-build와 맞춰 main에서 데운 캐시를 재사용한다
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: ${{ matrix.platform }}
 
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'ubuntu')
@@ -53,4 +71,4 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "GitLanes ${{ github.ref_name }}"
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ needs.plan.outputs.prerelease }}
