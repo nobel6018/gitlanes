@@ -1,10 +1,15 @@
 // 탭 컨테이너. 탭 목록/활성 탭/영속화만 담당하고, 레포 상태는 각 RepoWorkspace가 가진다.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { errorMessage, getStartupRepo } from "./shell/api";
 import { basename } from "./shell/format";
 import { RepoWorkspace } from "./shell/RepoWorkspace";
 import { TabBar } from "./shell/TabBar";
 import type { TabInfo } from "./shell/TabBar";
+import { UpdateBanner } from "./shell/UpdateBanner";
+import { UpdatePill } from "./shell/UpdatePill";
+import { useUpdateChecker } from "./shell/useUpdateChecker";
+import type { WorkspaceUpdateProps } from "./shell/RepoWorkspace";
 import "./shell/shell.css";
 
 const TABS_KEY = "gitlanes.tabs";
@@ -81,6 +86,8 @@ export default function App() {
   const [tabs, setTabs] = useState<TabInfo[]>(initialTabs);
   const [activeId, setActiveId] = useState<number>(() => initialActiveId(tabs));
   const startupDone = useRef(false);
+  // 업데이트 확인은 탭 수와 무관하게 앱 전역에서 하나만 돈다
+  const updater = useUpdateChecker();
 
   // 탭 구성이 바뀔 때마다 저장한다
   useEffect(() => {
@@ -173,6 +180,25 @@ export default function App() {
     return true;
   }, []);
 
+  const updateProps: WorkspaceUpdateProps = useMemo(
+    () => ({
+      tag: updater.update === null ? null : updater.update.tag,
+      checking: updater.checking,
+      onCheck: updater.checkNow,
+      onOpenRelease: updater.openRelease,
+    }),
+    [updater.update, updater.checking, updater.checkNow, updater.openRelease],
+  );
+
+  const banner: ReactNode =
+    updater.bannerVisible && updater.update !== null ? (
+      <UpdateBanner
+        update={updater.update}
+        onOpenRelease={updater.openRelease}
+        onDismiss={updater.dismissBanner}
+      />
+    ) : null;
+
   return (
     <div className="app">
       <TabBar
@@ -189,8 +215,11 @@ export default function App() {
           active={tab.id === activeId}
           onRepoOpened={handleRepoOpened}
           onRequestOpen={handleRequestOpen}
+          update={updateProps}
+          banner={tab.id === activeId ? banner : null}
         />
       ))}
+      <UpdatePill checking={updater.checking} result={updater.result} />
     </div>
   );
 }
@@ -200,6 +229,9 @@ interface TabPanelProps {
   active: boolean;
   onRepoOpened: (tabId: number, path: string, name: string) => void;
   onRequestOpen: (tabId: number, path: string) => boolean;
+  update: WorkspaceUpdateProps;
+  /** 활성 탭에만 실제 배너가 내려온다 */
+  banner: ReactNode;
 }
 
 /**
@@ -207,7 +239,7 @@ interface TabPanelProps {
  * hidden이면 display:none이라 GraphView는 ResizeObserver로 0높이를 보고 쉬다가,
  * 다시 보일 때 크기를 새로 잰다.
  */
-function TabPanel({ tab, active, onRepoOpened, onRequestOpen }: TabPanelProps) {
+function TabPanel({ tab, active, onRepoOpened, onRequestOpen, update, banner }: TabPanelProps) {
   const handleRepoOpened = useCallback(
     (path: string, name: string) => onRepoOpened(tab.id, path, name),
     [onRepoOpened, tab.id],
@@ -224,6 +256,8 @@ function TabPanel({ tab, active, onRepoOpened, onRequestOpen }: TabPanelProps) {
         active={active}
         onRepoOpened={handleRepoOpened}
         requestOpen={handleRequestOpen}
+        update={update}
+        banner={banner}
       />
     </div>
   );

@@ -362,6 +362,44 @@ function readArg(payload: unknown, key: string): unknown {
   return (payload as Record<string, unknown>)[key];
 }
 
+/**
+ * 하네스 전용: ?forceUpdate=1이면 GitHub 릴리스 API 응답을 가로채 v99.0.0을 돌려준다.
+ * 업데이트 배너와 수동 확인 pill을 오프라인에서도 볼 수 있게 하는 개발용 분기다.
+ * 앱 코드(version.ts)는 건드리지 않는다.
+ */
+function installForcedUpdate(): void {
+  if (!new URLSearchParams(window.location.search).has("forceUpdate")) {
+    return;
+  }
+  const original = window.fetch.bind(window);
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("api.github.com/repos/") && url.endsWith("/releases/latest")) {
+      // 확인 중 pill이 보이도록 약간 지연시킨다
+      await sleep(700);
+      const body = JSON.stringify({
+        tag_name: "v99.0.0",
+        html_url: "https://github.com/nobel6018/gitlanes/releases/tag/v99.0.0",
+        body:
+          "## What's new\n\n" +
+          "- **레인 색 재활용**: 인접 레인과 같은 색이 붙지 않도록 후보를 고른다\n" +
+          "- `파일 트리 뷰` 추가 (Path | Tree 토글)\n" +
+          "- 스태시 행을 base 커밋 위에 점선 다이아몬드로 표시\n" +
+          "- diff 5,000줄 이상에서도 스크롤이 끊기지 않도록 가상화\n",
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return original(input, init);
+  };
+  console.log("[mock] forceUpdate 활성화 — 최신 릴리스를 v99.0.0으로 위조합니다");
+}
+
+installForcedUpdate();
+
 mockIPC(async (cmd, payload) => {
   switch (cmd) {
     case "get_startup_repo":
