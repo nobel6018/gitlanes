@@ -3,7 +3,9 @@
  * package.json은 동결 파일이고 vite.config.ts도 수정 금지라 버전을 여기에 둔다.
  * package.json version을 올릴 때 이 상수도 같이 올려야 한다.
  */
-export const APP_VERSION = "0.3.0";
+// 하드코딩 금지: vite.config.ts의 define이 package.json 버전을 빌드 타임 주입한다.
+// (하드코딩하면 앱이 자기 버전을 오인해 자기 자신을 "새 버전"으로 알림 — v0.5.0 실사고)
+export const APP_VERSION = __APP_VERSION__;
 
 const LATEST_RELEASE_API = "https://api.github.com/repos/nobel6018/gitlanes/releases/latest";
 export const RELEASES_PAGE = "https://github.com/nobel6018/gitlanes/releases/latest";
