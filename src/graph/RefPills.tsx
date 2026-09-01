@@ -1,6 +1,7 @@
 // BRANCH / TAG 컬럼의 ref pill. GitKraken처럼 그래프 밖 왼쪽 컬럼에 놓는다.
 import type { RefInfo } from "../types";
 import { BRANCH_COL_WIDTH } from "./layout";
+import { measureText } from "./text";
 
 interface RefPillsProps {
   refs: RefInfo[];
@@ -16,17 +17,57 @@ const KIND_ORDER: Record<RefInfo["kind"], number> = {
   tag: 2,
 };
 
-const PILL_PADDING = 14;
-const CHAR_WIDTH = 6.1;
-const ICON_WIDTH = 12;
-const HEAD_MARK_WIDTH = 11;
-const OVERFLOW_BADGE_WIDTH = 26;
+// graph.css의 .gl-pill과 맞춘 값들. 여기가 어긋나면 "+N" 판정이 틀어진다
+const UI_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+const PILL_FONT = `400 11px ${UI_FONT}`;
+const PILL_FONT_HEAD = `700 11px ${UI_FONT}`;
+const MORE_FONT = `400 10px ${UI_FONT}`;
+/** .gl-pill의 padding 5+5 + border 1+1 */
+const PILL_CHROME = 12;
+/** .gl-pill의 gap */
+const PILL_GAP = 2;
+/** .gl-pill-icon */
+const ICON_WIDTH = 9;
+/** .gl-pill-check */
+const CHECK_WIDTH = 8;
+/** .gl-cell-branch의 gap */
+const CELL_GAP = 3;
+/** .gl-cell의 좌우 padding 8+8을 뺀 나머지 */
 const AVAILABLE = BRANCH_COL_WIDTH - 16;
 
-function estimateWidth(ref: RefInfo): number {
-  const icon = ref.kind === "localBranch" ? 0 : ICON_WIDTH;
-  const head = ref.isHead ? HEAD_MARK_WIDTH : 0;
-  return PILL_PADDING + icon + head + ref.name.length * CHAR_WIDTH + 3;
+function pillWidth(ref: RefInfo): number {
+  const font = ref.isHead ? PILL_FONT_HEAD : PILL_FONT;
+  let width = PILL_CHROME + measureText(ref.name, font);
+  if (ref.kind !== "localBranch") {
+    width += ICON_WIDTH + PILL_GAP;
+  }
+  if (ref.isHead) {
+    width += CHECK_WIDTH + PILL_GAP;
+  }
+  return width;
+}
+
+/** 표시 순서대로 정렬하고 showTags에 따라 태그를 걸러낸다 */
+export function sortedVisibleRefs(refs: RefInfo[], showTags: boolean): RefInfo[] {
+  const visible = showTags ? refs : refs.filter((ref) => ref.kind !== "tag");
+  return visible.slice().sort((a, b) => {
+    if (a.isHead !== b.isHead) {
+      return a.isHead ? -1 : 1;
+    }
+    if (a.kind !== b.kind) {
+      return KIND_ORDER[a.kind] - KIND_ORDER[b.kind];
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/** BRANCH/TAG 셀 툴팁. "+N"으로 숨은 ref까지 한 줄에 하나씩 */
+export function refsTitle(refs: RefInfo[], showTags: boolean): string | undefined {
+  const visible = sortedVisibleRefs(refs, showTags);
+  if (visible.length === 0) {
+    return undefined;
+  }
+  return visible.map((ref) => ref.name).join("\n");
 }
 
 function CloudIcon() {
@@ -74,34 +115,30 @@ function CheckIcon() {
 }
 
 export function RefPills({ refs, laneColor, showTags }: RefPillsProps) {
-  const visible = showTags ? refs : refs.filter((r) => r.kind !== "tag");
-  if (visible.length === 0) {
+  const sorted = sortedVisibleRefs(refs, showTags);
+  if (sorted.length === 0) {
     return null;
   }
 
-  const sorted = [...visible].sort((a, b) => {
-    if (a.isHead !== b.isHead) {
-      return a.isHead ? -1 : 1;
-    }
-    if (a.kind !== b.kind) {
-      return KIND_ORDER[a.kind] - KIND_ORDER[b.kind];
-    }
-    return a.name.localeCompare(b.name);
-  });
-
-  // 폭 실측 대신 글자 수로 추정한다. 매 행 measureText를 부르면 5만 행 스크롤에서 비싸다
-  const total = sorted.reduce((sum, r) => sum + estimateWidth(r) + 3, 0);
-  const budget = total > AVAILABLE ? AVAILABLE - OVERFLOW_BADGE_WIDTH : AVAILABLE;
+  const widths = sorted.map(pillWidth);
+  const total = widths.reduce((sum, width) => sum + width + CELL_GAP, -CELL_GAP);
 
   const shown: RefInfo[] = [];
-  let used = 0;
-  for (const ref of sorted) {
-    const width = estimateWidth(ref) + 3;
-    if (shown.length > 0 && used + width > budget) {
-      break;
+  if (total <= AVAILABLE) {
+    shown.push(...sorted);
+  } else {
+    // "+N" 배지 자리를 먼저 뺀다. N은 담아봐야 알므로 최댓값 기준으로 폭을 잡는다
+    const badge = PILL_CHROME + measureText(`+${sorted.length}`, MORE_FONT) + CELL_GAP;
+    const budget = AVAILABLE - badge;
+    let used = 0;
+    for (let i = 0; i < sorted.length; i++) {
+      const next = used + widths[i] + (shown.length > 0 ? CELL_GAP : 0);
+      if (shown.length > 0 && next > budget) {
+        break;
+      }
+      shown.push(sorted[i]);
+      used = next;
     }
-    shown.push(ref);
-    used += width;
   }
   const hidden = sorted.length - shown.length;
 
@@ -112,7 +149,6 @@ export function RefPills({ refs, laneColor, showTags }: RefPillsProps) {
           key={`${ref.kind}:${ref.name}`}
           className={`gl-pill gl-pill-${ref.kind}${ref.isHead ? " gl-pill-head" : ""}`}
           style={ref.kind === "tag" ? undefined : { borderColor: laneColor }}
-          title={ref.name}
         >
           {ref.kind === "remoteBranch" ? <CloudIcon /> : null}
           {ref.kind === "tag" ? <TagIcon /> : null}
