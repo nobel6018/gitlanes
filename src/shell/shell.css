@@ -1599,6 +1599,17 @@ body.resizing * {
   border-top: 1px solid var(--border-0);
 }
 
+/*
+ * 접힘: 높이 0 + overflow hidden으로 레이아웃 공간을 완전히 없앤다.
+ * display:none을 쓰지 않는 이유는 xterm이 크기를 0으로 측정한 채 fit이 깨지는 걸 피하려는 것
+ * (Terminal 자신이 visible=false에서 내부 루트를 감춘다).
+ */
+.term-dock.collapsed {
+  height: 0;
+  overflow: hidden;
+  border-top: none;
+}
+
 /* 가로 스플리터: 터미널 상단 경계 */
 .split-handle-y {
   position: absolute;

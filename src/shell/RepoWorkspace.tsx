@@ -872,17 +872,6 @@ export function RepoWorkspace({
     toggleTerminal();
   }, [toggleTerminalNonce, toggleTerminal]);
 
-  // 열릴 때 자동 포커스. xterm은 숨은 textarea로 입력을 받는다
-  useEffect(() => {
-    if (!terminalOpen) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      dockRef.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
-    }, 30);
-    return () => window.clearTimeout(timer);
-  }, [terminalOpen]);
-
   const previewTermHeight = useCallback((height: number) => {
     dockRef.current?.style.setProperty("height", `${height}px`);
   }, []);
@@ -1466,25 +1455,27 @@ export function RepoWorkspace({
       </div>
 
       <div
-        className="term-dock"
+        className={terminalOpen ? "term-dock" : "term-dock collapsed"}
         ref={dockRef}
-        hidden={!terminalOpen}
-        style={{ height: `${termHeight}px` }}
+        style={{ height: terminalOpen ? `${termHeight}px` : 0 }}
       >
-        <SplitHandle
-          axis="y"
-          label="터미널 높이 조절"
-          getWidth={() => termHeight}
-          min={TERM_MIN}
-          max={termMax}
-          invert
-          onPreview={previewTermHeight}
-          onCommit={commitTermHeight}
-          onReset={() => {
-            previewTermHeight(DEFAULT_TERM_HEIGHT);
-            commitTermHeight(DEFAULT_TERM_HEIGHT);
-          }}
-        />
+        {/* 접힘 상태에서는 빈 공간 위에 드래그 바만 뜨지 않게 핸들도 감춘다 */}
+        {terminalOpen && (
+          <SplitHandle
+            axis="y"
+            label="터미널 높이 조절"
+            getWidth={() => termHeight}
+            min={TERM_MIN}
+            max={termMax}
+            invert
+            onPreview={previewTermHeight}
+            onCommit={commitTermHeight}
+            onReset={() => {
+              previewTermHeight(DEFAULT_TERM_HEIGHT);
+              commitTermHeight(DEFAULT_TERM_HEIGHT);
+            }}
+          />
+        )}
         {/* 헤더(레포 경로 + ×)는 Terminal이 직접 그린다. 여기서 또 두지 않는다.
             탭이 살아있는 동안 언마운트하지 않는다 (PTY 세션 유지) — visible로만 토글 */}
         <Terminal repoPath={repo.path} visible={terminalOpen} onClose={closeTerminal} />
