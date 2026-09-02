@@ -4,6 +4,7 @@ import type {
   PointerEvent as ReactPointerEvent,
   WheelEvent as ReactWheelEvent,
 } from "react";
+import { LANE_COLORS } from "../constants";
 import { basename } from "./format";
 import { withKbd } from "./shortcuts";
 import { TabContextMenu } from "./TabContextMenu";
@@ -50,6 +51,50 @@ interface DragInfo {
   el: HTMLDivElement;
   /** 4px 문턱을 넘어 실제 드래그로 승격됐는가 */
   started: boolean;
+}
+
+/** 경로 → LANE_COLORS 인덱스. 문자 코드 31진 누적만 하는 결정적 해시라 같은 경로는 항상 같은 색 */
+function pathColorIndex(path: string): number {
+  let hash = 0;
+  for (let i = 0; i < path.length; i++) {
+    hash = (hash * 31 + path.charCodeAt(i)) | 0;
+  }
+  const n = LANE_COLORS.length;
+  return ((hash % n) + n) % n;
+}
+
+/** #RRGGBB → rgba(). 타일 배경(25%)에만 쓴다 */
+function hexAlpha(hex: string, alpha: number): string {
+  const value = parseInt(hex.slice(1), 16);
+  return `rgba(${(value >> 16) & 0xff}, ${(value >> 8) & 0xff}, ${value & 0xff}, ${alpha})`;
+}
+
+/** 라벨 첫 글자(대문자). 한글이면 첫 음절 그대로 */
+function tabInitial(label: string): string {
+  const first = Array.from(label)[0];
+  return first === undefined ? "?" : first.toUpperCase();
+}
+
+/** 탭 파비콘 역할의 이니셜 타일. 빈 탭은 회색 + 글리프 */
+function TabIcon({ tab, inMenu = false }: { tab: TabInfo; inMenu?: boolean }) {
+  const className = inMenu ? "tabs-icon tabs-icon-menu" : "tabs-icon";
+  if (tab.path === null) {
+    return (
+      <span className={`${className} tabs-icon-empty`} aria-hidden="true">
+        +
+      </span>
+    );
+  }
+  const hex = LANE_COLORS[pathColorIndex(tab.path)];
+  return (
+    <span
+      className={className}
+      style={{ background: hexAlpha(hex, 0.25), color: hex }}
+      aria-hidden="true"
+    >
+      {tabInitial(basename(tab.path))}
+    </span>
+  );
 }
 
 /** "/a/b/repo" -> "b" (동명 레포 구분용 부모 디렉토리 1단계) */
@@ -420,12 +465,15 @@ export function TabBar({
               }}
             >
               <button
-                className="tab-label"
+                className="tab-label tabs-label"
                 onClick={() => handleLabelClick(tab.id)}
                 title={tab.path ?? "New tab"}
               >
-                {prefix !== undefined && <span className="tab-parent">{prefix}/</span>}
-                {tab.label}
+                <TabIcon tab={tab} />
+                <span className="tabs-label-text">
+                  {prefix !== undefined && <span className="tab-parent">{prefix}/</span>}
+                  {tab.label}
+                </span>
               </button>
               {loadingIds.has(tab.id) && (
                 <span className="tab-spinner" aria-label="Loading" title="Loading…">
@@ -571,6 +619,7 @@ function TabListMenu({ tabs, activeId, open, onToggle, onClose, onActivate }: Ta
               <span className="tab-menu-check" aria-hidden="true">
                 {tab.id === activeId ? "✓" : ""}
               </span>
+              <TabIcon tab={tab} inMenu />
               <span className="tab-menu-text">
                 <span className="tab-menu-name">
                   {tab.path === null ? "New tab" : basename(tab.path)}
