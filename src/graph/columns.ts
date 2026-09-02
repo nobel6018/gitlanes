@@ -68,13 +68,17 @@ export function saveColumns(columns: ColumnWidths): void {
   }
 }
 
-/** .gl-root에 인라인으로 붙이는 CSS 변수. 드래그 중에는 이 값만 바뀐다 */
-export function columnStyle(columns: ColumnWidths): Record<string, string> {
+/**
+ * .gl-root에 인라인으로 붙이는 CSS 변수. 드래그 중에는 이 값만 바뀐다.
+ * bodyHeight는 헤더의 리사이즈 핸들이 가이드 선을 커밋 목록 높이만큼 늘리는 데 쓴다.
+ */
+export function columnStyle(columns: ColumnWidths, bodyHeight = 0): Record<string, string> {
   return {
     "--col-branch": `${columns.branch}px`,
     "--col-author": `${columns.author}px`,
     "--col-sha": `${columns.sha}px`,
     "--col-date": `${columns.date}px`,
+    "--gl-body-h": `${Math.max(0, Math.round(bodyHeight))}px`,
   };
 }
 

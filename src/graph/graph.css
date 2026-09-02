@@ -32,9 +32,18 @@
   user-select: none;
 }
 
+/* 리사이즈 핸들의 가이드 선이 헤더 밖(커밋 목록)까지 내려가야 하므로 셀은 자르지 않는다.
+   라벨 자체는 .gl-header-label이 자른다 */
 .gl-header .gl-cell {
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.gl-header-label {
+  display: block;
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* ── 본문 ───────────────────────────────────────── */
@@ -227,45 +236,48 @@
 
 /* ── 컬럼 리사이즈 핸들 ─────────────────────────── */
 
+/* 잡는 띠는 헤더 높이 안에만 둔다. 바디까지 덮으면 그 x좌표의 커밋 행 클릭을 전부 삼킨다.
+   폭 11px을 경계선에 좌우로 걸쳐 놓아 얇아서 못 잡는 문제를 없앤다 */
 .gl-resizer {
   position: absolute;
   top: 0;
-  z-index: 1;
-  width: 7px;
+  z-index: 4;
+  width: 11px;
   height: 100%;
   cursor: col-resize;
   touch-action: none;
 }
 
 .gl-resizer-right {
-  right: 0;
+  right: -5px;
 }
 
 .gl-resizer-left {
-  left: 0;
+  left: -5px;
 }
 
-.gl-resizer::after {
-  content: "";
+/* 가이드 선: 헤더 + 커밋 목록(--gl-body-h) 전체 높이. 클릭은 받지 않는다 */
+.gl-resizer-line {
   position: absolute;
-  top: 5px;
-  bottom: 5px;
-  width: 1px;
-  background: var(--border-1);
-}
-
-.gl-resizer-right::after {
-  right: 0;
-}
-
-.gl-resizer-left::after {
-  left: 0;
-}
-
-.gl-resizer:hover::after,
-.gl-root-resizing .gl-resizer-active::after {
   top: 0;
-  bottom: 0;
+  width: 1px;
+  height: calc(100% + var(--gl-body-h, 0px));
+  background: var(--border-1);
+  pointer-events: none;
+}
+
+/* 띠가 경계선에 걸쳐 있으니 선은 띠 안에서 5px 들여 그려야 경계에 정확히 놓인다 */
+.gl-resizer-right .gl-resizer-line {
+  right: 5px;
+}
+
+.gl-resizer-left .gl-resizer-line {
+  left: 5px;
+}
+
+.gl-resizer:hover .gl-resizer-line,
+.gl-root-resizing .gl-resizer-active .gl-resizer-line {
+  width: 2px;
   background: var(--accent);
 }
 

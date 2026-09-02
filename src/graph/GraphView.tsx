@@ -357,7 +357,10 @@ function Resizer({
       }
       onPointerDown={(event) => onStart(column, side, event)}
       onDoubleClick={() => onReset(column)}
-    />
+    >
+      {/* 가이드 선. 헤더를 넘어 커밋 목록 높이까지 내려가고 포인터는 받지 않는다 */}
+      <span className="gl-resizer-line" />
+    </div>
   );
 }
 
@@ -1035,26 +1038,28 @@ export function GraphView({
   return (
     <div
       className={"gl-root" + (resizing !== null ? " gl-root-resizing" : "") + hideClass}
-      style={columnStyle(fit.widths)}
+      style={columnStyle(fit.widths, size.height)}
     >
       <div className="gl-header" style={{ paddingRight: scrollbarWidth }}>
         <div className="gl-cell gl-col-branch">
-          Branch / Tag
+          <span className="gl-header-label">Branch / Tag</span>
           <Resizer column="branch" side="right" active={resizing === "branch"} onStart={startResize} onReset={resetColumn} />
         </div>
         <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
-        <div className="gl-cell gl-cell-message">Message</div>
+        <div className="gl-cell gl-cell-message">
+          <span className="gl-header-label">Message</span>
+        </div>
         <div className="gl-cell gl-col-author">
           <Resizer column="author" side="left" active={resizing === "author"} onStart={startResize} onReset={resetColumn} />
-          Author
+          <span className="gl-header-label">Author</span>
         </div>
         <div className="gl-cell gl-col-sha">
           <Resizer column="sha" side="left" active={resizing === "sha"} onStart={startResize} onReset={resetColumn} />
-          Sha
+          <span className="gl-header-label">Sha</span>
         </div>
         <div className="gl-cell gl-col-date">
           <Resizer column="date" side="left" active={resizing === "date"} onStart={startResize} onReset={resetColumn} />
-          Date
+          <span className="gl-header-label">Date</span>
         </div>
       </div>
 

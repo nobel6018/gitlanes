@@ -93,9 +93,16 @@ interface TabCommands {
   refresh: number;
   toggleSidebar: number;
   toggleTerminal: number;
+  closeTerminal: number;
 }
 
-const NO_COMMANDS: TabCommands = { open: 0, refresh: 0, toggleSidebar: 0, toggleTerminal: 0 };
+const NO_COMMANDS: TabCommands = {
+  open: 0,
+  refresh: 0,
+  toggleSidebar: 0,
+  toggleTerminal: 0,
+  closeTerminal: 0,
+};
 
 /** 탭 스피너 최소 표시 시간(ms). 로컬 레포는 30ms에 끝나 번쩍임만 남는다 */
 const MIN_SPINNER_MS = 250;
@@ -103,6 +110,15 @@ const MIN_SPINNER_MS = 250;
 /** Tauri 웹뷰인가. 하네스(브라우저)에서는 메뉴 이벤트가 없어 keydown 폴백을 쓴다 */
 function hasTauriInternals(): boolean {
   return typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== "undefined";
+}
+
+/**
+ * 포커스가 하단 터미널 안에 있는가. ⌘W를 탭 닫기와 터미널 닫기로 가르는 판정.
+ * 접힘 상태에서는 Terminal이 자기 루트를 display:none으로 두어 포커스가 남지 못한다
+ */
+function terminalFocused(): boolean {
+  const el = document.activeElement;
+  return el instanceof Element && el.closest(".term-dock") !== null;
 }
 
 /** 치트시트 표기는 툴팁과 같은 판정을 쓴다 (shortcuts.ts가 단일 출처) */
@@ -485,6 +501,11 @@ export default function App() {
     bumpCommand(activeIdRef.current, "toggleTerminal");
   }, [bumpCommand]);
 
+  /** ⌘W가 터미널 포커스에서 눌렸을 때. 토글이 아니라 닫기만 한다 */
+  const handleCloseTerminal = useCallback(() => {
+    bumpCommand(activeIdRef.current, "closeTerminal");
+  }, [bumpCommand]);
+
   const openPreferences = useCallback(() => setPrefsOpen(true), []);
   const closePreferences = useCallback(() => setPrefsOpen(false), []);
 
@@ -549,6 +570,7 @@ export default function App() {
     cycleTab: handleCycleTab,
     toggleSidebar: handleMenuToggleSidebar,
     toggleTerminal: handleMenuToggleTerminal,
+    closeTerminal: handleCloseTerminal,
     preferences: openPreferences,
     zoom: handleZoom,
     shortcuts: handleShowShortcuts,
@@ -566,6 +588,7 @@ export default function App() {
     cycleTab: handleCycleTab,
     toggleSidebar: handleMenuToggleSidebar,
     toggleTerminal: handleMenuToggleTerminal,
+    closeTerminal: handleCloseTerminal,
     preferences: openPreferences,
     zoom: handleZoom,
     shortcuts: handleShowShortcuts,
@@ -640,6 +663,22 @@ export default function App() {
       if (event.ctrlKey && !event.metaKey && !event.altKey && event.code === "Tab") {
         event.preventDefault();
         menuHandlers.current.cycleTab(event.shiftKey ? -1 : 1);
+        return;
+      }
+      // ⌘W: 터미널에 포커스가 있으면 터미널을, 아니면 탭을 닫는다.
+      // 네이티브 Close Tab의 accelerator가 제거돼 이 핸들러가 유일한 처리 지점이다
+      if (
+        event.code === "KeyW" &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.shiftKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        if (terminalFocused()) {
+          menuHandlers.current.closeTerminal();
+        } else {
+          menuHandlers.current.closeTab();
+        }
         return;
       }
       // ⌘, Preferences. 네이티브 메뉴가 없는 하네스에서도 열려야 한다
@@ -855,6 +894,7 @@ function TabPanel({
         refreshNonce={commands.refresh}
         toggleSidebarNonce={commands.toggleSidebar}
         toggleTerminalNonce={commands.toggleTerminal}
+        closeTerminalNonce={commands.closeTerminal}
         prefs={prefs}
         onLoadingChange={handleLoadingChange}
       />
