@@ -168,3 +168,7 @@ export interface RepoState {
 // get_startup_repo() -> string | null
 //   CLI 첫 위치 인자 또는 GITLANES_REPO 환경변수로 지정된 시작 레포 경로.
 //   ui-shell은 마운트 시 1회 호출해 값이 있으면 자동으로 open_repo를 수행한다.
+
+// get_file_content(path, sha, file) -> string
+//   해당 커밋 시점의 파일 전문 (`git show <sha>:<file>`). 바이너리면 Err("binary").
+//   File View(전문 보기)와 split diff 렌더에 사용.

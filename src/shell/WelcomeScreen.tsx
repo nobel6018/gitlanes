@@ -1,4 +1,5 @@
 import { basename } from "./format";
+import { withKbd } from "./shortcuts";
 
 export interface WelcomeScreenProps {
   recents: string[];
@@ -37,7 +38,12 @@ export function WelcomeScreen({
           <p className="welcome-subtitle">읽기 전용 커밋 그래프 뷰어</p>
         </div>
 
-        <button className="welcome-open" onClick={onOpen} disabled={opening}>
+        <button
+          className="welcome-open"
+          onClick={onOpen}
+          disabled={opening}
+          title={withKbd("Open Repository", "Mod+O")}
+        >
           {opening ? "Opening…" : "Open Repository"}
         </button>
 

@@ -74,6 +74,11 @@ impl TempRepo {
     }
 
     pub fn write(&self, name: &str, content: &str) {
+        self.write_bytes(name, content.as_bytes());
+    }
+
+    /// UTF-8이 아닌 내용을 넣어야 할 때 쓴다(바이너리 판정 테스트).
+    pub fn write_bytes(&self, name: &str, content: &[u8]) {
         let target = self.root.join(name);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).unwrap();

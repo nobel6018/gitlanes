@@ -5,6 +5,7 @@ import type {
   WheelEvent as ReactWheelEvent,
 } from "react";
 import { basename } from "./format";
+import { withKbd } from "./shortcuts";
 import { TabContextMenu } from "./TabContextMenu";
 import "./tabs.css";
 
@@ -376,7 +377,7 @@ export function TabBar({
           className="tab-scroll-btn"
           onClick={() => scrollPage(-1)}
           disabled={!overflow.left}
-          title="이전 탭들"
+          title="Scroll tabs"
           aria-label="Scroll tabs left"
         >
           ‹
@@ -442,7 +443,7 @@ export function TabBar({
               <button
                 className="tab-close"
                 onClick={() => onClose(tab.id)}
-                title="Close tab"
+                title={withKbd("Close tab", "Mod+W")}
                 aria-label={`Close ${tab.label}`}
               >
                 ×
@@ -461,14 +462,19 @@ export function TabBar({
           className="tab-scroll-btn"
           onClick={() => scrollPage(1)}
           disabled={!overflow.right}
-          title="다음 탭들"
+          title="Scroll tabs"
           aria-label="Scroll tabs right"
         >
           ›
         </button>
       )}
 
-      <button className="tab-new" onClick={onNewTab} title="New tab" aria-label="New tab">
+      <button
+        className="tab-new"
+        onClick={onNewTab}
+        title={withKbd("New tab", "Mod+T")}
+        aria-label="New tab"
+      >
         +
       </button>
 
@@ -546,7 +552,7 @@ function TabListMenu({ tabs, activeId, open, onToggle, onClose, onActivate }: Ta
       <button
         className={open ? "tab-menu-btn on" : "tab-menu-btn"}
         onClick={onToggle}
-        title="열린 탭 목록"
+        title="Open tabs"
         aria-label="List open tabs"
         aria-expanded={open}
       >

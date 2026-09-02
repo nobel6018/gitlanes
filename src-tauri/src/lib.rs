@@ -59,6 +59,7 @@ pub fn run() {
             commands::load_graph,
             commands::get_commit_details,
             commands::get_file_diff,
+            commands::get_file_content,
             commands::get_startup_repo,
             commands::list_refs,
             commands::search_commits,

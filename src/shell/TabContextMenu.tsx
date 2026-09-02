@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { TabInfo } from "./TabBar";
+import { kbd } from "./shortcuts";
 import "./tabs.css";
 
 export interface TabContextMenuProps {
@@ -24,7 +25,9 @@ export interface TabContextMenuProps {
 /** 화면 밖으로 나가지 않게 두는 여백(px) */
 const EDGE_MARGIN = 6;
 
-type Entry = { kind: "sep" } | { kind: "item"; label: string; disabled: boolean; run: () => void };
+type Entry =
+  | { kind: "sep" }
+  | { kind: "item"; label: string; disabled: boolean; run: () => void; hint?: string };
 
 export function TabContextMenu({
   x,
@@ -46,7 +49,7 @@ export function TabContextMenu({
   const hasPath = tab.path !== null;
 
   const entries: Entry[] = [
-    { kind: "item", label: "Close", disabled: false, run: onCloseTab },
+    { kind: "item", label: "Close", disabled: false, run: onCloseTab, hint: kbd("Mod+W") },
     { kind: "item", label: "Close Others", disabled: !canCloseOthers, run: onCloseOthers },
     {
       kind: "item",
@@ -117,7 +120,8 @@ export function TabContextMenu({
               entry.run();
             }}
           >
-            {entry.label}
+            <span>{entry.label}</span>
+            {entry.hint !== undefined && <span className="tabs-menu-kbd">{entry.hint}</span>}
           </button>
         ),
       )}

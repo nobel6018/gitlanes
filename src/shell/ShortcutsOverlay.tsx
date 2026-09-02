@@ -2,6 +2,7 @@
 // 계약: ShortcutsOverlay(props: { open, onClose, platform }) — open=false면 null.
 import { useEffect, useRef } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
+import { kbd, withKbd } from "./shortcuts";
 import "./panels.css";
 
 export interface ShortcutsOverlayProps {
@@ -78,39 +79,40 @@ const GROUPS: ShortcutGroup[] = [
   },
 ];
 
-const MAC_TOKENS: Record<string, string> = {
-  Mod: "⌘",
-  Shift: "⇧",
-  Alt: "⌥",
-  Ctrl: "Ctrl",
-  Up: "↑",
-  Down: "↓",
-  Left: "←",
-  Right: "→",
+/**
+ * 조합 표기는 공용 헬퍼 kbd()가 기준이다 (⌘⇧H / Ctrl+Shift+H).
+ * 헬퍼가 모르는 키(PageUp, Backspace 등)만 platform prop으로 먼저 정규화해 넘긴다.
+ */
+const ALIASES: Record<string, string> = {
   Escape: "Esc",
-  PageUp: "PgUp",
-  PageDown: "PgDn",
+};
+
+const MAC_EXTRA: Record<string, string> = {
   Backspace: "⌫",
+  PageUp: "PgUp",
+  PageDown: "PgDn",
 };
 
-const OTHER_TOKENS: Record<string, string> = {
-  Mod: "Ctrl",
-  Shift: "Shift",
-  Alt: "Alt",
-  Ctrl: "Ctrl",
+const OTHER_EXTRA: Record<string, string> = {
+  PageUp: "PgUp",
+  PageDown: "PgDn",
+  // 화살표는 플랫폼과 무관하게 기호가 읽기 쉽다 (헬퍼는 비mac에서 텍스트로 흘린다)
   Up: "↑",
   Down: "↓",
   Left: "←",
   Right: "→",
-  Escape: "Esc",
-  PageUp: "PgUp",
-  PageDown: "PgDn",
-  Backspace: "Backspace",
 };
 
-function tokenLabel(token: string, platform: "mac" | "other"): string {
-  const table = platform === "mac" ? MAC_TOKENS : OTHER_TOKENS;
-  return table[token] ?? token;
+function formatCombo(combo: string, platform: "mac" | "other"): string {
+  const extra = platform === "mac" ? MAC_EXTRA : OTHER_EXTRA;
+  const normalized = combo
+    .split("+")
+    .map((token) => {
+      const aliased = ALIASES[token] ?? token;
+      return extra[aliased] ?? aliased;
+    })
+    .join("+");
+  return kbd(normalized);
 }
 
 export function ShortcutsOverlay({ open, onClose, platform }: ShortcutsOverlayProps) {
@@ -152,7 +154,13 @@ export function ShortcutsOverlay({ open, onClose, platform }: ShortcutsOverlayPr
       <div className="sc-modal" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
         <div className="sc-head">
           <h2 className="sc-title">Keyboard Shortcuts</h2>
-          <button ref={closeRef} className="sc-close" onClick={onClose} aria-label="Close">
+          <button
+            ref={closeRef}
+            className="sc-close"
+            onClick={onClose}
+            title={withKbd("Close", "Esc")}
+            aria-label="Close"
+          >
             ×
           </button>
         </div>
@@ -163,19 +171,15 @@ export function ShortcutsOverlay({ open, onClose, platform }: ShortcutsOverlayPr
               {group.items.map((item) => (
                 <div className="sc-row" key={`${group.title}:${item.label}:${item.combos[0]}`}>
                   <span className="sc-keys">
-                    {item.combos.map((combo, i) => (
-                      <span key={combo} className="sc-combo">
-                        {i > 0 && <span className="sc-or"> / </span>}
-                        {combo.split("+").map((token, j) => (
-                          <kbd
-                            key={`${combo}:${j}`}
-                            className={token.length > 3 ? "sc-key wide" : "sc-key"}
-                          >
-                            {tokenLabel(token, platform)}
-                          </kbd>
-                        ))}
-                      </span>
-                    ))}
+                    {item.combos.map((combo, i) => {
+                      const text = formatCombo(combo, platform);
+                      return (
+                        <span key={combo} className="sc-combo">
+                          {i > 0 && <span className="sc-or"> / </span>}
+                          <kbd className={text.length > 3 ? "sc-key wide" : "sc-key"}>{text}</kbd>
+                        </span>
+                      );
+                    })}
                   </span>
                   <span className="sc-label">{item.label}</span>
                 </div>

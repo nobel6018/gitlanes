@@ -278,3 +278,47 @@ export function useDropZone(onDropPaths: (paths: string[]) => void): { isOver: b
 - 하네스(devApp): 새 command mock(reveal_path/open_in_terminal/set_recent_repos는 콘솔 로그), setZoom은 try/catch로 무시, 드롭은 HTML5 폴백 경로 사용
 - 오버레이 공통 규약: 모달형 오버레이(ShortcutsOverlay, QuickSwitcher 등)의 백드롭 요소는 반드시 클래스 `ov-backdrop`을 가진다. 컨텍스트 메뉴 루트는 `role="menu"`. ui-shell의 Esc 단계 사전 판정이 이 두 선택자로 "열린 오버레이 있음"을 판정하므로 이름 변경 금지
 - `CommitDetailPanel` 옵션 prop: `onDiffOpenChange?: (open: boolean) => void`, `closeDiffNonce?: number` (Esc 단계의 diff→목록 복귀용)
+
+## v0.12 확장 (GitKraken 스타일 메인 영역 diff 뷰어)
+
+### 구조 변경
+- 파일 클릭 시 diff는 **오른쪽 상세 패널 안이 아니라 왼쪽 메인 영역(GraphView 자리)에 전체 폭으로** 렌더한다 (GitKraken 방식). 오른쪽 패널은 커밋 상세 + 파일 목록을 그대로 유지하고, 열린 파일 행을 accent로 강조한다
+- 닫기(× 버튼, Esc, 다른 커밋 선택)면 그래프로 복귀. 다른 파일 클릭이면 뷰어 내용만 교체
+
+### rust-core
+```
+get_file_content(path: string, sha: string, file: string) -> string   // git show <sha>:<file>, 바이너리면 Err("binary")
+```
+
+### ui-panels
+- `CommitDetailPanel` props 추가: `onOpenFile?: (file: FileChange) => void`, `openFilePath?: string | null`. `onOpenFile`이 주어지면 인라인 diff를 열지 않고 콜백만 호출(기존 인라인 경로는 미제공 시 폴백으로 유지). `openFilePath`와 같은 경로의 행은 accent 배경 강조. 키보드 Enter/→도 onOpenFile 경유
+- **파일 목록 크기 복원(GitKraken 수준)**: 행 28px, 파일명 13px, 디렉토리 fg-2 12.5px. status는 글자 뱃지 대신 아이콘: 수정 ✎(var(--modified)), 추가 +(var(--added)), 삭제 −(var(--deleted)), 이름변경 ⇢(fg-2). 상단 요약 "N modified · N added · N deleted" 한 줄(각 색상)
+- 신규 `DiffPanel` (src/shell/DiffPanel.tsx, panels.css):
+  ```ts
+  export interface DiffPanelProps {
+    file: FileChange;
+    /** unified diff 원문 (get_file_diff). 로딩 중 null */
+    diffText: string | null;
+    /** 커밋 시점 파일 전문 (get_file_content). File View/split에서만 필요, 미로드 시 null */
+    fileText: string | null;
+    /** fileText가 필요할 때 셸에 요청 */
+    onRequestFileText: () => void;
+    loading: boolean;
+    error: string | null;   // "binary" 등
+    onClose: () => void;
+  }
+  export function DiffPanel(props: DiffPanelProps): JSX.Element;
+  ```
+  - 헤더: status 아이콘 + 디렉토리(fg-2)/파일명(fg-1) + 오른쬭 × (title withKbd("Close","Esc"))
+  - 툴바(중앙): `File View | Diff View` 세그먼트, hunk 이전/다음 ↑↓ 버튼(현재 hunk n/N), `Unified | Split` 세그먼트, 줄바꿈 토글. 모드는 localStorage `gitlanes.diff`에 저장
+  - Diff View(unified): 각 줄에 old/new 줄번호 두 열(fg-2, 고정폭), 접두 +/−, 추가/삭제 배경(var(--added)/var(--deleted) 15%, 행 전체 폭), hunk 헤더 `@@ -a,b +c,d @@` 행(var(--link) 계열, 상단 여백)
+  - Split: 좌 old / 우 new 두 컬럼, 대응 줄 정렬, 빈 쪽은 해칭 배경
+  - File View: 파일 전문(fileText) + diff hunk 정보로 추가/변경 줄을 배경 강조 (삭제 줄은 표시 안 함)
+  - **문법 강조**: `highlight.js/lib/core`에 kotlin, java, typescript, javascript, rust, json, yaml, markdown, css, scss, xml(html), bash, python, go, sql, swift, ruby, php, c, cpp, csharp, toml(ini) 등록. 확장자→언어 매핑. 가상 스크롤 유지: 파일 전체를 1회 하이라이트해 줄 단위 HTML 배열로 나눈 뒤(열린 span은 줄 경계에서 닫고 다음 줄에서 다시 열기) 보이는 줄만 렌더. 5,000줄 이상은 하이라이트 생략(plain)
+  - 가상 스크롤(기존 DiffView 패턴), 줄 높이 20px, 폰트 12.5px 모노스페이스
+  - 기존 `DiffView.tsx`는 인라인 폴백용으로 유지
+
+### ui-shell
+- RepoWorkspace: `openFile: FileChange | null` 상태. 파일 열림이면 메인 영역에 `GraphView` 대신 `DiffPanel` 렌더(사이드바/상세 패널은 유지). diffText는 get_file_diff, fileText는 onRequestFileText 시 get_file_content 호출(캐시 sha+path). 커밋 변경 시 openFile=null. Esc 단계에 "diff 패널 열려 있으면 닫기"를 diff 복귀 단계로 대체
+- CommitDetailPanel에 `onOpenFile`/`openFilePath` 전달. 검색 필터 모드와 diff 패널이 동시에 켜지면 diff 패널 우선
+- 툴바 상태 표시: 파일 열림 중엔 그래프 관련 단축키(Home/End 등)가 diff 패널로 가므로 충돌 없음
