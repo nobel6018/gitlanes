@@ -59,6 +59,17 @@ function readTheme(host: HTMLElement): ITheme {
   };
 }
 
+/**
+ * 앱이 가져가야 하는 키인가. 터미널 토글(⌃`)과 ⌘ 조합(네이티브 메뉴·셸 단축키)만 해당한다.
+ * 나머지는 전부 터미널 입력이다.
+ */
+function isAppShortcut(event: KeyboardEvent): boolean {
+  if (event.metaKey) {
+    return true;
+  }
+  return event.ctrlKey && !event.altKey && (event.key === "`" || event.code === "Backquote");
+}
+
 export function Terminal({ repoPath, visible, onClose }: TerminalProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -183,6 +194,11 @@ export function Terminal({ repoPath, visible, onClose }: TerminalProps) {
     termRef.current = term;
     fitRef.current = fit;
 
+    // 앱 단축키(⌃`)만 xterm이 무시하게 한다. false를 돌려주면 xterm은 그 키를 처리하지 않고
+    // 이벤트를 그냥 버블링시킨다 → 셸의 전역 핸들러가 받는다. 나머지 키는 전부 xterm 담당
+    // (Backspace, 화살표, Ctrl+C, ⌘C/⌘V 복붙, 일반 문자 …)
+    term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));
+
     term.onData((data) => {
       const id = idRef.current;
       if (id === null) {
@@ -262,24 +278,28 @@ export function Terminal({ repoPath, visible, onClose }: TerminalProps) {
     setStatus("idle");
   }, [repoPath, closeSession]);
 
-  // 터미널이 포커스를 가진 동안의 키 입력이 셸 전역 단축키로 새지 않게 한다.
-  // ⌘ 조합과 터미널 토글(⌃`)만 통과시킨다
+  /**
+   * 앱이 가로챌 키는 터미널 토글(⌃`) 하나뿐이다.
+   * 이전 구현은 컨테이너 capture 단계에서 stopPropagation을 걸었는데, capture에서 전파를 끊으면
+   * 이벤트가 xterm의 textarea까지 내려가지 못한다(capture는 위→아래로 흐른다).
+   * 그래서 keydown으로 처리되는 Backspace/화살표/Delete가 전부 죽었다. 지금은
+   * xterm이 먼저 키를 처리하게 두고(bubble 단계에서만 격리), 앱 단축키만 골라 흘려보낸다.
+   */
   useEffect(() => {
     const host = hostRef.current;
     if (host === null) {
       return;
     }
-    const guard = (event: KeyboardEvent) => {
-      if (event.metaKey) {
-        return;
-      }
-      if (event.ctrlKey && event.key === "`") {
+    // bubble 단계: 이미 xterm(textarea)이 처리한 뒤라 터미널 입력을 방해하지 않는다.
+    // preventDefault는 어디서도 부르지 않는다 (xterm의 keydown → onData 변환을 막으면 안 된다)
+    const isolate = (event: KeyboardEvent) => {
+      if (isAppShortcut(event)) {
         return;
       }
       event.stopPropagation();
     };
-    host.addEventListener("keydown", guard, true);
-    return () => host.removeEventListener("keydown", guard, true);
+    host.addEventListener("keydown", isolate);
+    return () => host.removeEventListener("keydown", isolate);
   }, []);
 
   return (
