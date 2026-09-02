@@ -469,6 +469,24 @@ mockIPC(async (cmd, payload) => {
       return picked;
     }
 
+    // v0.11 새 command. 하네스에는 OS 연동이 없으므로 로그만 남긴다
+    case "reveal_path":
+      console.log("[mock] reveal_path:", readArg(payload, "path"));
+      return null;
+
+    case "open_in_terminal":
+      console.log("[mock] open_in_terminal:", readArg(payload, "path"));
+      return null;
+
+    case "set_recent_repos":
+      console.log("[mock] set_recent_repos:", readArg(payload, "paths"));
+      return null;
+
+    // 웹뷰 줌. 하네스에는 네이티브 웹뷰가 없어 값만 찍고 넘어간다
+    case "plugin:webview|set_webview_zoom":
+      console.log("[mock] setZoom:", readArg(payload, "value"));
+      return null;
+
     // plugin-opener의 openUrl(). 하네스에서는 실제로 열지 않고 로그만 남긴다
     case "plugin:opener|open_url":
       console.log("[mock] openUrl:", readArg(payload, "url"));

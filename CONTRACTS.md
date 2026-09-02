@@ -161,3 +161,120 @@ export function GraphView(props: GraphViewProps): JSX.Element;
 - 오픈 상태: 좌측(넓게) GraphView, 우측 커밋 상세 패널 (GitKraken 배치). 커밋 미선택 시 패널 숨김/빈 상태
 - 상세 패널: subject/body, author/committer, parents(short sha), 파일 변경 목록(status 뱃지 + additions/deletions), 파일 클릭 시 unified diff 표시(get_file_diff)
 - 오류는 토스트 또는 인라인 메시지로 표시 (open 실패 등)
+
+## v0.11 확장 (UX 라운드: 탭·창, 키보드, 탐색·검색, 큰 기능)
+
+### 이번 라운드 소유권 (6개 에이전트 병렬)
+
+| 에이전트 | 소유 | 비고 |
+|---|---|---|
+| rust-core | `src-tauri/**` | 메뉴, 플러그인, 새 command |
+| ui-graph | `src/graph/**` | GraphView 키보드/하이라이트/날짜 모드 |
+| ui-shell | `src/App.tsx`, `src/shell/RepoWorkspace.tsx`, `src/shell/Toolbar.tsx`, `src/shell/api.ts`, `src/shell/shell.css`, `src/shell/devApp.tsx`, `src/shell/SearchBox.tsx`, `src/shell/WelcomeScreen.tsx` | **통합 허브**. 다른 UI 에이전트의 컴포넌트를 import해 배선 |
+| ui-tabs | `src/shell/TabBar.tsx`, `src/shell/TabContextMenu.tsx`(신규), `src/shell/tabs.css`(신규) | 탭 UI 전담 |
+| ui-sidebar | `src/shell/BranchSidebar.tsx`, `src/shell/SidebarContextMenu.tsx`(신규), `src/shell/sidebar.css`(신규) | 사이드바 전담 |
+| ui-panels | `src/shell/CommitDetailPanel.tsx`, `src/shell/FileRow.tsx`, `src/shell/FileTree.tsx`, `src/shell/DiffView.tsx`, `src/shell/ShortcutsOverlay.tsx`(신규), `src/shell/QuickSwitcher.tsx`(신규), `src/shell/FilterResults.tsx`(신규), `src/shell/useDropZone.ts`(신규), `src/shell/panels.css`(신규) | 자족적 컴포넌트. props만으로 동작, App 상태 직접 접근 금지 |
+
+- 새 컴포넌트의 스타일은 각자 CSS 파일(tabs.css/sidebar.css/panels.css)에 두고 컴포넌트에서 import. `shell.css`는 ui-shell만 수정. TabBar/BranchSidebar의 기존 스타일이 shell.css에 있으면 각자 CSS로 **옮기지 말고** 추가분만 새 파일에 쓴다 (shell.css의 기존 규칙과 충돌하는 것은 클래스명을 새로 붙여 회피)
+- ui-shell은 아래 인터페이스를 믿고 배선한다. 다른 에이전트는 인터페이스를 정확히 이 형태로 export한다
+
+### rust-core 추가
+
+```
+reveal_path(path: string) -> ()          // Finder/Explorer/파일관리자에서 항목 표시 (macOS: open -R)
+open_in_terminal(path: string) -> ()     // 기본 터미널을 해당 디렉토리로 (macOS: open -a Terminal, Win: wt/cmd, Linux: x-terminal-emulator)
+set_recent_repos(paths: string[]) -> ()  // File > Open Recent 서브메뉴 재구성 (최대 10개, 파일명만 라벨, 마지막에 구분선 + Clear Menu)
+```
+- 새 메뉴 이벤트: `menu:open-recent` (payload: string 경로), `menu:clear-recent` (payload 없음), `menu:toggle-sidebar`, `menu:zoom-in`, `menu:zoom-out`, `menu:zoom-reset`, `menu:shortcuts`
+- View 메뉴 신설: Toggle Sidebar(CmdOrCtrl+B), 구분선, Zoom In(CmdOrCtrl+=), Zoom Out(CmdOrCtrl+-), Actual Size(CmdOrCtrl+0). Help 메뉴: Keyboard Shortcuts(CmdOrCtrl+/)
+- **Shift+알파벳 조합은 네이티브 메뉴에 넣지 않는다** (muda 버그). ⌘⇧T/⌘⇧H/⌘⇧C/⌘⇧F는 웹뷰 keydown 담당
+- 플러그인: `tauri-plugin-window-state`(창 크기·위치 복원) 등록 + capability. 웹뷰 줌: capability에 `core:webview:allow-set-webview-zoom` 추가 (프론트가 `getCurrentWebview().setZoom()` 호출)
+- 드래그&드롭: 창 `dragDropEnabled` 유지(기본 true). 프론트가 `getCurrentWebview().onDragDropEvent` 사용. 필요한 capability(`core:webview:allow-internal-on-drop` 등 실제 식별자는 확인) 추가
+
+### GraphView props 추가 (ui-graph)
+
+```ts
+/** 검색어. 있으면 MESSAGE/AUTHOR/SHA 셀에서 대소문자 무시 매치 구간을 <mark>로 강조 */
+highlightQuery?: string;
+/** 날짜 표시 모드. 기본 "absolute" */
+dateMode?: "absolute" | "relative";
+/** DATE 헤더 클릭 시 호출 (ui-shell이 토글·저장) */
+onToggleDateMode?: () => void;
+```
+- 키보드 확장(스크롤 컨테이너 포커스 시): Home/⌘↑ 첫 커밋 선택+스크롤, End/⌘↓ 마지막, PageUp/PageDown 한 화면(뷰포트 행 수 - 1)만큼 선택 이동. 기존 ↑↓ 유지
+- 상대 시간 포맷: "just now", "5m ago", "3h ago", "2d ago", "3w ago", 그 이상은 절대 날짜. 1분 주기로 갱신 불필요(정적)
+
+### TabBar props (ui-tabs)
+
+기존 props 유지 + 추가:
+```ts
+onReorder: (fromIndex: number, toIndex: number) => void;   // 드래그 재정렬 결과
+onCloseOthers: (id: number) => void;   // TabInfo.id는 number
+onCloseToRight: (id: number) => void;
+onCopyPath: (id: number) => void;
+onRevealInFinder: (id: number) => void;
+onNewTab: () => void;                                       // 빈 영역 더블클릭 (기존 + 버튼과 동일 콜백)
+```
+- 드래그: HTML5 DnD 대신 pointer 이벤트(pointer capture)로 구현, 드래그 중 고스트/삽입 위치 표시, 드롭 시 onReorder 1회 호출. 탭 클릭(활성화)과 드래그 시작을 이동 거리 4px로 구분
+- 우클릭 메뉴(TabContextMenu): Close, Close Others, Close Tabs to the Right, 구분선, Copy Path, Reveal in Finder. 빈 탭(path 없음)이면 Copy Path/Reveal 비활성. 바깥 클릭/Esc 닫힘
+- 가운데 클릭 닫기 유지
+
+### BranchSidebar props (ui-sidebar)
+
+기존 props 유지 + 추가:
+```ts
+onCopyRefName: (name: string) => void;
+onOpenRefOnRemote?: (ref: RefEntry) => void;   // remoteUrl이 있을 때만 전달됨 (없으면 undefined → 메뉴 항목 숨김)
+```
+- 상단 필터 입력창: placeholder "Filter branches", 대소문자 무시 부분일치로 LOCAL/REMOTE/TAGS 모두 필터, 매치 없는 섹션은 접지 말고 "No matches" 한 줄. 입력 시 매치 문자열 <mark> 강조. Esc로 클리어. 외부에서 포커스할 수 있게 `filterInputRef?: RefObject<HTMLInputElement | null>` prop (ui-shell이 ⌘⇧F 대신 **⌘⌥F**로 포커스 — Shift 회피)
+- 우클릭 메뉴(SidebarContextMenu): Copy Name, Open on Remote(있을 때), Jump to Commit(기존 클릭 동작과 동일)
+
+### ui-panels 컴포넌트
+
+```ts
+// ShortcutsOverlay: 단축키 치트시트. open=false면 null 렌더
+export function ShortcutsOverlay(props: { open: boolean; onClose: () => void; platform: "mac" | "other" }): JSX.Element | null;
+// 표시 목록은 컴포넌트 내부 상수 (이 계약의 최종 단축키 표 참고). ⌘/Ctrl 표기를 platform으로 분기
+
+// QuickSwitcher (⌘P): refs를 퍼지 매치로 필터, ↑↓ 이동, Enter 선택, Esc 닫기
+export function QuickSwitcher(props: { open: boolean; refs: RefEntry[]; onSelect: (ref: RefEntry) => void; onClose: () => void }): JSX.Element | null;
+// 매치 점수: 접두 > 경로 세그먼트 시작 > 부분. 최근 선택 5개 상단 고정(localStorage gitlanes.quickswitch.recent)
+
+// FilterResults (검색 필터 모드): 매치 커밋만 평면 목록. 그래프 없이 MESSAGE/AUTHOR/DATE, 클릭 시 onSelect
+export function FilterResults(props: { rows: CommitRow[]; query: string; selectedSha: string | null; onSelect: (sha: string) => void; total: number; hasMore: boolean; onLoadMore: () => void }): JSX.Element;
+// rows는 ui-shell이 이미 필터링해 전달. 가상 스크롤(행 30px). 매치 구간 <mark>
+
+// useDropZone: 폴더 드래그&드롭. Tauri onDragDropEvent 구독, 브라우저(하네스)에서는 HTML5 dragover/drop 폴백
+export function useDropZone(onDropPaths: (paths: string[]) => void): { isOver: boolean };
+// 디렉토리가 아닌 파일이 떨어지면 부모 디렉토리로 정규화는 ui-shell(open_repo가 --show-toplevel로 해석)
+
+// CommitDetailPanel 키보드: 파일 목록 포커스 시 ↑↓ 이동, Enter/→ diff 열기, ←/Backspace 목록 복귀. 포커스 가능 요소로 만들고 focus ring 표시
+```
+
+### ui-shell 배선과 단축키 (최종 표)
+
+| 키 | 동작 | 처리 위치 |
+|---|---|---|
+| ⌘T / ⌘W / ⌘O / ⌘R | 새 탭 / 탭 닫기 / 레포 열기 / 새로고침 | 네이티브 메뉴 (기존) |
+| ⌘1~8 / ⌘9 | 탭 이동 / 마지막 탭 | 네이티브 (기존) |
+| ⌘⇧[ / ⌘⇧] , ⌥⌘← / → , Ctrl+Tab / Ctrl+⇧Tab | 탭 순환 | 웹뷰 keydown (Ctrl+Tab 추가) / 네이티브 |
+| ⌘⇧T | 마지막으로 닫은 탭 복원 (스택, 세션 메모리, 최대 10) | 웹뷰 keydown |
+| ⌘B | 사이드바 토글 | 네이티브 View 메뉴 → `menu:toggle-sidebar` |
+| ⌘= / ⌘- / ⌘0 | 줌 인/아웃/초기화 (0.8~1.6, 0.1 단계, localStorage `gitlanes.zoom`, 시작 시 적용) | 네이티브 → `menu:zoom-*` → `getCurrentWebview().setZoom()` |
+| ⌘/ | 단축키 치트시트 | 네이티브 Help → `menu:shortcuts` |
+| ⌘⇧H | Go to HEAD (선택+중앙 스크롤). 툴바에도 버튼 | 웹뷰 keydown |
+| ⌘P | 퀵 스위처 | 웹뷰 keydown |
+| ⌘F / ⌘⇧F | 검색 포커스 / 검색 필터 모드 토글 (SearchBox에 토글 버튼도) | 웹뷰 (기존) / 웹뷰 |
+| ⌘⌥F | 사이드바 브랜치 필터 포커스 | 웹뷰 keydown |
+| ⌘C / ⌘⇧C | 선택 커밋 sha 복사 / 메시지 복사 (텍스트 선택 없고 입력창 포커스 아닐 때만) | 웹뷰 keydown |
+| Esc | 열린 오버레이 닫기 → 검색 클리어 → 선택 해제(상세 패널 닫힘) 순서로 하나만 | 웹뷰 keydown |
+| Home/End/PageUp/PageDown/⌘↑/⌘↓ | 그래프 이동 | GraphView |
+| 폴더 드롭 | 새 탭에서 열기 (이미 열려 있으면 활성화) | useDropZone → ui-shell |
+| 탭 바 빈 영역 더블클릭 | 새 탭 | TabBar |
+| DATE 헤더 클릭 | 절대/상대 토글 (localStorage `gitlanes.dateMode`) | GraphView → ui-shell |
+
+- 검색 필터 모드: 켜면 GraphView 대신 FilterResults를 같은 자리에 렌더 (rows는 기존 로컬 매치 + 전체 검색 결과를 합쳐 ui-shell이 필터). 끄면 그래프 복귀, 선택은 유지
+- 툴바 레포명 우클릭 메뉴: Copy Path, Reveal in Finder, Open in Terminal (ContextMenu 재사용). File 메뉴의 Open Recent는 `set_recent_repos`로 동기화(최근 목록 변경마다)
+- 하네스(devApp): 새 command mock(reveal_path/open_in_terminal/set_recent_repos는 콘솔 로그), setZoom은 try/catch로 무시, 드롭은 HTML5 폴백 경로 사용
+- 오버레이 공통 규약: 모달형 오버레이(ShortcutsOverlay, QuickSwitcher 등)의 백드롭 요소는 반드시 클래스 `ov-backdrop`을 가진다. 컨텍스트 메뉴 루트는 `role="menu"`. ui-shell의 Esc 단계 사전 판정이 이 두 선택자로 "열린 오버레이 있음"을 판정하므로 이름 변경 금지
+- `CommitDetailPanel` 옵션 prop: `onDiffOpenChange?: (open: boolean) => void`, `closeDiffNonce?: number` (Esc 단계의 diff→목록 복귀용)

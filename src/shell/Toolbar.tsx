@@ -8,6 +8,10 @@ export interface ToolbarProps {
   search: ReactNode;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  /** HEAD 커밋으로 이동 (⌘⇧H) */
+  onGoToHead: () => void;
+  /** 레포명 우클릭. 화면 좌표를 그대로 넘긴다 */
+  onRepoContextMenu: (clientX: number, clientY: number) => void;
   commitCount: number;
   hasMore: boolean;
   loading: boolean;
@@ -28,6 +32,8 @@ export function Toolbar({
   search,
   sidebarOpen,
   onToggleSidebar,
+  onGoToHead,
+  onRepoContextMenu,
   commitCount,
   hasMore,
   loading,
@@ -57,7 +63,13 @@ export function Toolbar({
         </svg>
       </button>
 
-      <div className="toolbar-repo">
+      <div
+        className="toolbar-repo"
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onRepoContextMenu(e.clientX, e.clientY);
+        }}
+      >
         <span className="toolbar-repo-name" title={repo.path}>
           {repo.name}
         </span>
@@ -99,6 +111,16 @@ export function Toolbar({
           {updateTag} ↑
         </button>
       )}
+
+      <button className="toolbar-btn" onClick={onGoToHead} title="Go to HEAD (⌘⇧H)">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+          <g fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+            <circle cx="8" cy="10.6" r="2.4" />
+            <path d="M8 8.2V2.4M5.6 4.8 8 2.4l2.4 2.4" strokeLinejoin="round" />
+          </g>
+        </svg>
+        HEAD
+      </button>
 
       <button
         className={showTags ? "toolbar-btn toggle on" : "toolbar-btn toggle"}

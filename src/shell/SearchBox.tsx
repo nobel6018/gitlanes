@@ -11,6 +11,9 @@ export interface SearchBoxProps {
   /** 전체 히스토리까지 뒤졌고 더 없음 (카운터에 "(전체)" 표기) */
   exhausted: boolean;
   inputRef: RefObject<HTMLInputElement | null>;
+  /** 필터 모드. 켜지면 그래프 대신 매치 목록만 보인다 */
+  filterMode: boolean;
+  onToggleFilterMode: () => void;
   onChange: (query: string) => void;
   onNext: () => void;
   onPrev: () => void;
@@ -24,6 +27,8 @@ export function SearchBox({
   searching,
   exhausted,
   inputRef,
+  filterMode,
+  onToggleFilterMode,
   onChange,
   onNext,
   onPrev,
@@ -64,6 +69,23 @@ export function SearchBox({
           }
         }}
       />
+      <button
+        className={filterMode ? "search-filter on" : "search-filter"}
+        onClick={onToggleFilterMode}
+        title="Filter mode (⌘⇧F)"
+        aria-pressed={filterMode}
+        aria-label="Toggle filter mode"
+      >
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+          <path
+            d="M2.2 3.2h11.6L9.4 8.4v4.2l-2.8 1.2V8.4L2.2 3.2z"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
       {hasQuery && (
         <>
           {searching ? (

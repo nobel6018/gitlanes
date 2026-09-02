@@ -1482,3 +1482,50 @@ body.resizing * {
   -webkit-user-select: none !important;
   cursor: col-resize !important;
 }
+
+/* ---------- 검색 필터 모드 토글 ---------- */
+
+.search-filter {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  color: var(--fg-2);
+}
+
+.search-filter:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.search-filter.on {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ---------- 폴더 드롭 오버레이 ---------- */
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(28, 30, 35, 0.72);
+  pointer-events: none;
+}
+
+.drop-overlay-card {
+  padding: 18px 28px;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--fg-1);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}

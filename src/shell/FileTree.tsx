@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+// 변경 파일 트리. 접기 상태와 키보드 포커스는 CommitDetailPanel이 소유하고(controlled),
+// 여기서는 평면화된 행 목록을 그대로 렌더한다. 평면 목록이 키보드 탐색의 단일 진실이다.
 import type { FileChange } from "../types";
 import { FileRow } from "./FileRow";
 
@@ -23,6 +24,19 @@ interface BuildDir {
   dirs: Map<string, BuildDir>;
   files: FileChange[];
 }
+
+/** 평면화된 트리 한 줄. 키보드 탐색 인덱스가 이 배열의 인덱스다 */
+export type FileNavRow =
+  | {
+      kind: "dir";
+      key: string;
+      path: string;
+      name: string;
+      depth: number;
+      fileCount: number;
+      collapsed: boolean;
+    }
+  | { kind: "file"; key: string; depth: number; file: FileChange };
 
 function emptyDir(): BuildDir {
   return { dirs: new Map(), files: [] };
@@ -90,90 +104,88 @@ function convert(dir: BuildDir, path: string): TreeDir {
   };
 }
 
-export interface FileTreeProps {
-  files: FileChange[];
-  onOpen: (file: FileChange) => void;
-}
+/**
+ * 트리를 화면에 보이는 순서대로 평면화한다.
+ * 접힌 디렉토리의 자식은 아예 넣지 않으므로 렌더와 키보드 탐색 범위가 같다.
+ */
+export function buildFileNavRows(
+  files: FileChange[],
+  collapsed: ReadonlySet<string>,
+): FileNavRow[] {
+  const out: FileNavRow[] = [];
 
-export function FileTree({ files, onOpen }: FileTreeProps) {
-  // 파일 수백 개짜리 커밋에서도 렌더마다 다시 만들지 않는다
-  const tree = useMemo(() => buildTree(files), [files]);
-  // 기본은 전부 펼침. 접힌 경로만 담는다
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set<string>());
-
-  const toggle = (path: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
+  const walk = (nodes: TreeNode[], depth: number) => {
+    for (const node of nodes) {
+      if (node.kind === "file") {
+        out.push({ kind: "file", key: `f:${node.file.path}`, depth, file: node.file });
+        continue;
       }
-      return next;
-    });
+      const isCollapsed = collapsed.has(node.path);
+      out.push({
+        kind: "dir",
+        key: `d:${node.path}`,
+        path: node.path,
+        name: node.name,
+        depth,
+        fileCount: node.fileCount,
+        collapsed: isCollapsed,
+      });
+      if (!isCollapsed) {
+        walk(node.children, depth + 1);
+      }
+    }
   };
 
+  walk(buildTree(files), 0);
+  return out;
+}
+
+export interface FileTreeProps {
+  /** buildFileNavRows 결과 (접힌 디렉토리 자식은 빠져 있다) */
+  rows: FileNavRow[];
+  /** 키보드 포커스 행 인덱스. 없으면 -1 */
+  focusIndex: number;
+  onOpen: (file: FileChange, index: number) => void;
+  onToggle: (path: string, index: number) => void;
+}
+
+export function FileTree({ rows, focusIndex, onOpen, onToggle }: FileTreeProps) {
   return (
     <ul className="file-list tree">
-      <TreeLevel nodes={tree} depth={0} collapsed={collapsed} onToggle={toggle} onOpen={onOpen} />
-    </ul>
-  );
-}
-
-interface TreeLevelProps {
-  nodes: TreeNode[];
-  depth: number;
-  collapsed: ReadonlySet<string>;
-  onToggle: (path: string) => void;
-  onOpen: (file: FileChange) => void;
-}
-
-function TreeLevel({ nodes, depth, collapsed, onToggle, onOpen }: TreeLevelProps) {
-  return (
-    <>
-      {nodes.map((node) => {
-        if (node.kind === "file") {
-          return (
-            <FileRow
-              key={node.file.path}
-              file={node.file}
-              depth={depth}
-              nameOnly
-              onOpen={() => onOpen(node.file)}
-            />
-          );
-        }
-        const isCollapsed = collapsed.has(node.path);
-        return (
-          <li key={node.path}>
+      {rows.map((row, index) =>
+        row.kind === "file" ? (
+          <FileRow
+            key={row.key}
+            file={row.file}
+            depth={row.depth}
+            nameOnly
+            navIndex={index}
+            focused={index === focusIndex}
+            onOpen={() => onOpen(row.file, index)}
+          />
+        ) : (
+          <li key={row.key}>
             <button
-              className="tree-dir"
-              style={{ paddingLeft: 4 + depth * 12 }}
-              onClick={() => onToggle(node.path)}
-              aria-expanded={!isCollapsed}
-              title={node.path}
+              className={index === focusIndex ? "tree-dir kb-focus" : "tree-dir"}
+              style={{ paddingLeft: 4 + row.depth * 12 }}
+              data-nav-index={index}
+              tabIndex={-1}
+              onClick={() => onToggle(row.path, index)}
+              aria-expanded={!row.collapsed}
+              title={row.path}
             >
-              <span className={isCollapsed ? "sb-caret collapsed" : "sb-caret"} aria-hidden="true">
+              <span
+                className={row.collapsed ? "sb-caret collapsed" : "sb-caret"}
+                aria-hidden="true"
+              >
                 ▾
               </span>
-              <span className="tree-dir-name">{node.name}</span>
-              <span className="tree-dir-count">{node.fileCount}</span>
+              <span className="tree-dir-name">{row.name}</span>
+              <span className="tree-dir-count">{row.fileCount}</span>
             </button>
-            {/* 접힌 노드는 아예 렌더하지 않는다 */}
-            {!isCollapsed && (
-              <ul className="file-list">
-                <TreeLevel
-                  nodes={node.children}
-                  depth={depth + 1}
-                  collapsed={collapsed}
-                  onToggle={onToggle}
-                  onOpen={onOpen}
-                />
-              </ul>
-            )}
           </li>
-        );
-      })}
-    </>
+        ),
+      )}
+    </ul>
   );
 }

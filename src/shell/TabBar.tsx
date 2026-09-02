@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { WheelEvent as ReactWheelEvent } from "react";
+import type {
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  WheelEvent as ReactWheelEvent,
+} from "react";
 import { basename } from "./format";
+import { TabContextMenu } from "./TabContextMenu";
+import "./tabs.css";
 
 export interface TabInfo {
   id: number;
@@ -18,10 +24,32 @@ export interface TabBarProps {
   onActivate: (id: number) => void;
   onClose: (id: number) => void;
   onNewTab: () => void;
+  /** 드래그 재정렬 결과. 드롭 시 1회만 호출 */
+  onReorder: (fromIndex: number, toIndex: number) => void;
+  onCloseOthers: (id: number) => void;
+  onCloseToRight: (id: number) => void;
+  onCopyPath: (id: number) => void;
+  onRevealInFinder: (id: number) => void;
 }
 
 /** 스크롤 버튼 한 번에 이동할 비율 */
 const PAGE_RATIO = 0.8;
+/** 클릭(활성화)과 드래그를 가르는 가로 이동 거리(px) */
+const DRAG_THRESHOLD = 4;
+/** 드래그 중 자동 스크롤이 걸리는 가장자리 폭(px) */
+const EDGE_ZONE = 40;
+/** 자동 스크롤 프레임당 최대 이동(px) */
+const MAX_AUTO_SCROLL = 14;
+
+interface DragInfo {
+  id: number;
+  fromIndex: number;
+  startX: number;
+  pointerId: number;
+  el: HTMLDivElement;
+  /** 4px 문턱을 넘어 실제 드래그로 승격됐는가 */
+  started: boolean;
+}
 
 /** "/a/b/repo" -> "b" (동명 레포 구분용 부모 디렉토리 1단계) */
 function parentDir(path: string | null): string {
@@ -39,11 +67,27 @@ export function TabBar({
   onActivate,
   onClose,
   onNewTab,
+  onReorder,
+  onCloseOthers,
+  onCloseToRight,
+  onCopyPath,
+  onRevealInFinder,
 }: TabBarProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef(new Map<number, HTMLDivElement>());
   const [overflow, setOverflow] = useState({ any: false, left: false, right: false });
   const [menuOpen, setMenuOpen] = useState(false);
+  const [contextTarget, setContextTarget] = useState<{ id: number; x: number; y: number } | null>(
+    null,
+  );
+
+  // 드래그 상태: 좌표 계산에 쓰는 값은 ref, 화면에 그리는 값만 state
+  const dragRef = useRef<DragInfo | null>(null);
+  const pointerXRef = useRef(0);
+  const autoScrollRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
+  const [armed, setArmed] = useState(false);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
 
   // 같은 이름의 레포가 여러 탭이면 부모 디렉토리 1단계를 앞에 덧붙인다
   const prefixes = useMemo(() => {
@@ -106,6 +150,175 @@ export function TabBar({
     }
   }, [activeId, tabs.length]);
 
+  // 커서 x가 어느 탭 사이에 있는지 (0 = 맨 앞, tabs.length = 맨 뒤)
+  const insertIndexAt = useCallback(
+    (clientX: number) => {
+      let index = 0;
+      for (const tab of tabs) {
+        const el = tabRefs.current.get(tab.id);
+        if (el === undefined) {
+          continue;
+        }
+        const rect = el.getBoundingClientRect();
+        if (clientX > rect.left + rect.width / 2) {
+          index += 1;
+        }
+      }
+      return index;
+    },
+    [tabs],
+  );
+
+  const stopAutoScroll = useCallback(() => {
+    if (autoScrollRef.current !== null) {
+      cancelAnimationFrame(autoScrollRef.current);
+      autoScrollRef.current = null;
+    }
+  }, []);
+
+  // 드래그 중 컨테이너 가장자리에 붙으면 가장자리와의 거리에 비례해 스크롤한다
+  const runAutoScroll = useCallback(() => {
+    const box = scrollRef.current;
+    const info = dragRef.current;
+    if (box === null || info === null || !info.started) {
+      autoScrollRef.current = null;
+      return;
+    }
+    const rect = box.getBoundingClientRect();
+    const x = pointerXRef.current;
+    let delta = 0;
+    if (x < rect.left + EDGE_ZONE) {
+      delta = -Math.min(MAX_AUTO_SCROLL, rect.left + EDGE_ZONE - x);
+    } else if (x > rect.right - EDGE_ZONE) {
+      delta = Math.min(MAX_AUTO_SCROLL, x - (rect.right - EDGE_ZONE));
+    }
+    if (delta !== 0) {
+      const before = box.scrollLeft;
+      box.scrollLeft = before + delta;
+      if (box.scrollLeft !== before) {
+        setDropIndex(insertIndexAt(x));
+      }
+    }
+    autoScrollRef.current = requestAnimationFrame(runAutoScroll);
+  }, [insertIndexAt]);
+
+  useEffect(() => stopAutoScroll, [stopAutoScroll]);
+
+  // pointerdown으로 무장(armed)된 동안만 window 리스너를 단다.
+  // pointerdown은 discrete 이벤트라 다음 pointermove 전에 이 이펙트가 붙는다.
+  useEffect(() => {
+    if (!armed) {
+      return;
+    }
+
+    const finish = (commit: boolean) => {
+      const info = dragRef.current;
+      stopAutoScroll();
+      if (info !== null) {
+        if (info.started) {
+          try {
+            info.el.releasePointerCapture(info.pointerId);
+          } catch {
+            // 이미 캡처가 풀린 경우는 무시한다
+          }
+        }
+        if (commit && info.started) {
+          const insertAt = insertIndexAt(pointerXRef.current);
+          const toIndex = insertAt > info.fromIndex ? insertAt - 1 : insertAt;
+          if (toIndex !== info.fromIndex) {
+            onReorder(info.fromIndex, toIndex);
+          }
+        }
+        // 드래그로 끝난 pointerup 뒤에 따라오는 click 1회만 삼킨다
+        if (info.started) {
+          window.setTimeout(() => {
+            suppressClickRef.current = false;
+          }, 0);
+        }
+      }
+      dragRef.current = null;
+      setDropIndex(null);
+      setArmed(false);
+    };
+
+    const onMove = (event: PointerEvent) => {
+      const info = dragRef.current;
+      if (info === null || event.pointerId !== info.pointerId) {
+        return;
+      }
+      pointerXRef.current = event.clientX;
+      if (!info.started) {
+        if (Math.abs(event.clientX - info.startX) < DRAG_THRESHOLD) {
+          return;
+        }
+        info.started = true;
+        suppressClickRef.current = true;
+        try {
+          info.el.setPointerCapture(info.pointerId);
+        } catch {
+          // 캡처가 안 되도 window 리스너로 계속 따라간다
+        }
+        if (autoScrollRef.current === null) {
+          autoScrollRef.current = requestAnimationFrame(runAutoScroll);
+        }
+      }
+      setDropIndex(insertIndexAt(event.clientX));
+    };
+
+    const onUp = (event: PointerEvent) => {
+      const info = dragRef.current;
+      if (info === null || event.pointerId !== info.pointerId) {
+        return;
+      }
+      pointerXRef.current = event.clientX;
+      finish(true);
+    };
+
+    const onCancel = () => finish(false);
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+  }, [armed, insertIndexAt, onReorder, runAutoScroll, stopAutoScroll]);
+
+  function handleTabPointerDown(event: ReactPointerEvent<HTMLDivElement>, tab: TabInfo, index: number) {
+    if (event.button !== 0) {
+      return;
+    }
+    // 닫기 버튼 위에서 시작한 누름은 드래그로 보지 않는다
+    if (event.target instanceof Element && event.target.closest(".tab-close") !== null) {
+      return;
+    }
+    const el = tabRefs.current.get(tab.id);
+    if (el === undefined) {
+      return;
+    }
+    pointerXRef.current = event.clientX;
+    dragRef.current = {
+      id: tab.id,
+      fromIndex: index,
+      startX: event.clientX,
+      pointerId: event.pointerId,
+      el,
+      started: false,
+    };
+    setArmed(true);
+  }
+
+  function handleLabelClick(id: number) {
+    // 드래그로 끝난 경우의 click은 활성화로 치지 않는다
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    onActivate(id);
+  }
+
   // 세로 휠을 가로 스크롤로 바꿔 트랙패드 없이도 넘길 수 있게 한다
   function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
     const box = scrollRef.current;
@@ -123,8 +336,41 @@ export function TabBar({
     box.scrollBy({ left: direction * box.clientWidth * PAGE_RATIO, behavior: "smooth" });
   }
 
+  // 탭이 아닌 빈 배경 더블클릭만 새 탭으로 친다
+  function handleBackgroundDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+    if (event.target.closest(".tab") !== null || event.target.closest("button") !== null) {
+      return;
+    }
+    onNewTab();
+  }
+
+  // 삽입 표시선의 x. offsetLeft는 스크롤과 무관해 자동 스크롤 중에도 어긋나지 않는다
+  function indicatorLeft(index: number): number | null {
+    if (tabs.length === 0) {
+      return null;
+    }
+    if (index >= tabs.length) {
+      const last = tabRefs.current.get(tabs[tabs.length - 1].id);
+      return last === undefined ? null : last.offsetLeft + last.offsetWidth;
+    }
+    const el = tabRefs.current.get(tabs[index].id);
+    return el === undefined ? null : el.offsetLeft;
+  }
+
+  const draggingId = dropIndex === null ? null : (dragRef.current?.id ?? null);
+  const indicatorX = dropIndex === null ? null : indicatorLeft(dropIndex);
+  const contextIndex =
+    contextTarget === null ? -1 : tabs.findIndex((tab) => tab.id === contextTarget.id);
+  const contextTab = contextIndex === -1 ? null : tabs[contextIndex];
+
   return (
-    <div className="tabbar">
+    <div
+      className={draggingId === null ? "tabbar" : "tabbar tabs-dragging"}
+      onDoubleClick={handleBackgroundDoubleClick}
+    >
       {overflow.any && (
         <button
           className="tab-scroll-btn"
@@ -138,7 +384,7 @@ export function TabBar({
       )}
 
       <div className="tabbar-scroll" ref={scrollRef} onScroll={measure} onWheel={handleWheel}>
-        {tabs.map((tab) => {
+        {tabs.map((tab, index) => {
           const prefix = prefixes.get(tab.id);
           return (
             <div
@@ -154,6 +400,7 @@ export function TabBar({
                 "tab",
                 tab.id === activeId ? "active" : "",
                 loadingIds.has(tab.id) ? "loading" : "",
+                tab.id === draggingId ? "tabs-drag-source" : "",
               ]
                 .filter((name) => name !== "")
                 .join(" ")}
@@ -164,10 +411,16 @@ export function TabBar({
                   onClose(tab.id);
                 }
               }}
+              onPointerDown={(e) => handleTabPointerDown(e, tab, index)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setMenuOpen(false);
+                setContextTarget({ id: tab.id, x: e.clientX, y: e.clientY });
+              }}
             >
               <button
                 className="tab-label"
-                onClick={() => onActivate(tab.id)}
+                onClick={() => handleLabelClick(tab.id)}
                 title={tab.path ?? "New tab"}
               >
                 {prefix !== undefined && <span className="tab-parent">{prefix}/</span>}
@@ -197,6 +450,10 @@ export function TabBar({
             </div>
           );
         })}
+
+        {indicatorX !== null && (
+          <div className="tabs-drop-indicator" style={{ left: indicatorX }} aria-hidden="true" />
+        )}
       </div>
 
       {overflow.any && (
@@ -226,6 +483,22 @@ export function TabBar({
           onActivate(id);
         }}
       />
+
+      {contextTarget !== null && contextTab !== null && (
+        <TabContextMenu
+          x={contextTarget.x}
+          y={contextTarget.y}
+          tab={contextTab}
+          canCloseToRight={contextIndex < tabs.length - 1}
+          canCloseOthers={tabs.length > 1}
+          onDismiss={() => setContextTarget(null)}
+          onCloseTab={() => onClose(contextTab.id)}
+          onCloseOthers={() => onCloseOthers(contextTab.id)}
+          onCloseToRight={() => onCloseToRight(contextTab.id)}
+          onCopyPath={() => onCopyPath(contextTab.id)}
+          onRevealInFinder={() => onRevealInFinder(contextTab.id)}
+        />
+      )}
     </div>
   );
 }

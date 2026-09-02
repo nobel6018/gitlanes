@@ -1,0 +1,65 @@
+/* ---------- 브랜치 사이드바 추가분 (v0.11) ----------
+ * 기존 .sidebar / .sb-* 규칙은 shell.css에 있다. 여기에는 새로 붙는 것만 둔다.
+ */
+
+.sb-filter {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.sb-filter-input {
+  width: 100%;
+  height: 24px;
+  padding: 0 22px 0 8px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  background: var(--bg-content);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.sb-filter-input::placeholder {
+  color: var(--fg-2);
+}
+
+.sb-filter-input:focus {
+  border-color: var(--accent);
+}
+
+.sb-filter-clear {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.sb-filter-clear:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+/* 매치 구간 강조. 글자색은 그대로 두고 배경만 얹는다
+ * (첫 줄은 color-mix 미지원 웹뷰용 폴백) */
+.sb-mark {
+  background: rgba(61, 109, 168, 0.35);
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+
+.sb-nomatch {
+  padding: 2px 8px 4px 13px;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-style: italic;
+}

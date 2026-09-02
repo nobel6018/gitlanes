@@ -70,3 +70,18 @@ export function errorMessage(err: unknown): string {
   }
   return String(err);
 }
+
+/** Finder/Explorer에서 해당 항목을 보여준다 (macOS: open -R) */
+export function revealPath(path: string): Promise<void> {
+  return invoke<void>("reveal_path", { path });
+}
+
+/** 기본 터미널을 그 디렉토리에서 연다 */
+export function openInTerminal(path: string): Promise<void> {
+  return invoke<void>("open_in_terminal", { path });
+}
+
+/** File > Open Recent 서브메뉴를 다시 만든다 (최대 10개) */
+export function setRecentRepos(paths: string[]): Promise<void> {
+  return invoke<void>("set_recent_repos", { paths });
+}

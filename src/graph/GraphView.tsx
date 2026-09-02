@@ -21,10 +21,13 @@ import {
   authorColorIndex,
   authorInitials,
   formatDate,
+  formatRelativeDate,
   graphColumnWidth,
   laneColor,
   laneColorAlpha,
 } from "./layout";
+import type { DateMode } from "./layout";
+import { highlightText } from "./mark";
 import { RefPills, refsTitle } from "./RefPills";
 import "./graph.css";
 
@@ -45,6 +48,12 @@ export interface GraphViewProps {
   onRowDoubleClick?: (sha: string) => void;
   /** 커밋/스태시 행 우클릭. 브라우저 기본 메뉴는 GraphView가 preventDefault */
   onRowContextMenu?: (sha: string, clientX: number, clientY: number) => void;
+  /** 검색어. 있으면 MESSAGE/AUTHOR/SHA 셀에서 대소문자 무시 매치 구간을 <mark>로 강조 */
+  highlightQuery?: string;
+  /** 날짜 표시 모드. 기본 "absolute" */
+  dateMode?: DateMode;
+  /** DATE 헤더 클릭 시 호출 (ui-shell이 토글·저장) */
+  onToggleDateMode?: () => void;
 }
 
 /** 보이는 범위 위아래로 더 그려두는 행 수 */
@@ -97,6 +106,11 @@ interface RowProps {
   dimmed: boolean;
   /** 폭이 부족해 드롭된 컬럼 비트마스크. 원시값이라 memo가 유지된다 */
   hiddenMask: number;
+  /** 검색어. 빈 문자열이면 강조 없이 원본 문자열을 그대로 렌더한다 */
+  highlightQuery: string;
+  dateMode: DateMode;
+  /** 상대 시간 기준 시각(ms). 분 단위로 양자화돼 있어 스크롤 중 memo를 깨지 않는다 */
+  nowMs: number;
   onSelect: (sha: string) => void;
   onDoubleClick: (sha: string) => void;
   onContextMenu: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
@@ -111,6 +125,9 @@ const Row = memo(function Row({
   branchWidth,
   dimmed,
   hiddenMask,
+  highlightQuery,
+  dateMode,
+  nowMs,
   onSelect,
   onDoubleClick,
   onContextMenu,
@@ -123,7 +140,8 @@ const Row = memo(function Row({
   const avatarColor = authorColorIndex(row.authorEmail);
   const refsLabel = refsTitle(row.refs, showTags);
   const shortSha = row.shortSha.slice(0, SHA_DISPLAY_LENGTH);
-  const date = formatDate(row.timestamp);
+  const date =
+    dateMode === "relative" ? formatRelativeDate(row.timestamp, nowMs) : formatDate(row.timestamp);
   return (
     <div
       className={className}
@@ -153,7 +171,7 @@ const Row = memo(function Row({
           date,
         })}
       >
-        {row.subject}
+        {highlightText(row.subject, highlightQuery)}
       </div>
       <div className="gl-cell gl-col-author gl-cell-author" title={row.author}>
         <span
@@ -165,9 +183,11 @@ const Row = memo(function Row({
         >
           {authorInitials(row.author)}
         </span>
-        <span className="gl-author-name">{row.author}</span>
+        <span className="gl-author-name">{highlightText(row.author, highlightQuery)}</span>
       </div>
-      <div className="gl-cell gl-col-sha gl-cell-sha">{shortSha}</div>
+      <div className="gl-cell gl-col-sha gl-cell-sha">
+        {highlightText(shortSha, highlightQuery)}
+      </div>
       <div className="gl-cell gl-col-date gl-cell-date">{date}</div>
     </div>
   );
@@ -210,6 +230,9 @@ function StashRow({
   graphWidth,
   dimmed,
   hiddenMask,
+  highlightQuery,
+  dateMode,
+  nowMs,
   onSelect,
   onDoubleClick,
   onContextMenu,
@@ -220,10 +243,18 @@ function StashRow({
   graphWidth: number;
   dimmed: boolean;
   hiddenMask: number;
+  highlightQuery: string;
+  dateMode: DateMode;
+  nowMs: number;
   onSelect: (sha: string) => void;
   onDoubleClick: (sha: string) => void;
   onContextMenu: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
 }) {
+  const shortSha = stash.shortSha.slice(0, SHA_DISPLAY_LENGTH);
+  const date =
+    dateMode === "relative"
+      ? formatRelativeDate(stash.timestamp, nowMs)
+      : formatDate(stash.timestamp);
   return (
     <div
       className={
@@ -241,19 +272,18 @@ function StashRow({
       <div
         className="gl-cell gl-cell-message"
         title={messageTitle(stash.message, hiddenMask, {
-          sha: stash.shortSha.slice(0, SHA_DISPLAY_LENGTH),
-          date: formatDate(stash.timestamp),
+          sha: shortSha,
+          date,
         })}
       >
-        {`\u2261 ${stash.message}`}
+        {"\u2261 "}
+        {highlightText(stash.message, highlightQuery)}
       </div>
       <div className="gl-cell gl-col-author" />
       <div className="gl-cell gl-col-sha gl-cell-sha">
-        {stash.shortSha.slice(0, SHA_DISPLAY_LENGTH)}
+        {highlightText(shortSha, highlightQuery)}
       </div>
-      <div className="gl-cell gl-col-date gl-cell-date">
-        {formatDate(stash.timestamp)}
-      </div>
+      <div className="gl-cell gl-col-date gl-cell-date">{date}</div>
     </div>
   );
 }
@@ -296,6 +326,9 @@ export function GraphView({
   scrollTarget,
   onRowDoubleClick,
   onRowContextMenu,
+  highlightQuery = "",
+  dateMode = "absolute",
+  onToggleDateMode,
 }: GraphViewProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -409,6 +442,10 @@ export function GraphView({
 
   const rows = data.rows;
   const rowCount = rows.length;
+
+  // 상대 시간 기준 시각. 렌더당 Date.now()를 1회만 읽되 분 단위로 잘라 Row에 내려보낸다.
+  // 원시값을 그대로 흘리면 스크롤 리렌더마다 값이 달라져 보이는 행 전부의 memo가 깨진다
+  const nowMs = Math.floor(Date.now() / 60_000) * 60_000;
 
   // 컨테이너에 컬럼을 맞춘다. 행이 놓이는 실제 폭은 스크롤바를 뺀 값이고,
   // 헤더는 같은 만큼 오른쪽 패딩을 받으므로 둘의 컬럼 위치가 일치한다
@@ -575,9 +612,12 @@ export function GraphView({
     }
   }, [rowCount]);
 
-  /** 화면 행 하나가 보이도록 스크롤. mode="center"면 뷰포트 중앙에 놓는다 */
+  /**
+   * 화면 행 하나가 보이도록 스크롤.
+   * center는 뷰포트 중앙, top/bottom은 목록 맨 위/맨 아래(Home/End), nearest는 최소 이동.
+   */
   const scrollToDisplayIndex = useCallback(
-    (displayIndex: number, mode: "center" | "nearest") => {
+    (displayIndex: number, mode: "center" | "nearest" | "top" | "bottom") => {
       const el = scrollRef.current;
       if (!el) {
         return;
@@ -587,6 +627,10 @@ export function GraphView({
       let next = el.scrollTop;
       if (mode === "center") {
         next = top - (viewH - ROW_HEIGHT) / 2;
+      } else if (mode === "top") {
+        next = 0;
+      } else if (mode === "bottom") {
+        next = el.scrollHeight;
       } else if (top < el.scrollTop) {
         next = top;
       } else if (top + ROW_HEIGHT > el.scrollTop + viewH) {
@@ -625,56 +669,98 @@ export function GraphView({
     }
   }, [scrollTarget, shaToRow, layout, toDisplay, scrollToDisplayIndex]);
 
+  /** 현재 선택의 화면 행 인덱스. 스태시가 선택돼 있으면 그 의사 행, 선택이 없으면 -1 */
+  const selectedDisplayIndex = useCallback((): number => {
+    if (selectedSha === null) {
+      return -1;
+    }
+    const rowIndex = shaToRow.get(selectedSha);
+    if (rowIndex !== undefined) {
+      return toDisplay(rowIndex);
+    }
+    const pseudo = layout.pseudos.find(
+      (item) => item.kind === "stash" && item.stash.sha === selectedSha,
+    );
+    return pseudo ? pseudo.displayIndex : -1;
+  }, [selectedSha, shaToRow, layout, toDisplay]);
+
+  /** start에서 dir 방향으로 처음 만나는 커밋 행. 의사 행(WIP, 스태시)은 건너뛴다 */
+  const findCommitDisplay = useCallback(
+    (start: number, dir: number): number => {
+      for (let i = start; i >= 0 && i < displayCount; i += dir) {
+        if (!pseudoAt(i)) {
+          return i;
+        }
+      }
+      return -1;
+    },
+    [displayCount, pseudoAt],
+  );
+
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+      const key = event.key;
+      // ⌘↑/⌘↓는 Home/End와 같은 동작이라 화살표 이동보다 먼저 가른다
+      const toFirst = key === "Home" || (event.metaKey && key === "ArrowUp");
+      const toLast = key === "End" || (event.metaKey && key === "ArrowDown");
+      const byPage = key === "PageUp" || key === "PageDown";
+      const byStep = !event.metaKey && (key === "ArrowUp" || key === "ArrowDown");
+      if (!toFirst && !toLast && !byPage && !byStep) {
         return;
       }
+      // 스크롤 컨테이너의 기본 스크롤과 겹치지 않게 항상 막는다
       event.preventDefault();
       if (rowCount === 0) {
         return;
       }
-      const step = event.key === "ArrowDown" ? 1 : -1;
 
-      // 현재 선택 위치를 화면 행 인덱스로 옮긴다. 스태시가 선택돼 있으면 그 의사 행에서 출발
-      let from = -1;
-      if (selectedSha !== null) {
-        const rowIndex = shaToRow.get(selectedSha);
-        if (rowIndex !== undefined) {
-          from = toDisplay(rowIndex);
-        } else {
-          const pseudo = layout.pseudos.find(
-            (item) => item.kind === "stash" && item.stash.sha === selectedSha,
-          );
-          from = pseudo ? pseudo.displayIndex : -1;
-        }
+      if (toFirst) {
+        onSelectRef.current(rows[0].sha);
+        scrollToDisplayIndex(toDisplay(0), "top");
+        return;
       }
+      if (toLast) {
+        const last = rowCount - 1;
+        onSelectRef.current(rows[last].sha);
+        scrollToDisplayIndex(toDisplay(last), "bottom");
+        return;
+      }
+
+      const step = key === "ArrowDown" || key === "PageDown" ? 1 : -1;
+      const from = selectedDisplayIndex();
       if (from < 0) {
         onSelectRef.current(rows[0].sha);
         scrollToDisplayIndex(toDisplay(0), "nearest");
         return;
       }
 
-      // 의사 행(WIP, 스태시)은 건너뛰고 다음 커밋 행으로 간다
-      for (let next = from + step; next >= 0 && next < displayCount; next += step) {
-        if (pseudoAt(next)) {
-          continue;
-        }
-        onSelectRef.current(rows[toRowIndex(next)].sha);
-        scrollToDisplayIndex(next, "nearest");
+      // 한 화면은 "뷰포트에 보이는 행 수 - 1"만큼 움직여 앞뒤 문맥이 한 줄 남게 한다
+      const perPage = Math.max(1, Math.floor(size.height / ROW_HEIGHT) - 1);
+      const target =
+        byPage
+          ? Math.max(0, Math.min(displayCount - 1, from + step * perPage))
+          : from + step;
+
+      let next = findCommitDisplay(target, step);
+      // 페이지 이동이 목록 끝의 의사 행 구간에 떨어지면 반대 방향에서 가장 가까운 커밋을 잡는다
+      if (next < 0 && byPage) {
+        next = findCommitDisplay(target, -step);
+      }
+      if (next < 0 || next === from) {
         return;
       }
+      onSelectRef.current(rows[toRowIndex(next)].sha);
+      scrollToDisplayIndex(next, "nearest");
     },
     [
       rows,
       rowCount,
-      selectedSha,
-      shaToRow,
-      layout,
       displayCount,
+      size.height,
       toDisplay,
       toRowIndex,
-      pseudoAt,
+      selectedDisplayIndex,
+      findCommitDisplay,
       scrollToDisplayIndex,
     ],
   );
@@ -719,6 +805,9 @@ export function GraphView({
             graphWidth={graphWidth}
             dimmed={isDimmed(pseudo.anchorRow)}
             hiddenMask={hiddenMask}
+            highlightQuery={highlightQuery}
+            dateMode={dateMode}
+            nowMs={nowMs}
             onSelect={handleSelect}
             onDoubleClick={handleDoubleClick}
             onContextMenu={handleContextMenu}
@@ -748,6 +837,9 @@ export function GraphView({
         branchWidth={pillBranchWidth}
         dimmed={isDimmed(rowIndex)}
         hiddenMask={hiddenMask}
+        highlightQuery={highlightQuery}
+        dateMode={dateMode}
+        nowMs={nowMs}
         onSelect={handleSelect}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
@@ -779,7 +871,14 @@ export function GraphView({
         </div>
         <div className="gl-cell gl-col-date">
           <Resizer column="date" side="left" active={resizing === "date"} onStart={startResize} onReset={resetColumn} />
-          Date
+          {/* 라벨만 클릭 대상이라 컬럼 경계 드래그와 겹치지 않는다 */}
+          <span
+            className={"gl-date-label" + (onToggleDateMode ? " gl-date-toggle" : "")}
+            title="Click to toggle relative/absolute"
+            onClick={onToggleDateMode}
+          >
+            Date
+          </span>
         </div>
       </div>
 
