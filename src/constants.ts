@@ -34,3 +34,6 @@ export const COMMITS_PER_PAGE = 5000;
 
 /** localStorage key: 최근 연 레포 경로 배열(JSON string[]) */
 export const RECENT_REPOS_KEY = "gitlanes.recents";
+
+/** WIP(미커밋 변경) 의사 행을 선택했을 때 selectedSha에 들어가는 센티널 값 */
+export const WIP_SHA = "__WIP__";
