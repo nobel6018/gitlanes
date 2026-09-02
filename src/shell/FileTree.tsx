@@ -140,6 +140,27 @@ export function buildFileNavRows(
   return out;
 }
 
+/** Path|Tree 토글 상태. CommitDetailPanel과 WipDetailPanel이 같은 키를 공유한다 */
+export type FileView = "path" | "tree";
+
+export const FILE_VIEW_KEY = "gitlanes.fileView";
+
+export function readFileView(): FileView {
+  try {
+    return localStorage.getItem(FILE_VIEW_KEY) === "tree" ? "tree" : "path";
+  } catch {
+    return "path";
+  }
+}
+
+export function writeFileView(view: FileView) {
+  try {
+    localStorage.setItem(FILE_VIEW_KEY, view);
+  } catch {
+    // localStorage 실패는 무시 (설정만 휘발)
+  }
+}
+
 export interface FileTreeProps {
   /** buildFileNavRows 결과 (접힌 디렉토리 자식은 빠져 있다) */
   rows: FileNavRow[];

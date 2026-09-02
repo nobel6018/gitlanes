@@ -3,7 +3,13 @@ import type { KeyboardEvent } from "react";
 import type { CommitDetails, FileChange, Signature } from "../types";
 import { errorMessage, getCommitDetails, getFileDiff } from "./api";
 import { FileRow } from "./FileRow";
-import { FileTree, buildFileNavRows } from "./FileTree";
+import {
+  FileTree,
+  buildFileNavRows,
+  readFileView,
+  writeFileView,
+} from "./FileTree";
+import type { FileView } from "./FileTree";
 import { copyText } from "./clipboard";
 import { DiffView } from "./DiffView";
 import { formatTimestamp, shortSha, splitPath } from "./format";
@@ -33,21 +39,10 @@ interface DiffState {
   text: string;
 }
 
-const FILE_VIEW_KEY = "gitlanes.fileView";
 /** diff 화면에서 PageUp/PageDown이 움직이는 픽셀 (한 화면에서 조금 덜) */
 const DIFF_PAGE_OVERLAP = 40;
 /** diff 화면 ↑↓ 한 번의 스크롤 픽셀 */
 const DIFF_LINE_STEP = 36;
-
-type FileView = "path" | "tree";
-
-function readFileView(): FileView {
-  try {
-    return localStorage.getItem(FILE_VIEW_KEY) === "tree" ? "tree" : "path";
-  } catch {
-    return "path";
-  }
-}
 
 export function CommitDetailPanel({
   repoPath,
@@ -189,11 +184,7 @@ export function CommitDetailPanel({
   function changeFileView(next: FileView) {
     setFileView(next);
     setFocusIndex(-1);
-    try {
-      localStorage.setItem(FILE_VIEW_KEY, next);
-    } catch {
-      // localStorage 실패는 무시 (설정만 휘발)
-    }
+    writeFileView(next);
   }
 
   function toggleDir(path: string) {

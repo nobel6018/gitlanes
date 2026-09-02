@@ -1,15 +1,15 @@
-//! 저장소를 읽는 Tauri command 10개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
+//! 저장소와 워킹 트리를 읽는 Tauri command 13개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
 //! 파일관리자/터미널/최근 목록 command 3개는 [`crate::native`]에 있다.
 //!
 //! @see CONTRACTS.md
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::git;
 use crate::layout::assign_lanes;
 use crate::model::{
-    short_sha, CommitDetails, CommitRow, FileChange, GraphData, RefEntry, RefInfo, RepoInfo,
-    RepoState, SearchMatch, Signature,
+    short_sha, CommitDetails, CommitRow, FileChange, FileStatus, GraphData, RefEntry, RefInfo,
+    RepoInfo, RepoState, SearchMatch, Signature, WipDetails,
 };
 use crate::parse::{
     graph_token, parse_commit_meta, parse_file_changes, parse_log_record, parse_ref_entries,
@@ -451,7 +451,179 @@ pub fn get_file_content(path: String, sha: String, file: String) -> Result<Strin
     }
 
     // lossy 변환을 쓰는 git::run으로는 잘못된 바이트가 U+FFFD로 바뀌어 판정이 불가능하다
-    let bytes = git::run_bytes(&path, &["show", spec.as_str()])?;
+    decode_text(git::run_bytes(&path, &["show", spec.as_str()])?)
+}
+
+/// 워킹 디렉토리의 변경 파일 목록. staged/unstaged/untracked 세 영역으로 나눠 돌려준다.
+///
+/// git 호출 3회를 병렬로 돈다. 서로 값을 주고받지 않아 순서가 필요 없다.
+#[tauri::command]
+pub fn get_wip_details(path: String) -> Result<WipDetails, String> {
+    const STAGED_ARGS: [&str; 7] = [
+        "diff",
+        "--cached",
+        "--raw",
+        "--numstat",
+        "--no-ext-diff",
+        "-M",
+        "-z",
+    ];
+    const UNSTAGED_ARGS: [&str; 6] = ["diff", "--raw", "--numstat", "--no-ext-diff", "-M", "-z"];
+    const UNTRACKED_ARGS: [&str; 4] = ["ls-files", "--others", "--exclude-standard", "-z"];
+
+    let outputs = git::run_all(
+        &path,
+        &[&STAGED_ARGS[..], &UNSTAGED_ARGS[..], &UNTRACKED_ARGS[..]],
+    );
+    let [staged_out, unstaged_out, untracked_out] =
+        <[_; 3]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
+
+    let staged = staged_out.map_err(|e| format!("staged 변경을 읽지 못했습니다: {e}"))?;
+    let unstaged = unstaged_out.map_err(|e| format!("unstaged 변경을 읽지 못했습니다: {e}"))?;
+    let untracked = untracked_out.map_err(|e| format!("untracked 목록을 읽지 못했습니다: {e}"))?;
+
+    Ok(WipDetails {
+        staged: parse_file_changes(&staged),
+        unstaged: parse_file_changes(&unstaged),
+        untracked: untracked_changes(&path, &untracked),
+    })
+}
+
+/// WIP 파일 하나의 unified diff. `area`는 `WipArea`("staged"/"unstaged"/"untracked").
+#[tauri::command]
+pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<String, String> {
+    let file = validate_pathspec(&file)?;
+
+    match area.as_str() {
+        "staged" => git::run(
+            &path,
+            &[
+                "diff",
+                "--cached",
+                "--no-color",
+                "--no-ext-diff",
+                "-M",
+                "--",
+                file.as_str(),
+            ],
+        )
+        .map_err(|e| format!("staged diff를 읽지 못했습니다: {e}")),
+        "unstaged" => git::run(
+            &path,
+            &[
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "-M",
+                "--",
+                file.as_str(),
+            ],
+        )
+        .map_err(|e| format!("unstaged diff를 읽지 못했습니다: {e}")),
+        // 추적되지 않는 파일은 인덱스에 없어 일반 diff로 안 나온다. 빈 파일과 비교해
+        // 전체를 추가로 보여준다. 차이가 있으면 종료 코드가 1이라 run_allow_diff를 쓴다.
+        "untracked" => git::run_allow_diff(
+            &path,
+            &[
+                "diff",
+                "--no-index",
+                "--no-color",
+                "--no-ext-diff",
+                "--",
+                "/dev/null",
+                file.as_str(),
+            ],
+        )
+        .map_err(|e| format!("untracked diff를 읽지 못했습니다: {e}")),
+        other => Err(format!("알 수 없는 WIP 영역입니다: {other}")),
+    }
+}
+
+/// 워킹 트리의 현재 파일 내용. 커밋이 아니라 디스크를 읽는다.
+#[tauri::command]
+pub fn get_wip_file_content(path: String, file: String) -> Result<String, String> {
+    let target = resolve_in_repo(&path, &file)?;
+
+    // 상한을 넘는 파일을 메모리에 올리지 않으려고 크기를 먼저 본다
+    let size = std::fs::metadata(&target)
+        .map_err(|e| format!("파일 정보를 읽지 못했습니다: {e}"))?
+        .len();
+    if size > MAX_FILE_BYTES as u64 {
+        return Err("too large".to_string());
+    }
+
+    decode_text(std::fs::read(&target).map_err(|e| format!("파일을 읽지 못했습니다: {e}"))?)
+}
+
+/// `ls-files -z` 출력을 FileChange 목록으로 바꾼다. 줄 수는 디스크에서 직접 센다.
+fn untracked_changes(repo: &str, out: &str) -> Vec<FileChange> {
+    out.split('\0')
+        .filter(|path| !path.is_empty())
+        .map(|path| FileChange {
+            additions: count_lines(repo, path),
+            deletions: 0,
+            status: FileStatus::Added,
+            old_path: None,
+            path: path.to_string(),
+        })
+        .collect()
+}
+
+/// 워킹 트리 파일의 줄 수. 바이너리, 상한 초과, 읽기 실패는 모두 0이다.
+///
+/// numstat이 바이너리에 "-"를 주는 것과 같은 취급이다. 프론트는 0을 "± 표시 없음"으로 읽는다.
+fn count_lines(repo: &str, file: &str) -> u64 {
+    let Ok(target) = resolve_in_repo(repo, file) else {
+        return 0;
+    };
+    let Ok(meta) = std::fs::metadata(&target) else {
+        return 0;
+    };
+    if meta.len() > MAX_FILE_BYTES as u64 {
+        return 0;
+    }
+    let Ok(bytes) = std::fs::read(&target) else {
+        return 0;
+    };
+    match decode_text(bytes) {
+        Ok(text) => text.lines().count() as u64,
+        Err(_) => 0,
+    }
+}
+
+/// 레포 루트 안의 경로로만 해석한다.
+///
+/// 양쪽을 canonicalize해서 비교하기 때문에 `../`뿐 아니라 레포 안에 있는 심링크가 밖을
+/// 가리키는 경우도 걸린다. `file`이 절대 경로면 join이 루트를 대체하는데, 그것도 prefix
+/// 검사에서 막힌다.
+fn resolve_in_repo(repo: &str, file: &str) -> Result<PathBuf, String> {
+    let file = file.trim();
+    if file.is_empty() {
+        return Err("파일 경로가 비어 있습니다".to_string());
+    }
+
+    let root = Path::new(repo)
+        .canonicalize()
+        .map_err(|e| format!("저장소 경로를 확인하지 못했습니다: {e}"))?;
+    let target = root
+        .join(file)
+        .canonicalize()
+        .map_err(|_| format!("파일을 찾을 수 없습니다: {file}"))?;
+
+    if !target.starts_with(&root) {
+        return Err(format!("저장소 밖의 경로입니다: {file}"));
+    }
+    Ok(target)
+}
+
+/// 바이트열을 텍스트로 판정한다. 오류 문자열은 프론트가 분기에 쓰는 계약이다.
+///
+/// NUL이 있으면 git이 바이너리로 보는 것과 같은 기준으로 거절하고, NUL이 없어도 UTF-8이
+/// 아니면(latin-1 등) 화면에 올릴 수 없어 같이 거절한다.
+fn decode_text(bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err("too large".to_string());
+    }
     if bytes.contains(&0) {
         return Err("binary".to_string());
     }
@@ -1478,6 +1650,180 @@ mod integration_tests {
         assert!(error.contains("없는파일.txt"), "{error}");
         assert_ne!(error, "binary");
         assert_ne!(error, "too large");
+    }
+
+    /// base 커밋 위에 staged(rename + modify), unstaged, untracked를 한 번에 만든다.
+    fn wip_fixture() -> TempRepo {
+        let repo = TempRepo::init("gitlanes-wip");
+        repo.write("keep.txt", "1\n2\n3\n");
+        repo.write("old.txt", "old\n");
+        repo.write("mod.txt", "m\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+
+        // staged: 내용을 그대로 둔 순수 rename(유사도 100%)과 별도 파일 수정
+        repo.git(&["mv", "old.txt", "new.txt"]);
+        repo.write("mod.txt", "m\nstaged\n");
+        repo.git(&["add", "-A"]);
+
+        // unstaged: 추적 파일을 고치고 인덱스에는 올리지 않는다
+        repo.write("keep.txt", "1\n2\n3\n4\n");
+
+        // untracked
+        repo.write("fresh.txt", "a\nb\n");
+        repo
+    }
+
+    #[test]
+    fn wip을_staged_unstaged_untracked로_나눈다() {
+        let repo = wip_fixture();
+        let wip = get_wip_details(repo.path()).unwrap();
+
+        let staged: Vec<&str> = wip.staged.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(staged, ["mod.txt", "new.txt"], "{:?}", wip.staged);
+
+        let renamed = wip.staged.iter().find(|f| f.path == "new.txt").unwrap();
+        assert_eq!(renamed.status, FileStatus::Renamed);
+        assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
+
+        let modified = wip.staged.iter().find(|f| f.path == "mod.txt").unwrap();
+        assert_eq!(modified.status, FileStatus::Modified);
+        assert_eq!((modified.additions, modified.deletions), (1, 0));
+
+        assert_eq!(wip.unstaged.len(), 1, "{:?}", wip.unstaged);
+        assert_eq!(wip.unstaged[0].path, "keep.txt");
+        assert_eq!(wip.unstaged[0].status, FileStatus::Modified);
+        assert_eq!(
+            (wip.unstaged[0].additions, wip.unstaged[0].deletions),
+            (1, 0)
+        );
+    }
+
+    #[test]
+    fn untracked는_status_a와_줄_수를_채운다() {
+        let repo = wip_fixture();
+        let wip = get_wip_details(repo.path()).unwrap();
+
+        assert_eq!(wip.untracked.len(), 1, "{:?}", wip.untracked);
+        let fresh = &wip.untracked[0];
+        assert_eq!(fresh.path, "fresh.txt");
+        assert_eq!(fresh.status, FileStatus::Added);
+        assert_eq!(fresh.additions, 2);
+        assert_eq!(fresh.deletions, 0);
+        assert_eq!(fresh.old_path, None);
+    }
+
+    #[test]
+    fn 바이너리_untracked는_줄_수를_0으로_둔다() {
+        let repo = TempRepo::init("gitlanes-wip-binary");
+        repo.write("seed.txt", "seed\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write_bytes("blob.dat", b"PNG\x00\x01text\n");
+
+        let wip = get_wip_details(repo.path()).unwrap();
+        assert_eq!(wip.untracked.len(), 1);
+        assert_eq!(wip.untracked[0].path, "blob.dat");
+        assert_eq!(wip.untracked[0].additions, 0);
+
+        let error = get_wip_file_content(repo.path(), "blob.dat".to_string()).unwrap_err();
+        assert_eq!(error, "binary");
+    }
+
+    #[test]
+    fn wip_diff는_area마다_다른_명령을_쓴다() {
+        let repo = wip_fixture();
+
+        let staged =
+            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string()).unwrap();
+        assert!(staged.contains("+staged"), "{staged}");
+
+        // 같은 파일이라도 unstaged 영역에는 변경이 없다
+        let unstaged_of_staged =
+            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "unstaged".to_string()).unwrap();
+        assert!(unstaged_of_staged.is_empty(), "{unstaged_of_staged}");
+
+        let unstaged =
+            get_wip_file_diff(repo.path(), "keep.txt".to_string(), "unstaged".to_string()).unwrap();
+        assert!(unstaged.contains("+4"), "{unstaged}");
+        assert!(unstaged.contains("keep.txt"), "{unstaged}");
+    }
+
+    #[test]
+    fn untracked_diff는_종료_코드_1을_오류로_보지_않는다() {
+        let repo = wip_fixture();
+        // --no-index는 차이가 있으면 1로 끝난다. 그걸 오류로 처리하면 여기서 Err가 된다.
+        let diff = get_wip_file_diff(
+            repo.path(),
+            "fresh.txt".to_string(),
+            "untracked".to_string(),
+        )
+        .unwrap();
+        assert!(diff.contains("fresh.txt"), "{diff}");
+        assert!(diff.contains("+a"), "{diff}");
+        assert!(diff.contains("+b"), "{diff}");
+    }
+
+    #[test]
+    fn 알_수_없는_area는_거부한다() {
+        let repo = wip_fixture();
+        assert!(get_wip_file_diff(repo.path(), "keep.txt".to_string(), "".to_string()).is_err());
+        assert!(
+            get_wip_file_diff(repo.path(), "keep.txt".to_string(), "cached".to_string()).is_err()
+        );
+    }
+
+    #[test]
+    fn wip_전문은_워킹_트리의_현재_내용이다() {
+        let repo = wip_fixture();
+        // HEAD의 keep.txt는 세 줄, 워킹 트리는 네 줄이다
+        let content = get_wip_file_content(repo.path(), "keep.txt".to_string()).unwrap();
+        assert_eq!(content, "1\n2\n3\n4\n");
+    }
+
+    #[test]
+    fn 상한을_넘는_워킹_트리_파일은_too_large다() {
+        let repo = wip_fixture();
+        repo.write_bytes("huge.txt", &vec![b'a'; MAX_FILE_BYTES + 1]);
+        let error = get_wip_file_content(repo.path(), "huge.txt".to_string()).unwrap_err();
+        assert_eq!(error, "too large");
+    }
+
+    #[test]
+    fn 레포_밖의_경로는_거부한다() {
+        let repo = wip_fixture();
+        let outside = std::env::temp_dir().join("gitlanes-outside.txt");
+        std::fs::write(&outside, "secret\n").unwrap();
+
+        for candidate in [
+            "../gitlanes-outside.txt",
+            "keep.txt/../../gitlanes-outside.txt",
+            outside.to_string_lossy().as_ref(),
+        ] {
+            let error = get_wip_file_content(repo.path(), candidate.to_string()).unwrap_err();
+            assert!(error.contains("저장소 밖의 경로"), "{candidate}: {error}");
+        }
+
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 밖을_가리키는_심링크도_거부한다() {
+        let repo = wip_fixture();
+        let outside = std::env::temp_dir().join("gitlanes-symlink-target.txt");
+        std::fs::write(&outside, "secret\n").unwrap();
+        std::os::unix::fs::symlink(&outside, format!("{}/escape.txt", repo.path())).unwrap();
+
+        let error = get_wip_file_content(repo.path(), "escape.txt".to_string()).unwrap_err();
+        assert!(error.contains("저장소 밖의 경로"), "{error}");
+
+        // 목록에는 올라오지만 줄 수는 셀 수 없어 0이다
+        let wip = get_wip_details(repo.path()).unwrap();
+        let link = wip.untracked.iter().find(|f| f.path == "escape.txt");
+        assert_eq!(link.map(|f| f.additions), Some(0));
+
+        let _ = std::fs::remove_file(&outside);
     }
 
     #[test]
