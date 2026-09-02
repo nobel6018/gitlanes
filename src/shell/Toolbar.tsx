@@ -19,8 +19,6 @@ export interface ToolbarProps {
   commitCount: number;
   hasMore: boolean;
   loading: boolean;
-  showTags: boolean;
-  onToggleTags: () => void;
   onRefresh: () => void;
   /** 새 버전이 있으면 배지를 띄운다 */
   updateTag: string | null;
@@ -43,8 +41,6 @@ export function Toolbar({
   commitCount,
   hasMore,
   loading,
-  showTags,
-  onToggleTags,
   onRefresh,
   updateTag,
   onOpenRelease,
@@ -141,25 +137,6 @@ export function Toolbar({
           </g>
         </svg>
         HEAD
-      </button>
-
-      <button
-        className={showTags ? "toolbar-btn toggle on" : "toolbar-btn toggle"}
-        onClick={onToggleTags}
-        title={showTags ? "Hide tags" : "Show tags"}
-        aria-pressed={showTags}
-      >
-        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-          <path
-            d="M2 2h5.2L14 8.8 8.8 14 2 7.2V2z"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinejoin="round"
-          />
-          <circle cx="4.8" cy="4.8" r="1.1" fill="currentColor" />
-        </svg>
-        Tags
       </button>
 
       <button

@@ -84,16 +84,6 @@
   cursor: default;
 }
 
-.toolbar-btn.toggle {
-  color: var(--fg-2);
-}
-
-.toolbar-btn.toggle.on {
-  color: var(--fg-1);
-  background: var(--accent-soft);
-  border-color: var(--accent);
-}
-
 .toolbar-btn.primary {
   background: var(--accent);
   border-color: var(--accent);

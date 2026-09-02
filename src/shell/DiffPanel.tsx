@@ -5,7 +5,7 @@ import type { KeyboardEvent, ReactNode } from "react";
 import type { FileChange } from "../types";
 import { splitPath } from "./format";
 import { withKbd } from "./shortcuts";
-import { STATUS_ICON } from "./FileRow";
+import { STATUS_LETTER } from "./FileRow";
 import { highlightLines, languageForPath } from "./highlight";
 import "./panels.css";
 
@@ -586,7 +586,7 @@ export function DiffPanel({
     <div className="dp-root">
       <div className="dp-head">
         <span className={`file-icon st-${file.status}`} aria-hidden="true">
-          {STATUS_ICON[file.status]}
+          {STATUS_LETTER[file.status]}
         </span>
         <span className="dp-path" title={file.oldPath === null ? file.path : `${file.oldPath} → ${file.path}`}>
           <span className="path-dir">{dir}</span>

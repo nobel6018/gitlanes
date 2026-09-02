@@ -8,6 +8,9 @@ import { errorMessage, getStartupRepo, revealPath, setRecentRepos } from "./shel
 import { copyText } from "./shell/clipboard";
 import { basename } from "./shell/format";
 import { RepoWorkspace } from "./shell/RepoWorkspace";
+import { Preferences } from "./shell/Preferences";
+import type { PrefValues } from "./shell/Preferences";
+import { clampZoom, readPrefs, writePrefs, ZOOM_STEP } from "./shell/prefs";
 import { ShortcutsOverlay } from "./shell/ShortcutsOverlay";
 import { IS_MAC } from "./shell/shortcuts";
 import { TabBar } from "./shell/TabBar";
@@ -21,12 +24,8 @@ import type { WorkspaceUpdateProps } from "./shell/RepoWorkspace";
 import "./shell/shell.css";
 
 const TABS_KEY = "gitlanes.tabs";
-const ZOOM_KEY = "gitlanes.zoom";
 
-/** 웹뷰 줌 범위와 단계 (계약 고정값) */
-const ZOOM_MIN = 0.8;
-const ZOOM_MAX = 1.6;
-const ZOOM_STEP = 0.1;
+/** 줌 기본값(Actual Size). 범위와 단계는 prefs.ts가 갖는다 */
 const ZOOM_DEFAULT = 1;
 
 /** ⌘⇧T로 되살릴 수 있는 닫은 탭 경로 스택의 최대 길이 (세션 메모리) */
@@ -75,28 +74,6 @@ function writeStoredTabs(tabs: TabInfo[], activeId: number): void {
   }
 }
 
-function readZoom(): number {
-  try {
-    const raw = localStorage.getItem(ZOOM_KEY);
-    if (raw === null) {
-      return ZOOM_DEFAULT;
-    }
-    const parsed = Number.parseFloat(raw);
-    if (!Number.isFinite(parsed)) {
-      return ZOOM_DEFAULT;
-    }
-    return clampZoom(parsed);
-  } catch {
-    return ZOOM_DEFAULT;
-  }
-}
-
-function clampZoom(level: number): number {
-  // 0.1 단계에서 부동소수 오차가 쌓이지 않게 한 자리로 반올림한다
-  const rounded = Math.round(level * 10) / 10;
-  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, rounded));
-}
-
 /** 웹뷰 줌 적용. 하네스(브라우저)에는 webview API가 없으므로 조용히 넘어간다 */
 function applyZoom(level: number): void {
   try {
@@ -107,11 +84,6 @@ function applyZoom(level: number): void {
       });
   } catch {
     // Tauri 웹뷰가 아니다
-  }
-  try {
-    localStorage.setItem(ZOOM_KEY, String(level));
-  } catch {
-    // 저장 실패는 무시
   }
 }
 
@@ -171,11 +143,13 @@ export default function App() {
   const loadingTimers = useRef<Record<number, number>>({});
   const [menuFallback, setMenuFallback] = useState(() => !hasTauriInternals());
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [prefsOpen, setPrefsOpen] = useState(false);
+  /** 전역 설정(탭 공통). Preferences 창과 ⌘=/⌘-/⌘0이 같은 값을 공유한다 */
+  const [prefs, setPrefs] = useState<PrefValues>(readPrefs);
   /** 닫은 탭 경로 스택. 세션 메모리라 앱을 껐다 켜면 비어 있다 */
   const reopenStack = useRef<string[]>([]);
-  const zoom = useRef(readZoom());
   // 업데이트 확인은 탭 수와 무관하게 앱 전역에서 하나만 돈다
-  const updater = useUpdateChecker();
+  const updater = useUpdateChecker(prefs.autoUpdateCheck);
   const { recents, clearRecents } = useRecentRepos();
 
   // 탭 구성이 바뀔 때마다 저장한다
@@ -183,10 +157,26 @@ export default function App() {
     writeStoredTabs(tabs, activeId);
   }, [tabs, activeId]);
 
+  /** 콜백에서 최신 설정을 읽기 위한 거울 */
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+
+  /** Preferences의 onChange와 줌 단축키가 함께 쓴다. 즉시 반영 + 즉시 저장 */
+  const updatePrefs = useCallback((patch: Partial<PrefValues>) => {
+    // 슬라이더가 준 값은 범위 밖이거나 부동소수 잔재가 붙어 있을 수 있다
+    const normalized: Partial<PrefValues> =
+      patch.zoom === undefined ? patch : { ...patch, zoom: clampZoom(patch.zoom) };
+    writePrefs(normalized);
+    if (normalized.zoom !== undefined) {
+      applyZoom(normalized.zoom);
+    }
+    setPrefs((prev) => ({ ...prev, ...normalized }));
+  }, []);
+
   // 저장된 줌을 시작 시 1회 적용한다
   useEffect(() => {
-    if (zoom.current !== ZOOM_DEFAULT) {
-      applyZoom(zoom.current);
+    if (prefsRef.current.zoom !== ZOOM_DEFAULT) {
+      applyZoom(prefsRef.current.zoom);
     }
   }, []);
 
@@ -495,17 +485,23 @@ export default function App() {
     bumpCommand(activeIdRef.current, "toggleTerminal");
   }, [bumpCommand]);
 
-  const handleZoom = useCallback((kind: "in" | "out" | "reset") => {
-    const next =
-      kind === "reset"
-        ? ZOOM_DEFAULT
-        : clampZoom(zoom.current + (kind === "in" ? ZOOM_STEP : -ZOOM_STEP));
-    if (next === zoom.current && kind !== "reset") {
-      return;
-    }
-    zoom.current = next;
-    applyZoom(next);
-  }, []);
+  const openPreferences = useCallback(() => setPrefsOpen(true), []);
+  const closePreferences = useCallback(() => setPrefsOpen(false), []);
+
+  const handleZoom = useCallback(
+    (kind: "in" | "out" | "reset") => {
+      const current = prefsRef.current.zoom;
+      const next =
+        kind === "reset"
+          ? ZOOM_DEFAULT
+          : clampZoom(current + (kind === "in" ? ZOOM_STEP : -ZOOM_STEP));
+      if (next === current) {
+        return;
+      }
+      updatePrefs({ zoom: next });
+    },
+    [updatePrefs],
+  );
 
   const handleShowShortcuts = useCallback(() => setShortcutsOpen((prev) => !prev), []);
   const handleCloseShortcuts = useCallback(() => setShortcutsOpen(false), []);
@@ -553,6 +549,7 @@ export default function App() {
     cycleTab: handleCycleTab,
     toggleSidebar: handleMenuToggleSidebar,
     toggleTerminal: handleMenuToggleTerminal,
+    preferences: openPreferences,
     zoom: handleZoom,
     shortcuts: handleShowShortcuts,
     openPath: openInTab,
@@ -569,6 +566,7 @@ export default function App() {
     cycleTab: handleCycleTab,
     toggleSidebar: handleMenuToggleSidebar,
     toggleTerminal: handleMenuToggleTerminal,
+    preferences: openPreferences,
     zoom: handleZoom,
     shortcuts: handleShowShortcuts,
     openPath: openInTab,
@@ -607,6 +605,7 @@ export default function App() {
     track(listen("menu:next-tab", () => menuHandlers.current.cycleTab(1)));
     track(listen("menu:toggle-sidebar", () => menuHandlers.current.toggleSidebar()));
     track(listen("menu:toggle-terminal", () => menuHandlers.current.toggleTerminal()));
+    track(listen("menu:preferences", () => menuHandlers.current.preferences()));
     track(listen("menu:zoom-in", () => menuHandlers.current.zoom("in")));
     track(listen("menu:zoom-out", () => menuHandlers.current.zoom("out")));
     track(listen("menu:zoom-reset", () => menuHandlers.current.zoom("reset")));
@@ -641,6 +640,17 @@ export default function App() {
       if (event.ctrlKey && !event.metaKey && !event.altKey && event.code === "Tab") {
         event.preventDefault();
         menuHandlers.current.cycleTab(event.shiftKey ? -1 : 1);
+        return;
+      }
+      // ⌘, Preferences. 네이티브 메뉴가 없는 하네스에서도 열려야 한다
+      if (
+        event.code === "Comma" &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.shiftKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        menuHandlers.current.preferences();
         return;
       }
       if (!event.shiftKey || (!event.metaKey && !event.ctrlKey)) {
@@ -768,11 +778,18 @@ export default function App() {
           update={updateProps}
           banner={tab.id === activeId ? banner : null}
           commands={commands[tab.id] ?? NO_COMMANDS}
+          prefs={prefs}
           onLoadingChange={handleLoadingChange}
         />
       ))}
       <UpdatePill checking={updater.checking} result={updater.result} />
       <ShortcutsOverlay open={shortcutsOpen} onClose={handleCloseShortcuts} platform={PLATFORM} />
+      <Preferences
+        open={prefsOpen}
+        onClose={closePreferences}
+        values={prefs}
+        onChange={updatePrefs}
+      />
       {isOver && (
         <div className="drop-overlay">
           <div className="drop-overlay-card">Drop to open repository</div>
@@ -791,6 +808,8 @@ interface TabPanelProps {
   /** 활성 탭에만 실제 배너가 내려온다 */
   banner: ReactNode;
   commands: TabCommands;
+  /** 전역 설정 (App 소유, Preferences로 조절) */
+  prefs: PrefValues;
   onLoadingChange: (tabId: number, loading: boolean) => void;
 }
 
@@ -807,6 +826,7 @@ function TabPanel({
   update,
   banner,
   commands,
+  prefs,
   onLoadingChange,
 }: TabPanelProps) {
   const handleRepoOpened = useCallback(
@@ -835,6 +855,7 @@ function TabPanel({
         refreshNonce={commands.refresh}
         toggleSidebarNonce={commands.toggleSidebar}
         toggleTerminalNonce={commands.toggleTerminal}
+        prefs={prefs}
         onLoadingChange={handleLoadingChange}
       />
     </div>

@@ -458,17 +458,43 @@ kbd.sc-key.wide {
   font-size: 13px;
 }
 
+/* hover 피드백을 shell.css 기본(0.05)보다 한 단계 또렷하게 */
+.file-nav .file-row:hover,
+.file-nav .tree-dir:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .file-nav .file-row .file-path {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
   font-size: 13px;
 }
 
+/* 파일명은 잘리지 않고, 남는 폭 안에서 경로만 말줄임 */
+.file-nav .file-row .path-base {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.file-nav .file-row .path-dir.suffix {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .file-nav .file-row .path-dir {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--fg-2);
 }
 
+/* basename이 먼저 읽히게: 진하게 13px, 경로는 흐리게 12px */
 .file-nav .file-row .path-base {
   color: var(--fg-1);
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .file-nav .file-row .file-stat {
@@ -490,31 +516,41 @@ kbd.sc-key.wide {
   font-size: 11px;
 }
 
-/* status 아이콘 (글자 뱃지 대체) */
+/* status 뱃지: 색 배경 20~25% + 같은 색 글자 (다크 테마에서 흰 글자보다 읽기 쉽다) */
 .file-icon {
-  flex: 0 0 14px;
-  width: 14px;
-  text-align: center;
-  font-size: 12px;
+  flex: 0 0 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   font-weight: 700;
-  line-height: inherit;
+  line-height: 1;
+  letter-spacing: 0;
 }
 
 .st-M,
 .st-T {
+  background: rgba(212, 180, 85, 0.22);
   color: var(--modified);
 }
 
 .st-A {
+  background: rgba(84, 192, 138, 0.22);
   color: var(--added);
 }
 
 .st-D {
+  background: rgba(222, 115, 115, 0.22);
   color: var(--deleted);
 }
 
 .st-R,
 .st-C {
+  background: rgba(147, 151, 159, 0.22);
   color: var(--fg-2);
 }
 
@@ -530,6 +566,22 @@ kbd.sc-key.wide {
 
 .file-nav .file-row.active .path-base {
   color: #fff;
+}
+
+/* 포커스 행과 열린 파일이 겹치면 열린 파일(solid accent)이 이긴다 */
+.file-nav:focus-visible .file-row.active {
+  background: var(--accent);
+}
+
+/* accent 배경 위에서는 뱃지와 ± 숫자를 흰 계열로 바꿔 대비를 지킨다 */
+.file-nav .file-row.active .file-icon {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+
+.file-nav .file-row.active .stat-add,
+.file-nav .file-row.active .stat-del {
+  color: rgba(255, 255, 255, 0.88);
 }
 
 /* "N modified · N added · N deleted" */
@@ -1249,4 +1301,197 @@ kbd.sc-key.wide {
 .cfb-close:hover {
   background: var(--hover-bg);
   color: var(--fg-1);
+}
+
+/* ============================================================
+   v0.17: Preferences 모달
+   ============================================================ */
+
+.ov-backdrop.pf-backdrop {
+  align-items: center;
+  justify-content: center;
+}
+
+.pf-modal {
+  width: min(620px, calc(100vw - 48px));
+  height: min(420px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-1);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.pf-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.pf-title {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-2);
+}
+
+.pf-close {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 15px;
+  line-height: 22px;
+  text-align: center;
+}
+
+.pf-close:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.pf-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.pf-tabs {
+  flex: 0 0 148px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 6px;
+  border-right: 1px solid var(--border-1);
+  background: var(--bg-window);
+  overflow-y: auto;
+}
+
+.pf-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 4px;
+  text-align: left;
+  font-size: 12.5px;
+  color: var(--fg-1);
+}
+
+.pf-tab:hover {
+  background: var(--hover-bg);
+}
+
+.pf-tab.on {
+  background: var(--accent);
+  color: #fff;
+}
+
+.pf-tab-icon {
+  flex: 0 0 14px;
+  text-align: center;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.pf-tab.on .pf-tab-icon {
+  color: #fff;
+}
+
+.pf-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 16px 16px;
+  overflow-y: auto;
+}
+
+.pf-section {
+  margin: 10px 0 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-2);
+}
+
+.pf-section:first-child {
+  margin-top: 2px;
+}
+
+.pf-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.pf-check input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.pf-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pf-hint {
+  margin: 6px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.pf-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pf-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.pf-value {
+  flex: 0 0 44px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--fg-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.pf-btn {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  color: var(--fg-1);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.pf-btn:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.pf-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }

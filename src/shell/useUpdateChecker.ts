@@ -24,7 +24,11 @@ export interface UpdateChecker {
 /** 앱 실행당 1회 자동 확인 (StrictMode 이중 마운트에도 한 번) */
 let autoChecked = false;
 
-export function useUpdateChecker(): UpdateChecker {
+/**
+ * @param autoCheck Preferences의 "Check for updates on launch". false면 자동 확인을 건너뛴다
+ *   (수동 확인은 언제나 가능). 나중에 켜면 그 시점에 한 번 확인한다
+ */
+export function useUpdateChecker(autoCheck = true): UpdateChecker {
   const [update, setUpdate] = useState<ReleaseInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
@@ -85,12 +89,12 @@ export function useUpdateChecker(): UpdateChecker {
   );
 
   useEffect(() => {
-    if (autoChecked) {
+    if (autoChecked || !autoCheck) {
       return;
     }
     autoChecked = true;
     runCheck(false);
-  }, [runCheck]);
+  }, [autoCheck, runCheck]);
 
   const checkNow = useCallback(() => runCheck(true), [runCheck]);
   const dismissBanner = useCallback(() => setDismissed(true), []);
