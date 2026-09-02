@@ -14,6 +14,7 @@ mod ops;
 mod parse;
 mod remote;
 mod search;
+mod term;
 #[cfg(test)]
 mod testrepo;
 
@@ -54,35 +55,65 @@ pub fn run() {
         Ok(())
     });
 
-    builder
-        .invoke_handler(tauri::generate_handler![
-            commands::open_repo,
-            commands::load_graph,
-            commands::get_commit_details,
-            commands::get_file_diff,
-            commands::get_file_content,
-            commands::get_startup_repo,
-            commands::list_refs,
-            commands::search_commits,
-            commands::get_repo_state,
-            commands::get_remote_url,
-            commands::get_wip_details,
-            commands::get_wip_file_diff,
-            commands::get_wip_file_content,
-            ops::get_sync_state,
-            ops::git_fetch,
-            ops::git_pull,
-            ops::git_push,
-            ops::git_checkout,
-            ops::git_create_branch,
-            ops::git_delete_branch,
-            ops::git_merge,
-            ops::git_stash_push,
-            ops::git_stash_pop,
-            native::reveal_path,
-            native::open_in_terminal,
-            native::set_recent_repos,
-        ])
-        .run(tauri::generate_context!())
+    // PTY 세션 맵. 창이 여러 개여도 하나를 공유한다.
+    let builder = builder.manage(term::Terminals::default());
+
+    // 읽기 command와 터미널만 등록한다. ops.rs의 쓰기 command는 `write-ops` 기능이
+    // 꺼져 있으면 `#[tauri::command]`가 붙지 않아 여기에 쓸 수조차 없다.
+    // 목록을 두 번 적지 않으려고 매크로로 공통부를 묶었다.
+    macro_rules! app_handlers {
+        ($($extra:tt)*) => {
+            tauri::generate_handler![
+                commands::open_repo,
+                commands::load_graph,
+                commands::get_commit_details,
+                commands::get_file_diff,
+                commands::get_file_content,
+                commands::get_startup_repo,
+                commands::list_refs,
+                commands::search_commits,
+                commands::get_repo_state,
+                commands::get_remote_url,
+                commands::get_wip_details,
+                commands::get_wip_file_diff,
+                commands::get_wip_file_content,
+                native::reveal_path,
+                native::open_in_terminal,
+                native::set_recent_repos,
+                term::term_open,
+                term::term_write,
+                term::term_resize,
+                term::term_close,
+                $($extra)*
+            ]
+        };
+    }
+
+    #[cfg(not(feature = "write-ops"))]
+    let builder = builder.invoke_handler(app_handlers!());
+
+    #[cfg(feature = "write-ops")]
+    let builder = builder.invoke_handler(app_handlers!(
+        ops::get_sync_state,
+        ops::git_fetch,
+        ops::git_pull,
+        ops::git_push,
+        ops::git_checkout,
+        ops::git_create_branch,
+        ops::git_delete_branch,
+        ops::git_merge,
+        ops::git_stash_push,
+        ops::git_stash_pop,
+    ));
+
+    // RunEvent를 받으려면 build + run으로 나눠야 한다. 앱이 닫힐 때 남은 셸을 죽인다.
+    let app = builder
+        .build(tauri::generate_context!())
         .expect("error while running tauri application");
+
+    app.run(|handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            term::kill_all(handle);
+        }
+    });
 }

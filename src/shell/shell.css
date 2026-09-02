@@ -1530,54 +1530,6 @@ body.resizing * {
   letter-spacing: 0.01em;
 }
 
-/* ---------- 툴바 쓰기 작업 그룹 (Fetch/Push/Branch/Stash/Pop/Terminal) ---------- */
-
-.toolbar-ops {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-  padding-left: 8px;
-  margin-left: 4px;
-  border-left: 1px solid var(--border-1);
-}
-
-/* Fetch 본체 + ▾ 를 한 덩어리로 보이게 붙인다 */
-.op-split {
-  display: flex;
-  align-items: stretch;
-}
-
-.op-split .op-main {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-.op-split .op-caret {
-  min-width: 18px;
-  padding: 0 4px;
-  margin-left: -1px;
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-  font-size: 10px;
-}
-
-.op-badge {
-  min-width: 15px;
-  padding: 0 4px;
-  border-radius: 7px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 10px;
-  line-height: 15px;
-  text-align: center;
-}
-
-.toolbar-btn:disabled .op-badge {
-  background: var(--border-1);
-  color: var(--fg-2);
-}
-
 /* ---------- 컨텍스트 메뉴 구분선 ---------- */
 
 .context-sep {
@@ -1633,4 +1585,53 @@ body.resizing * {
   color: var(--fg-1);
   font-size: 12px;
   cursor: pointer;
+}
+
+/* ---------- 하단 내장 터미널 ---------- */
+
+.term-dock {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-content);
+  border-top: 1px solid var(--border-0);
+}
+
+/* 가로 스플리터: 터미널 상단 경계 */
+.split-handle-y {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 7px;
+  z-index: 3;
+  cursor: row-resize;
+}
+
+.split-handle-y::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: transparent;
+}
+
+.split-handle-y:hover::after,
+.split-handle-y.dragging::after {
+  background: var(--accent);
+}
+
+/* 터미널 높이 드래그 중에는 세로 커서로 (body.resizing의 col-resize와 분리) */
+body.resizing-y {
+  cursor: row-resize;
+}
+
+body.resizing-y * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  cursor: row-resize !important;
 }

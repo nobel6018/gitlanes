@@ -9,8 +9,6 @@ import type {
   CommitDetails,
   FileChange,
   GraphData,
-  OpResult,
-  SyncState,
   RefEntry,
   RepoInfo,
   RepoState,
@@ -472,31 +470,6 @@ function splitBase(file: string): string {
   return stem.charAt(0).toUpperCase() + stem.slice(1).replace(/[^A-Za-z0-9]/g, "");
 }
 
-// ── v0.15 쓰기 작업 목 ────────────────────────────────────────────
-// 실제로 아무것도 바꾸지 않지만, 배지와 스피너가 반응하도록 상태는 들고 있는다.
-// ?pushFail=1 → push가 non-fast-forward로 실패, ?conflict=1 → merge/pull이 충돌.
-const flags = new URLSearchParams(window.location.search);
-const PUSH_FAILS = flags.has("pushFail");
-const MERGE_CONFLICTS = flags.has("conflict");
-
-const syncState: SyncState = {
-  branch: "main",
-  upstream: "origin/main",
-  ahead: 2,
-  behind: 1,
-  stashCount: mockStashes(mockGraph(1000, 0).rows).length,
-};
-
-function opOk(stdout: string, conflicts: string[] = []): OpResult {
-  return { ok: true, stdout, stderr: "", conflicts };
-}
-
-function opFail(stderr: string, conflicts: string[] = []): OpResult {
-  return { ok: false, stdout: "", stderr, conflicts };
-}
-
-const CONFLICT_FILES = ["src/shell/RepoWorkspace.tsx", "src/graph/GraphView.tsx"];
-
 function readArg(payload: unknown, key: string): unknown {
   if (payload === null || typeof payload !== "object") {
     return undefined;
@@ -611,109 +584,6 @@ mockIPC(async (cmd, payload) => {
       return picked;
     }
 
-    case "get_sync_state":
-      await sleep(40);
-      return syncState;
-
-    case "git_fetch": {
-      await sleep(800);
-      const prune = readArg(payload, "prune") === true;
-      syncState.behind = 1;
-      return opOk(`Fetching origin${prune ? " (pruned 1 branch)" : ""}`);
-    }
-
-    case "git_pull": {
-      await sleep(800);
-      const mode = String(readArg(payload, "mode") ?? "merge");
-      if (MERGE_CONFLICTS && mode !== "ff-only") {
-        return opFail(
-          "Auto-merging src/shell/RepoWorkspace.tsx\nCONFLICT (content): Merge conflict in src/shell/RepoWorkspace.tsx",
-          CONFLICT_FILES,
-        );
-      }
-      if (mode === "ff-only" && syncState.behind === 0) {
-        return opFail("fatal: Not possible to fast-forward, aborting.");
-      }
-      syncState.behind = 0;
-      return opOk(`Updating 8f2c1a9..b41d0e2 (${mode})\n 3 files changed, 24 insertions(+), 5 deletions(-)`);
-    }
-
-    case "git_push": {
-      await sleep(800);
-      if (PUSH_FAILS) {
-        return opFail(
-          "To github.com:gitlanes/awesome-project.git\n ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs\nhint: Updates were rejected because the tip of your current branch is behind.",
-        );
-      }
-      const pushed = syncState.ahead;
-      syncState.ahead = 0;
-      return opOk(`To github.com:gitlanes/awesome-project.git\n   8f2c1a9..b41d0e2  main -> main (${pushed} commits)`);
-    }
-
-    case "git_checkout": {
-      await sleep(300);
-      const target = String(readArg(payload, "target") ?? "");
-      syncState.branch = target.replace(/^origin\//, "");
-      return opOk(`Switched to branch '${syncState.branch}'`);
-    }
-
-    case "git_create_branch": {
-      await sleep(250);
-      const name = String(readArg(payload, "name") ?? "");
-      const checkout = readArg(payload, "checkout") === true;
-      if (checkout) {
-        syncState.branch = name;
-        syncState.upstream = null;
-        syncState.ahead = 0;
-        syncState.behind = 0;
-      }
-      return opOk(checkout ? `Switched to a new branch '${name}'` : `Created branch '${name}'`);
-    }
-
-    case "git_delete_branch": {
-      await sleep(250);
-      const name = String(readArg(payload, "name") ?? "");
-      const force = readArg(payload, "force") === true;
-      if (!force && name.startsWith("feat/")) {
-        return opFail(
-          `error: The branch '${name}' is not fully merged.\nIf you are sure you want to delete it, run 'git branch -D ${name}'.`,
-        );
-      }
-      return opOk(`Deleted branch ${name} (was 8f2c1a9).`);
-    }
-
-    case "git_merge": {
-      await sleep(600);
-      const source = String(readArg(payload, "source") ?? "");
-      if (MERGE_CONFLICTS) {
-        return opFail(
-          `Auto-merging src/shell/RepoWorkspace.tsx\nCONFLICT (content): Merge conflict in src/shell/RepoWorkspace.tsx\nAutomatic merge failed; fix conflicts and then commit the result.`,
-          CONFLICT_FILES,
-        );
-      }
-      return opOk(`Merge made by the 'ort' strategy. (${source})\n 2 files changed, 31 insertions(+)`);
-    }
-
-    case "git_stash_push": {
-      await sleep(300);
-      const message = readArg(payload, "message");
-      syncState.stashCount += 1;
-      return opOk(
-        `Saved working directory and index state ${
-          typeof message === "string" && message !== "" ? `On main: ${message}` : "WIP on main"
-        }`,
-      );
-    }
-
-    case "git_stash_pop": {
-      await sleep(300);
-      if (syncState.stashCount === 0) {
-        return opFail("No stash entries found.");
-      }
-      syncState.stashCount -= 1;
-      return opOk("Dropped refs/stash@{0} (b41d0e2)");
-    }
-
     case "get_wip_details":
       await sleep(70);
       return mockWipDetails();
@@ -742,6 +612,17 @@ mockIPC(async (cmd, payload) => {
       }
       return mockFileContent(file);
     }
+
+    // 내장 터미널(v0.16). 하네스에는 PTY가 없어 세션 id만 흉내낸다.
+    // Terminal 컴포넌트는 term:data 이벤트가 오지 않으면 "앱에서만 동작"을 표시한다
+    case "term_open":
+      console.log("[mock] term_open:", readArg(payload, "path"));
+      return "mock";
+
+    case "term_write":
+    case "term_resize":
+    case "term_close":
+      return null;
 
     // v0.11 새 command. 하네스에는 OS 연동이 없으므로 로그만 남긴다
     case "reveal_path":

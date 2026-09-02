@@ -14,7 +14,18 @@
 //!   `git check-ref-format --branch`를, remote는 `git remote` 목록을 쓴다.
 //! - **`--force`는 쓰지 않는다.** push는 `--force-with-lease`만 허용한다.
 //!
+//! # v0.16 봉인
+//!
+//! 사용자 결정으로 읽기 전용으로 되돌렸다. 인증이 필요한 작업은 하단 내장 터미널에서
+//! 사용자 환경 그대로 한다([`crate::term`]). 이 모듈은 지우지 않고 `write-ops` 기능
+//! 뒤로 넣었다. 기본 빌드에서는 `#[tauri::command]`가 붙지 않아 command로 존재하지
+//! 않으므로 invoke_handler에 등록할 수도, 프론트에서 부를 수도 없다. 함수와 테스트는
+//! 그대로 컴파일돼서 되살릴 때 검증이 남아 있다.
+//!
 //! @see CONTRACTS.md
+
+// 기본 빌드에서는 command로 노출되지 않아 호출자가 테스트뿐이다.
+#![cfg_attr(not(feature = "write-ops"), allow(dead_code))]
 
 use std::ffi::OsStr;
 use std::io::Read;
@@ -264,7 +275,7 @@ fn upstream_of_head(repo: &str) -> Option<String> {
 }
 
 /// 현재 브랜치의 upstream 대비 상태. 폴링에서 5초마다 불려서 네 호출을 병렬로 돈다.
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn get_sync_state(path: String) -> Result<SyncState, String> {
     const BRANCH_ARGS: [&str; 4] = ["symbolic-ref", "--short", "-q", "HEAD"];
     const UPSTREAM_ARGS: [&str; 4] = ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"];
@@ -322,7 +333,7 @@ fn parse_left_right(out: &str) -> Option<(u32, u32)> {
 }
 
 /// `remote`가 None이면 `--all`.
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn git_fetch(path: String, remote: Option<String>, prune: bool) -> Result<OpResult, String> {
     let remote = match remote.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
         Some(remote) => Some(validate_remote(&path, remote)?),
@@ -342,7 +353,7 @@ pub fn git_fetch(path: String, remote: Option<String>, prune: bool) -> Result<Op
 }
 
 /// `mode`는 `PullMode`("ff-only" | "merge" | "rebase").
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn git_pull(path: String, mode: String) -> Result<OpResult, String> {
     let args: &[&str] = match mode.as_str() {
         "ff-only" => &["pull", "--ff-only"],
@@ -356,7 +367,7 @@ pub fn git_pull(path: String, mode: String) -> Result<OpResult, String> {
 }
 
 /// 현재 브랜치를 푸시한다. 일반 `--force`는 어떤 경로로도 붙지 않는다.
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn git_push(
     path: String,
     set_upstream: bool,
@@ -394,7 +405,7 @@ fn push_args(
 }
 
 /// 로컬 브랜치 이름이나 `origin/x` 형태를 받는다.
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn git_checkout(path: String, target: String) -> Result<OpResult, String> {
     let target = validate_ref_name(&path, &target)?;
 
@@ -416,7 +427,7 @@ pub fn git_checkout(path: String, target: String) -> Result<OpResult, String> {
     run_op(&path, &["checkout", target.as_str()], LOCAL_TIMEOUT)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn git_create_branch(
     path: String,
     name: String,
@@ -446,7 +457,7 @@ pub fn git_create_branch(
 }
 
 /// 로컬 브랜치만 삭제한다. 현재 브랜치는 거부한다.
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn git_delete_branch(path: String, name: String, force: bool) -> Result<OpResult, String> {
     let name = validate_ref_name(&path, &name)?;
 
@@ -461,7 +472,7 @@ pub fn git_delete_branch(path: String, name: String, force: bool) -> Result<OpRe
 }
 
 /// `source`를 현재 브랜치로 머지한다. 충돌하면 `ok=false` + `conflicts`가 채워진다.
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn git_merge(path: String, source: String) -> Result<OpResult, String> {
     let source = validate_ref_name(&path, &source)?;
     run_op(
@@ -471,7 +482,7 @@ pub fn git_merge(path: String, source: String) -> Result<OpResult, String> {
     )
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn git_stash_push(
     path: String,
     message: Option<String>,
@@ -496,7 +507,7 @@ pub fn git_stash_push(
 }
 
 /// 가장 최근 스태시를 적용하고 목록에서 지운다. 충돌하면 `conflicts`가 채워진다.
-#[tauri::command]
+#[cfg_attr(feature = "write-ops", tauri::command)]
 pub fn git_stash_pop(path: String) -> Result<OpResult, String> {
     run_op(&path, &["stash", "pop", "stash@{0}"], LOCAL_TIMEOUT)
 }

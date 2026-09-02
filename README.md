@@ -1,6 +1,6 @@
 # GitLanes
 
-GitKraken-style git client. Free and open source (MIT), works with any local repository — private or public makes no difference.
+GitKraken-style commit graph viewer. Free and open source (MIT), read-only, works with any local repository — private or public makes no difference. When you need to run git, there's a built-in terminal.
 
 ![GitLanes commit graph](docs/screenshot.png)
 
@@ -16,7 +16,8 @@ GitKraken-style git client. Free and open source (MIT), works with any local rep
 - **Context menu**: copy sha/message, open the commit on GitHub/your remote
 - **Live**: auto-refreshes when the repository changes (refs fingerprint polling, focused window only); update badge when a newer release exists
 - **Fast**: Rust backend wrapping the system `git` CLI, parallel subprocess calls, canvas rendering with virtual scrolling — a 32k-commit repository loads in ~300ms and scrolls at 60fps
-- **Common git operations**: fetch, pull, push, branch (create/checkout/delete/merge), stash/pop — from the toolbar and branch context menu, with confirmation dialogs, conflict banners, and non-interactive execution (never hangs on a credential prompt)
+- **Built-in terminal**: a dockable bottom terminal (⌃`) running a login shell in the repo directory — use your own git for anything that writes (push, pull, checkout), with your existing auth
+- **Read-only graph**: the viewer never mutates your repository
 - Draggable column widths, keyboard navigation (↑/↓), sha copy (button or row double-click), eye-comfort dark theme
 
 ## Install
