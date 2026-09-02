@@ -31,11 +31,15 @@ done < <(git log "$RANGE" --no-merges --pretty='%h|%s' | grep -v '|docs' || true
 
 section() { local title="$1"; shift; [ "$#" -eq 0 ] && return; printf '## %s\n\n' "$title"; printf '%s\n' "$@"; printf '\n'; }
 
+# bash 3.2(macOS)는 set -u에서 빈 배열을 unset으로 보므로 ${arr[@]+...} 가드로 개수를 센다
+count() { local -a a=("${@}"); echo "${#a[@]}"; }
+n_feat=$(count ${FEAT[@]+"${FEAT[@]}"}); n_fix=$(count ${FIX[@]+"${FIX[@]}"})
+n_perf=$(count ${PERF[@]+"${PERF[@]}"}); n_other=$(count ${OTHER[@]+"${OTHER[@]}"})
 summary=""
-[ "${#FEAT[@]}" -gt 0 ] && summary+="기능 ${#FEAT[@]}"
-[ "${#FIX[@]}" -gt 0 ] && summary+="${summary:+ · }수정 ${#FIX[@]}"
-[ "${#PERF[@]}" -gt 0 ] && summary+="${summary:+ · }성능 ${#PERF[@]}"
-[ "${#OTHER[@]}" -gt 0 ] && summary+="${summary:+ · }기타 ${#OTHER[@]}"
+[ "$n_feat" -gt 0 ] && summary+="기능 ${n_feat}"
+[ "$n_fix" -gt 0 ] && summary+="${summary:+ · }수정 ${n_fix}"
+[ "$n_perf" -gt 0 ] && summary+="${summary:+ · }성능 ${n_perf}"
+[ "$n_other" -gt 0 ] && summary+="${summary:+ · }기타 ${n_other}"
 [ -n "$summary" ] && printf '**이번 릴리스** %s\n\n' "$summary"
 
 section "기능" "${FEAT[@]+"${FEAT[@]}"}"
