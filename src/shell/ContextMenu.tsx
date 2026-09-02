@@ -1,9 +1,16 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export interface MenuItem {
   label: string;
+  /** 회색으로 표시하고 클릭을 무시한다. 이유는 title로 알린다 */
   disabled?: boolean;
   onSelect: () => void;
+  /** 이 항목 바로 위에 구분선을 그린다 */
+  separatorBefore?: boolean;
+  /** 파괴적 동작(삭제 등). 라벨을 var(--deleted)로 그린다 */
+  danger?: boolean;
+  /** 항목 툴팁. 비활성 이유를 적는 데 쓴다 */
+  title?: string;
 }
 
 export interface ContextMenuProps {
@@ -70,18 +77,21 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
       style={{ left: pos.left, top: pos.top }}
     >
       {items.map((item) => (
-        <button
-          key={item.label}
-          className="context-item"
-          role="menuitem"
-          disabled={item.disabled === true}
-          onClick={() => {
-            onClose();
-            item.onSelect();
-          }}
-        >
-          {item.label}
-        </button>
+        <Fragment key={item.label}>
+          {item.separatorBefore === true && <div className="context-sep" role="separator" />}
+          <button
+            className={item.danger === true ? "context-item danger" : "context-item"}
+            role="menuitem"
+            title={item.title}
+            disabled={item.disabled === true}
+            onClick={() => {
+              onClose();
+              item.onSelect();
+            }}
+          >
+            {item.label}
+          </button>
+        </Fragment>
       ))}
     </div>
   );

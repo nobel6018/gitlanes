@@ -8,6 +8,9 @@ import { GraphView } from "../graph";
 import { COMMITS_PER_PAGE, WIP_SHA } from "../constants";
 import type {
   FileChange,
+  OpResult,
+  PullMode,
+  SyncState,
   GraphData,
   RefEntry,
   RepoInfo,
@@ -21,9 +24,19 @@ import {
   getFileContent,
   getFileDiff,
   getRemoteUrl,
+  getSyncState,
   getWipDetails,
   getWipFileContent,
   getWipFileDiff,
+  gitCheckout,
+  gitCreateBranch,
+  gitDeleteBranch,
+  gitFetch,
+  gitMerge,
+  gitPull,
+  gitPush,
+  gitStashPop,
+  gitStashPush,
   getRepoState,
   listRefs,
   loadGraph,
@@ -37,6 +50,8 @@ import { BranchSidebar } from "./BranchSidebar";
 import { CommitDetailPanel } from "./CommitDetailPanel";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
+import { ConflictBanner } from "./ConflictBanner";
+import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { DiffPanel } from "./DiffPanel";
 import { WipDetailPanel } from "./WipDetailPanel";
 import { FilterResults } from "./FilterResults";
@@ -118,6 +133,43 @@ interface ToastState {
   id: number;
   message: string;
   tone: "error" | "info";
+  durationMs?: number;
+  copyable?: boolean;
+}
+
+/** git 오류는 읽을 게 많아 오래 띄운다 */
+const OP_ERROR_MS = 12_000;
+
+/** 한 번에 하나만 뜨는 모달. 확인형과 입력형 두 가지 */
+type DialogState =
+  | {
+      kind: "confirm";
+      title: string;
+      body: string;
+      confirmLabel: string;
+      danger?: boolean;
+      onConfirm: () => void;
+    }
+  | {
+      kind: "prompt";
+      title: string;
+      label: string;
+      placeholder: string;
+      defaultValue?: string;
+      confirmLabel: string;
+      validate?: (value: string) => string | null;
+      /** 추가 컨트롤. 지금은 스태시의 untracked 체크박스 하나뿐 */
+      extra?: "untracked";
+      onSubmit: (value: string) => void;
+    };
+
+/** 결과 토스트에 쓸 한 줄. git은 stdout이 비고 stderr에만 쓰는 경우가 많다 */
+function summarizeOp(result: OpResult, label: string): string {
+  const lines = `${result.stdout}\n${result.stderr}`
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return lines.length === 0 ? `${label} 완료` : lines[lines.length - 1];
 }
 
 /** nonce가 바뀔 때마다 GraphView가 해당 행을 뷰포트 중앙으로 스크롤한다 */
@@ -242,6 +294,14 @@ export function RepoWorkspace({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [layout, setLayout] = useState<LayoutWidths>(readLayout);
   const [dateMode, setDateMode] = useState<DateMode>(readDateMode);
+  /** upstream 대비 ahead/behind + stash 개수 (툴바 배지) */
+  const [syncState, setSyncState] = useState<SyncState | null>(null);
+  /** 실행 중인 쓰기 작업 id. null이 아니면 모든 작업 버튼을 잠근다 */
+  const [busyOp, setBusyOp] = useState<string | null>(null);
+  const [conflicts, setConflicts] = useState<string[]>([]);
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+  /** 스태시 다이얼로그의 "Include untracked" 체크 상태 */
+  const [stashUntracked, setStashUntracked] = useState(true);
   /** 검색 필터 모드. 켜지면 그래프 자리에 매치 목록만 그린다 */
   const [filterMode, setFilterMode] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
@@ -266,6 +326,10 @@ export function RepoWorkspace({
   const lastOpenNonce = useRef(0);
   const lastRefreshNonce = useRef(0);
   const lastSidebarNonce = useRef(0);
+  /** 쓰기 작업 동시 실행 잠금. setBusyOp보다 먼저 보이는 값이 필요하다 */
+  const busyRef = useRef<string | null>(null);
+  /** 다이얼로그를 연 시점이 아니라 확인을 누른 시점의 체크 상태를 읽는다 */
+  const stashUntrackedRef = useRef(true);
   const activeRef = useRef(active);
   const lastQuery = useRef("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -286,15 +350,29 @@ export function RepoWorkspace({
   const wipRef = useRef<WipInfo | null>(null);
 
   const data: GraphData = graph ?? EMPTY_GRAPH;
+  stashUntrackedRef.current = stashUntracked;
   activeRef.current = active;
   rowCount.current = data.rows.length;
   loadingRef.current = graphLoading;
   wipRef.current = data.wip;
 
-  const showToast = useCallback((message: string, tone: "error" | "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, message, tone });
-  }, []);
+  const showToast = useCallback(
+    (
+      message: string,
+      tone: "error" | "info",
+      options?: { durationMs?: number; copyable?: boolean },
+    ) => {
+      toastSeq.current += 1;
+      setToast({ id: toastSeq.current, message, tone, ...options });
+    },
+    [],
+  );
+
+  /** git stderr는 원문 그대로, 길게, 복사 가능하게 보여준다 */
+  const showOpError = useCallback(
+    (message: string) => showToast(message, "error", { durationMs: OP_ERROR_MS, copyable: true }),
+    [showToast],
+  );
 
   const showError = useCallback(
     (message: string) => showToast(message, "error"),
@@ -642,6 +720,27 @@ export function RepoWorkspace({
     reloadFromStart();
   }, [refreshNonce, reloadFromStart]);
 
+  const loadSyncState = useCallback(() => {
+    if (repo === null) {
+      return;
+    }
+    getSyncState(repo.path)
+      .then((state) => setSyncState(state))
+      .catch(() => {
+        // upstream이 없거나 조회에 실패하면 배지를 숨긴다
+        setSyncState(null);
+      });
+  }, [repo]);
+
+  // 레포를 열거나 새로고침할 때마다 ↑↓ 배지를 다시 읽는다
+  useEffect(() => {
+    if (repo === null) {
+      setSyncState(null);
+      return;
+    }
+    loadSyncState();
+  }, [repo, reloadKey, loadSyncState]);
+
   /** refs 지문/wip이 바뀌었으면 전체 리로드. 폴링과 탭 전환이 함께 쓴다 */
   const checkRepoState = useCallback(() => {
     if (repo === null || loadingRef.current || graphToken.current === "") {
@@ -675,9 +774,11 @@ export function RepoWorkspace({
         return;
       }
       checkRepoState();
+      // ↑↓ 배지는 원격이 움직이면 바뀌므로 폴링 주기마다 다시 읽는다
+      loadSyncState();
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [repo, active, checkRepoState]);
+  }, [repo, active, checkRepoState, loadSyncState]);
 
   // 비활성 탭은 폴링하지 않으므로, 활성화되는 순간 한 번 확인한다
   useEffect(() => {
@@ -686,6 +787,270 @@ export function RepoWorkspace({
     }
     checkRepoState();
   }, [active, checkRepoState]);
+
+  // ── 쓰기 작업 (v0.15) ────────────────────────────────────────────
+
+  const closeDialog = useCallback(() => setDialog(null), []);
+
+  /**
+   * 쓰기 작업 공통 실행기. 한 번에 하나만 돌리고, 끝나면 그래프/refs/배지를 갱신한다.
+   * git이 실패해도 예외가 아니라 ok=false로 오므로 stderr를 그대로 보여준다.
+   */
+  const runOp = useCallback(
+    async (id: string, label: string, run: (path: string) => Promise<OpResult>) => {
+      if (repo === null || busyRef.current !== null) {
+        return;
+      }
+      busyRef.current = id;
+      setBusyOp(id);
+      try {
+        const result = await run(repo.path);
+        setConflicts(result.conflicts);
+        if (result.ok) {
+          showToast(summarizeOp(result, label), "info");
+        } else {
+          const detail = (result.stderr.trim() || result.stdout.trim()) === ""
+            ? "git이 실패했습니다."
+            : (result.stderr.trim() || result.stdout.trim());
+          const hint = /non-fast-forward|rejected|fetch first/i.test(result.stderr)
+            ? "\n\nPull 후 다시 시도하세요."
+            : "";
+          showOpError(`${label} 실패\n${detail}${hint}`);
+        }
+      } catch (err) {
+        showOpError(`${label} 실패\n${errorMessage(err)}`);
+      } finally {
+        busyRef.current = null;
+        setBusyOp(null);
+        reloadFromStart();
+        loadSyncState();
+      }
+    },
+    [repo, showToast, showOpError, reloadFromStart, loadSyncState],
+  );
+
+  const validateBranchName = useCallback(
+    (value: string): string | null => {
+      const name = value.trim();
+      if (name === "") {
+        return "이름을 입력하세요.";
+      }
+      if (/\s/.test(name)) {
+        return "공백은 쓸 수 없습니다.";
+      }
+      if (name.includes("..")) {
+        return '".."는 쓸 수 없습니다.';
+      }
+      if (name.startsWith("-")) {
+        return '"-"로 시작할 수 없습니다.';
+      }
+      if (refs.some((entry) => entry.kind === "localBranch" && entry.name === name)) {
+        return "이미 있는 브랜치입니다.";
+      }
+      return null;
+    },
+    [refs],
+  );
+
+  /** startPoint가 null이면 현재 HEAD에서 만든다 */
+  const promptNewBranch = useCallback(
+    (startPoint: string | null) => {
+      setDialog({
+        kind: "prompt",
+        title: startPoint === null ? "New branch" : `New branch from ${startPoint}`,
+        label: "Branch name",
+        placeholder: "feat/my-change",
+        confirmLabel: "Create",
+        validate: validateBranchName,
+        onSubmit: (value) => {
+          const name = value.trim();
+          void runOp("branch", `Create branch ${name}`, (path) =>
+            gitCreateBranch(path, name, startPoint, true),
+          );
+        },
+      });
+    },
+    [validateBranchName, runOp],
+  );
+
+  const handleFetch = useCallback(
+    (prune: boolean) => {
+      void runOp("fetch", prune ? "Fetch & prune" : "Fetch", (path) =>
+        gitFetch(path, null, prune),
+      );
+    },
+    [runOp],
+  );
+
+  const handlePull = useCallback(
+    (mode: PullMode) => {
+      const start = () => {
+        void runOp("pull", `Pull (${mode})`, (path) => gitPull(path, mode));
+      };
+      if (mode === "ff-only") {
+        start();
+        return;
+      }
+      setDialog({
+        kind: "confirm",
+        title: mode === "merge" ? "Pull (merge)" : "Pull (rebase)",
+        body:
+          mode === "merge"
+            ? "원격 변경을 현재 브랜치에 머지합니다. 충돌이 날 수 있습니다."
+            : "현재 브랜치를 원격 위로 리베이스합니다. 충돌이 날 수 있습니다.",
+        confirmLabel: "Pull",
+        onConfirm: start,
+      });
+    },
+    [runOp],
+  );
+
+  const handlePush = useCallback(() => {
+    if (repo === null) {
+      return;
+    }
+    const branch = syncState?.branch ?? repo.headBranch;
+    const upstream = syncState?.upstream ?? null;
+    const ahead = syncState?.ahead ?? 0;
+    const setUpstream = upstream === null;
+    setDialog({
+      kind: "confirm",
+      title: "Push",
+      body: setUpstream
+        ? `upstream이 없습니다. origin/${branch}에 upstream을 설정하며 푸시합니다.`
+        : `${upstream}으로 커밋 ${ahead}개를 푸시합니다.`,
+      confirmLabel: "Push",
+      onConfirm: () => {
+        void runOp("push", "Push", (path) => gitPush(path, setUpstream, false));
+      },
+    });
+  }, [repo, syncState, runOp]);
+
+  const handleStash = useCallback(() => {
+    setDialog({
+      kind: "prompt",
+      title: "Stash changes",
+      label: "Message (선택)",
+      placeholder: "WIP",
+      confirmLabel: "Stash",
+      extra: "untracked",
+      onSubmit: (value) => {
+        const message = value.trim();
+        const untracked = stashUntrackedRef.current;
+        void runOp("stash", "Stash", (path) =>
+          gitStashPush(path, message === "" ? null : message, untracked),
+        );
+      },
+    });
+  }, [runOp]);
+
+  const handleStashPop = useCallback(() => {
+    setDialog({
+      kind: "confirm",
+      title: "Pop stash",
+      body: "가장 최근 스태시를 워킹 트리에 적용합니다. 충돌이 날 수 있습니다.",
+      confirmLabel: "Pop",
+      onConfirm: () => {
+        void runOp("pop", "Stash pop", (path) => gitStashPop(path));
+      },
+    });
+  }, [runOp]);
+
+  const handleCheckout = useCallback(
+    (target: string) => {
+      void runOp("checkout", `Checkout ${target}`, (path) => gitCheckout(path, target));
+    },
+    [runOp],
+  );
+
+  const handleOpenTerminal = useCallback(() => {
+    if (repo === null) {
+      return;
+    }
+    openInTerminal(repo.path).catch((err: unknown) => showError(errorMessage(err)));
+  }, [repo, showError]);
+
+  /**
+   * 브랜치 삭제. 미머지라 실패하면 stderr를 보여주고 강제 삭제를 한 번 더 확인한다.
+   * 재귀 호출이 있어 useCallback 대신 일반 함수로 둔다 (다이얼로그 콜백이 호출 시점에 잡는다)
+   */
+  async function deleteBranch(name: string, force: boolean): Promise<void> {
+    if (repo === null || busyRef.current !== null) {
+      return;
+    }
+    busyRef.current = "delete";
+    setBusyOp("delete");
+    try {
+      const result = await gitDeleteBranch(repo.path, name, force);
+      if (result.ok) {
+        showToast(summarizeOp(result, `Delete ${name}`), "info");
+        return;
+      }
+      showOpError(`브랜치 삭제 실패\n${(result.stderr.trim() || result.stdout.trim())}`);
+      if (!force) {
+        setDialog({
+          kind: "confirm",
+          danger: true,
+          title: "강제 삭제",
+          body: `${name}은 아직 머지되지 않았습니다. 강제로 삭제하면 되돌릴 수 없습니다.`,
+          confirmLabel: "강제 삭제",
+          onConfirm: () => {
+            void deleteBranch(name, true);
+          },
+        });
+      }
+    } catch (err) {
+      showOpError(`브랜치 삭제 실패\n${errorMessage(err)}`);
+    } finally {
+      busyRef.current = null;
+      setBusyOp(null);
+      reloadFromStart();
+      loadSyncState();
+    }
+  }
+
+  const confirmDeleteBranch = useCallback((entry: RefEntry) => {
+    setDialog({
+      kind: "confirm",
+      danger: true,
+      title: "Delete branch",
+      body: `로컬 브랜치 ${entry.name}을 삭제합니다.`,
+      confirmLabel: "Delete",
+      onConfirm: () => {
+        void deleteBranch(entry.name, false);
+      },
+    });
+    // deleteBranch는 렌더마다 새로 만들어지지만 호출은 확인 버튼을 누른 시점에 일어난다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const confirmMerge = useCallback(
+    (entry: RefEntry) => {
+      setDialog({
+        kind: "confirm",
+        title: "Merge",
+        body: `${entry.name}을 현재 브랜치로 머지합니다. 충돌이 날 수 있습니다.`,
+        confirmLabel: "Merge",
+        onConfirm: () => {
+          void runOp("merge", `Merge ${entry.name}`, (path) => gitMerge(path, entry.name));
+        },
+      });
+    },
+    [runOp],
+  );
+
+  const handlePushBranch = useCallback(
+    (entry: RefEntry) => {
+      if (entry.isHead) {
+        handlePush();
+        return;
+      }
+      showToast(`${entry.name}을 체크아웃한 뒤 푸시하세요.`, "info");
+    },
+    [handlePush, showToast],
+  );
+
+  const dismissConflicts = useCallback(() => setConflicts([]), []);
 
   const copySha = useCallback(
     (sha: string) => {
@@ -780,6 +1145,24 @@ export function RepoWorkspace({
         },
       },
     ];
+    const row = data.rows.find((r) => r.sha === sha);
+    if (row !== undefined) {
+      items.push({
+        label: "Create branch here…",
+        separatorBefore: true,
+        disabled: busyOp !== null,
+        onSelect: () => promptNewBranch(sha),
+      });
+      for (const ref of row.refs) {
+        if (ref.kind === "localBranch" && !ref.isHead) {
+          items.push({
+            label: `Checkout ${ref.name}`,
+            disabled: busyOp !== null,
+            onSelect: () => handleCheckout(ref.name),
+          });
+        }
+      }
+    }
     if (remoteUrl !== null) {
       items.push({
         label: remoteUrl.includes("github.com") ? "Open on GitHub" : "Open on Remote",
@@ -791,7 +1174,19 @@ export function RepoWorkspace({
       });
     }
     return items;
-  }, [menu, menuMessage, remoteUrl, copySha, showToast, showError, copyPathItems]);
+  }, [
+    menu,
+    menuMessage,
+    remoteUrl,
+    copySha,
+    showToast,
+    showError,
+    copyPathItems,
+    data.rows,
+    busyOp,
+    promptNewBranch,
+    handleCheckout,
+  ]);
 
   const handleToggleTags = useCallback(() => {
     setShowTags((prev) => {
@@ -1103,6 +1498,7 @@ export function RepoWorkspace({
   /** WIP 의사 행 클릭. 센티널을 선택으로 넣으면 오른쪽이 WIP 패널로 바뀐다 */
   const selectWip = useCallback(() => setSelectedSha(WIP_SHA), []);
 
+
   /**
    * Esc는 한 번에 한 단계만 되돌린다.
    * 오버레이 → diff 패널 닫기 → 검색어 → 선택. 처리했으면 true
@@ -1220,7 +1616,14 @@ export function RepoWorkspace({
 
   const toastNode =
     toast === null ? null : (
-      <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={dismissToast} />
+      <Toast
+        key={toast.id}
+        message={toast.message}
+        tone={toast.tone}
+        durationMs={toast.durationMs}
+        copyable={toast.copyable}
+        onClose={dismissToast}
+      />
     );
 
   if (repo === null) {
@@ -1246,6 +1649,15 @@ export function RepoWorkspace({
         sidebarOpen={sidebarOpen}
         onToggleSidebar={handleToggleSidebar}
         onGoToHead={goToHead}
+        syncState={syncState}
+        busyOp={busyOp}
+        onFetch={handleFetch}
+        onPull={handlePull}
+        onPush={handlePush}
+        onNewBranch={() => promptNewBranch(null)}
+        onStash={handleStash}
+        onStashPop={handleStashPop}
+        onOpenTerminal={handleOpenTerminal}
         onRepoContextMenu={handleRepoContextMenu}
         search={
           <SearchBox
@@ -1276,6 +1688,9 @@ export function RepoWorkspace({
         onCheckUpdates={update.onCheck}
       />
       {banner}
+      {conflicts.length > 0 && (
+        <ConflictBanner files={conflicts} onDismiss={dismissConflicts} onOpenWip={selectWip} />
+      )}
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
       <div
@@ -1298,6 +1713,12 @@ export function RepoWorkspace({
               onCopyRefName={handleCopyRefName}
               onOpenRefOnRemote={remoteUrl === null ? undefined : handleOpenRefOnRemote}
               filterInputRef={sidebarFilterRef}
+              syncState={syncState ?? undefined}
+              onCheckout={(entry) => handleCheckout(entry.name)}
+              onCreateBranchFrom={(entry) => promptNewBranch(entry.name)}
+              onDeleteBranch={confirmDeleteBranch}
+              onMergeIntoCurrent={confirmMerge}
+              onPushBranch={handlePushBranch}
             />
             <SplitHandle
               label="사이드바 폭 조절"
@@ -1406,6 +1827,51 @@ export function RepoWorkspace({
 
       {menu !== null && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />
+      )}
+
+      {dialog !== null && dialog.kind === "confirm" && (
+        <ConfirmDialog
+          open
+          title={dialog.title}
+          body={dialog.body}
+          confirmLabel={dialog.confirmLabel}
+          danger={dialog.danger}
+          onConfirm={() => {
+            const run = dialog.onConfirm;
+            setDialog(null);
+            run();
+          }}
+          onCancel={closeDialog}
+        />
+      )}
+      {dialog !== null && dialog.kind === "prompt" && (
+        <PromptDialog
+          open
+          title={dialog.title}
+          label={dialog.label}
+          placeholder={dialog.placeholder}
+          defaultValue={dialog.defaultValue}
+          validate={dialog.validate}
+          confirmLabel={dialog.confirmLabel}
+          extra={
+            dialog.extra !== "untracked" ? undefined : (
+              <label className="dlg-check-row">
+                <input
+                  type="checkbox"
+                  checked={stashUntracked}
+                  onChange={(e) => setStashUntracked(e.currentTarget.checked)}
+                />
+                Include untracked files
+              </label>
+            )
+          }
+          onSubmit={(value: string) => {
+            const run = dialog.onSubmit;
+            setDialog(null);
+            run(value);
+          }}
+          onCancel={closeDialog}
+        />
       )}
 
       <QuickSwitcher

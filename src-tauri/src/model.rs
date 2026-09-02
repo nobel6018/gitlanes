@@ -195,6 +195,35 @@ pub struct FileChange {
     pub deletions: u64,
 }
 
+/// 쓰기 작업 결과.
+///
+/// git이 0이 아닌 코드로 끝나도 Err가 아니라 `ok: false`다. 인증 실패나
+/// non-fast-forward는 사용자가 읽어야 하는 정상적인 결과라서 stderr를 그대로 실어 보낸다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpResult {
+    pub ok: bool,
+    /// git stdout. 마지막 200줄만
+    pub stdout: String,
+    /// git stderr. 마지막 200줄만
+    pub stderr: String,
+    /// `git diff --name-only --diff-filter=U` 결과. 충돌이 없으면 빈 배열
+    pub conflicts: Vec<String>,
+}
+
+/// `get_sync_state` 응답. 툴바의 ↑ahead ↓behind 배지와 Pop 버튼 활성 판정에 쓴다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncState {
+    /// detached HEAD면 None
+    pub branch: Option<String>,
+    /// "origin/main" 형태. upstream이 없으면 None
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub stash_count: u32,
+}
+
 /// `get_wip_details` 응답. 세 영역은 서로 겹칠 수 있다(같은 파일이 staged와 unstaged 양쪽에).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

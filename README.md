@@ -1,6 +1,6 @@
 # GitLanes
 
-GitKraken-style commit graph viewer. Free and open source (MIT), read-only, works with any local repository — private or public makes no difference.
+GitKraken-style git client. Free and open source (MIT), works with any local repository — private or public makes no difference.
 
 ![GitLanes commit graph](docs/screenshot.png)
 
@@ -16,7 +16,7 @@ GitKraken-style commit graph viewer. Free and open source (MIT), read-only, work
 - **Context menu**: copy sha/message, open the commit on GitHub/your remote
 - **Live**: auto-refreshes when the repository changes (refs fingerprint polling, focused window only); update badge when a newer release exists
 - **Fast**: Rust backend wrapping the system `git` CLI, parallel subprocess calls, canvas rendering with virtual scrolling — a 32k-commit repository loads in ~300ms and scrolls at 60fps
-- **Read-only by design**: no staging, no push, no way to break anything; use it alongside your favorite git client
+- **Common git operations**: fetch, pull, push, branch (create/checkout/delete/merge), stash/pop — from the toolbar and branch context menu, with confirmation dialogs, conflict banners, and non-interactive execution (never hangs on a credential prompt)
 - Draggable column widths, keyboard navigation (↑/↓), sha copy (button or row double-click), eye-comfort dark theme
 
 ## Install
