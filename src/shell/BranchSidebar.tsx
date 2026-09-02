@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { MouseEvent, ReactNode, RefObject } from "react";
-import type { RefEntry, SyncState } from "../types";
+import type { RefEntry } from "../types";
 import { shortSha } from "./format";
 import { kbd, withKbd } from "./shortcuts";
 import { SidebarContextMenu } from "./SidebarContextMenu";
@@ -18,15 +18,6 @@ export interface BranchSidebarProps {
   onOpenRefOnRemote?: (ref: RefEntry) => void;
   /** 외부(⌘⌥F)에서 필터 입력창을 포커스하기 위한 ref */
   filterInputRef?: RefObject<HTMLInputElement | null>;
-  // ── v0.15 쓰기 작업. undefined면 해당 메뉴 항목을 숨긴다 ──
-  /** 로컬/원격 브랜치 더블클릭과 메뉴 Checkout */
-  onCheckout?: (ref: RefEntry) => void;
-  onCreateBranchFrom?: (ref: RefEntry) => void;
-  onDeleteBranch?: (ref: RefEntry) => void;
-  onMergeIntoCurrent?: (ref: RefEntry) => void;
-  onPushBranch?: (ref: RefEntry) => void;
-  /** 현재 브랜치 옆 ↑ahead ↓behind 배지 */
-  syncState?: SyncState;
 }
 
 interface RemoteGroup {
@@ -134,12 +125,6 @@ export function BranchSidebar({
   onCopyRefName,
   onOpenRefOnRemote,
   filterInputRef,
-  onCheckout,
-  onCreateBranchFrom,
-  onDeleteBranch,
-  onMergeIntoCurrent,
-  onPushBranch,
-  syncState,
 }: BranchSidebarProps) {
   const all = useMemo(() => group(refs), [refs]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(readCollapsed);
@@ -186,15 +171,6 @@ export function BranchSidebar({
   const isCollapsed = (key: string) => !filtering && collapsed[key] === true;
 
   const openMenu = (entry: RefEntry, x: number, y: number) => setMenu({ x, y, entry });
-
-  // GitKraken 관례: 브랜치 더블클릭은 체크아웃, 태그는 커밋 점프
-  const activate = (entry: RefEntry) => {
-    if (entry.kind === "tag" || entry.isHead || onCheckout === undefined) {
-      onSelectRef(entry.sha);
-      return;
-    }
-    onCheckout(entry);
-  };
 
   return (
     <nav className="sidebar" aria-label="Branches">
@@ -259,9 +235,7 @@ export function BranchSidebar({
               entry={ref}
               selected={ref.sha === selectedSha}
               onSelect={onSelectRef}
-              onActivate={activate}
               onContextMenu={openMenu}
-              syncState={syncState}
             />
           ))}
         </Section>
@@ -293,10 +267,8 @@ export function BranchSidebar({
                   nested
                   selected={ref.sha === selectedSha}
                   onSelect={onSelectRef}
-                  onActivate={activate}
-                  onContextMenu={openMenu}
-                  syncState={syncState}
-                />
+                      onContextMenu={openMenu}
+                    />
               ))}
             </Section>
           ))}
@@ -318,9 +290,7 @@ export function BranchSidebar({
               entry={ref}
               selected={ref.sha === selectedSha}
               onSelect={onSelectRef}
-              onActivate={activate}
               onContextMenu={openMenu}
-              syncState={syncState}
             />
           ))}
         </Section>
@@ -334,11 +304,6 @@ export function BranchSidebar({
           onCopyName={onCopyRefName}
           onOpenOnRemote={onOpenRefOnRemote}
           onJumpToCommit={onSelectRef}
-          onCheckout={onCheckout}
-          onCreateBranchFrom={onCreateBranchFrom}
-          onMergeIntoCurrent={onMergeIntoCurrent}
-          onPushBranch={onPushBranch}
-          onDeleteBranch={onDeleteBranch}
           onClose={() => setMenu(null)}
         />
       )}
@@ -405,11 +370,7 @@ interface RefRowProps {
   nested?: boolean;
   selected: boolean;
   onSelect: (sha: string) => void;
-  /** 더블클릭 (브랜치=체크아웃, 태그=점프) */
-  onActivate: (entry: RefEntry) => void;
   onContextMenu: (entry: RefEntry, x: number, y: number) => void;
-  /** 현재 브랜치 배지용. 이 행이 현재 브랜치일 때만 쓴다 */
-  syncState?: SyncState;
 }
 
 function RefRow({
@@ -419,9 +380,7 @@ function RefRow({
   nested,
   selected,
   onSelect,
-  onActivate,
   onContextMenu,
-  syncState,
 }: RefRowProps) {
   const classes = ["sb-item"];
   if (nested === true) {
@@ -440,32 +399,13 @@ function RefRow({
     onContextMenu(entry, event.clientX, event.clientY);
   };
 
-  // 배지는 현재 로컬 브랜치에만, 그리고 syncState가 그 브랜치를 가리킬 때만
-  const sync =
-    entry.isHead &&
-    entry.kind === "localBranch" &&
-    syncState !== undefined &&
-    syncState.branch === entry.name
-      ? syncState
-      : null;
-  const noUpstream = sync !== null && sync.upstream === null;
-  const showBadge = sync !== null && (sync.ahead > 0 || sync.behind > 0);
-
-  let title = `${entry.name} — ${shortSha(entry.sha)}`;
-  if (noUpstream) {
-    title += " — no upstream";
-  } else if (showBadge && sync !== null) {
-    title += ` — ${sync.ahead} ahead, ${sync.behind} behind ${sync.upstream ?? ""}`.trimEnd();
-  }
-
   return (
     <li>
       <button
         className={classes.join(" ")}
         onClick={() => onSelect(entry.sha)}
-        onDoubleClick={() => onActivate(entry)}
         onContextMenu={handleContextMenu}
-        title={title}
+        title={`${entry.name} — ${shortSha(entry.sha)}`}
       >
         <span className="sb-check" aria-hidden="true">
           {entry.isHead ? "✓" : ""}
@@ -473,12 +413,6 @@ function RefRow({
         <span className="sb-label">
           <Highlight text={label} query={query} />
         </span>
-        {showBadge && sync !== null && (
-          <span className="sb-sync">
-            {sync.ahead > 0 && <span className="sb-sync-part">↑{sync.ahead}</span>}
-            {sync.behind > 0 && <span className="sb-sync-part">↓{sync.behind}</span>}
-          </span>
-        )}
       </button>
     </li>
   );

@@ -37,11 +37,12 @@ const FILE_EVENTS: [(&str, &str); 5] = [
 ];
 
 /// View 메뉴 항목. payload는 없다.
-const VIEW_EVENTS: [(&str, &str); 4] = [
+const VIEW_EVENTS: [(&str, &str); 5] = [
     ("view:toggle-sidebar", "menu:toggle-sidebar"),
     ("view:zoom-in", "menu:zoom-in"),
     ("view:zoom-out", "menu:zoom-out"),
     ("view:zoom-reset", "menu:zoom-reset"),
+    ("view:toggle-terminal", "menu:toggle-terminal"),
 ];
 
 /// Help 메뉴 항목. payload는 없다.
@@ -205,12 +206,23 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         Some("CmdOrCtrl+0"),
     )?;
 
+    // 백틱은 muda가 Code::Backquote로 파싱해 keyEquivalent "`"가 되고 Shift가 섞이지 않는다.
+    // macOS 관례는 ⌃`지만 플랫폼 간 표기를 CmdOrCtrl로 통일했다(⌘`는 시스템 창 순환을 덮는다).
+    let toggle_terminal = MenuItem::with_id(
+        app,
+        VIEW_EVENTS[4].0,
+        "Toggle Terminal",
+        true,
+        Some("CmdOrCtrl+`"),
+    )?;
+
     let view = Submenu::with_items(
         app,
         "View",
         true,
         &[
             &toggle_sidebar,
+            &toggle_terminal,
             &PredefinedMenuItem::separator(app)?,
             &zoom_in,
             &zoom_out,

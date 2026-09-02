@@ -3,7 +3,9 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { clamp } from "./layout";
 
 export interface SplitHandleProps {
-  /** 현재 폭(px)을 읽는다 */
+  /** "x"는 좌우 폭(기본), "y"는 위아래 높이를 조절한다 */
+  axis?: "x" | "y";
+  /** 현재 폭(또는 높이)을 px로 읽는다 */
   getWidth: () => number;
   min: number;
   /** 창 크기에 따라 달라질 수 있어 함수로 받는다 */
@@ -23,6 +25,7 @@ export interface SplitHandleProps {
  * 세로 스플리터. pointer capture로 잡아서 커서가 창 밖으로 나가도 드래그가 이어진다.
  */
 export function SplitHandle({
+  axis = "x",
   getWidth,
   min,
   max,
@@ -43,18 +46,18 @@ export function SplitHandle({
     }
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    startX.current = event.clientX;
+    startX.current = axis === "y" ? event.clientY : event.clientX;
     startWidth.current = getWidth();
     lastWidth.current = startWidth.current;
     setDragging(true);
-    document.body.classList.add("resizing");
+    document.body.classList.add(axis === "y" ? "resizing-y" : "resizing");
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
       return;
     }
-    const delta = event.clientX - startX.current;
+    const delta = (axis === "y" ? event.clientY : event.clientX) - startX.current;
     const raw = startWidth.current + (invert === true ? -delta : delta);
     const width = clamp(Math.round(raw), min, max());
     lastWidth.current = width;
@@ -67,15 +70,17 @@ export function SplitHandle({
     }
     event.currentTarget.releasePointerCapture(event.pointerId);
     setDragging(false);
-    document.body.classList.remove("resizing");
+    document.body.classList.remove(axis === "y" ? "resizing-y" : "resizing");
     onCommit(lastWidth.current);
   }
 
   return (
     <div
-      className={dragging ? "split-handle dragging" : "split-handle"}
+      className={
+        (axis === "y" ? "split-handle-y" : "split-handle") + (dragging ? " dragging" : "")
+      }
       role="separator"
-      aria-orientation="vertical"
+      aria-orientation={axis === "y" ? "horizontal" : "vertical"}
       aria-label={label}
       title={`${label} (더블클릭: 기본값)`}
       onPointerDown={handlePointerDown}

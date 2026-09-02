@@ -54,3 +54,35 @@ export function writeLayout(layout: LayoutWidths): void {
     // localStorage 실패는 무시 (다음 실행에서 기본값)
   }
 }
+
+// ── 하단 내장 터미널 높이 ──────────────────────────────────────────
+const TERM_HEIGHT_KEY = "gitlanes.termHeight";
+
+export const DEFAULT_TERM_HEIGHT = 240;
+export const TERM_MIN = 120;
+
+/** 터미널은 창 높이의 70%를 넘지 않는다 */
+export function termMax(): number {
+  return Math.max(TERM_MIN, Math.round(window.innerHeight * 0.7));
+}
+
+export function readTermHeight(): number {
+  try {
+    const raw = localStorage.getItem(TERM_HEIGHT_KEY);
+    if (raw === null) {
+      return DEFAULT_TERM_HEIGHT;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) ? clamp(parsed, TERM_MIN, termMax()) : DEFAULT_TERM_HEIGHT;
+  } catch {
+    return DEFAULT_TERM_HEIGHT;
+  }
+}
+
+export function writeTermHeight(height: number): void {
+  try {
+    localStorage.setItem(TERM_HEIGHT_KEY, String(height));
+  } catch {
+    // localStorage 실패는 무시 (다음 실행에서 기본값)
+  }
+}

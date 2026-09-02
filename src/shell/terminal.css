@@ -1,0 +1,95 @@
+/* 하단 내장 터미널. xterm 기본 CSS는 Terminal.tsx에서 함께 import 한다 */
+
+.term-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-content);
+  border-top: 1px solid var(--border-1);
+}
+
+.term-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 6px 0 10px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border-1);
+}
+
+.term-label {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-2);
+}
+
+.term-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.term-note {
+  flex: 0 0 auto;
+  color: var(--deleted);
+  font-size: 10.5px;
+}
+
+.term-close {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 14px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.term-close:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.term-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px 2px 2px 8px;
+  overflow: hidden;
+}
+
+.term-body.hidden {
+  display: none;
+}
+
+/* xterm이 컨테이너를 꽉 채우게 */
+.term-body .xterm,
+.term-body .xterm-viewport,
+.term-body .xterm-screen {
+  height: 100% !important;
+}
+
+.term-body .xterm-viewport {
+  background-color: transparent !important;
+}
+
+.term-unavailable {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  color: var(--fg-2);
+  font-size: 12.5px;
+}

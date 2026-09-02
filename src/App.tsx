@@ -120,9 +120,10 @@ interface TabCommands {
   open: number;
   refresh: number;
   toggleSidebar: number;
+  toggleTerminal: number;
 }
 
-const NO_COMMANDS: TabCommands = { open: 0, refresh: 0, toggleSidebar: 0 };
+const NO_COMMANDS: TabCommands = { open: 0, refresh: 0, toggleSidebar: 0, toggleTerminal: 0 };
 
 /** 탭 스피너 최소 표시 시간(ms). 로컬 레포는 30ms에 끝나 번쩍임만 남는다 */
 const MIN_SPINNER_MS = 250;
@@ -489,6 +490,11 @@ export default function App() {
     bumpCommand(activeIdRef.current, "toggleSidebar");
   }, [bumpCommand]);
 
+  /** ⌃`: 하단 터미널도 탭마다 따로다 (PTY 세션이 탭별) */
+  const handleMenuToggleTerminal = useCallback(() => {
+    bumpCommand(activeIdRef.current, "toggleTerminal");
+  }, [bumpCommand]);
+
   const handleZoom = useCallback((kind: "in" | "out" | "reset") => {
     const next =
       kind === "reset"
@@ -546,6 +552,7 @@ export default function App() {
     gotoTab: handleGotoTab,
     cycleTab: handleCycleTab,
     toggleSidebar: handleMenuToggleSidebar,
+    toggleTerminal: handleMenuToggleTerminal,
     zoom: handleZoom,
     shortcuts: handleShowShortcuts,
     openPath: openInTab,
@@ -561,6 +568,7 @@ export default function App() {
     gotoTab: handleGotoTab,
     cycleTab: handleCycleTab,
     toggleSidebar: handleMenuToggleSidebar,
+    toggleTerminal: handleMenuToggleTerminal,
     zoom: handleZoom,
     shortcuts: handleShowShortcuts,
     openPath: openInTab,
@@ -598,6 +606,7 @@ export default function App() {
     track(listen("menu:prev-tab", () => menuHandlers.current.cycleTab(-1)));
     track(listen("menu:next-tab", () => menuHandlers.current.cycleTab(1)));
     track(listen("menu:toggle-sidebar", () => menuHandlers.current.toggleSidebar()));
+    track(listen("menu:toggle-terminal", () => menuHandlers.current.toggleTerminal()));
     track(listen("menu:zoom-in", () => menuHandlers.current.zoom("in")));
     track(listen("menu:zoom-out", () => menuHandlers.current.zoom("out")));
     track(listen("menu:zoom-reset", () => menuHandlers.current.zoom("reset")));
@@ -825,6 +834,7 @@ function TabPanel({
         openDialogNonce={commands.open}
         refreshNonce={commands.refresh}
         toggleSidebarNonce={commands.toggleSidebar}
+        toggleTerminalNonce={commands.toggleTerminal}
         onLoadingChange={handleLoadingChange}
       />
     </div>

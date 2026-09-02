@@ -78,7 +78,7 @@ xattr -cr /Applications/GitLanes.app
 ## 실행 방법
 
 앱을 열고 \`⌘O\`(Windows/Linux는 \`Ctrl+O\`)로 로컬 git 레포 폴더를 선택하거나, Finder에서 폴더를 창으로 드래그하세요.
-터미널에서는 \`open -a GitLanes <레포경로>\`로 바로 열 수 있습니다. 툴바에서 fetch·pull·push·브랜치·스태시를 쓸 수 있고, push나 브랜치 삭제 같은 작업은 확인 창을 거칩니다.
+터미널에서는 \`open -a GitLanes <레포경로>\`로 바로 열 수 있습니다. 그래프는 읽기 전용이고, git 작업이 필요하면 하단 내장 터미널(⌃\`)에서 평소 쓰던 git 환경 그대로 실행하세요.
 ${PREV:+
 **Full Changelog**: [${PREV}...${TAG}](https://github.com/${REPO}/compare/${PREV}...${TAG})}
 MD
