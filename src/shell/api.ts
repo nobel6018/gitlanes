@@ -7,6 +7,8 @@ import type {
   RepoInfo,
   RepoState,
   SearchMatch,
+  WipArea,
+  WipDetails,
 } from "../types";
 
 export function openRepo(path: string): Promise<RepoInfo> {
@@ -35,6 +37,21 @@ export function getFileDiff(
 /** 커밋 시점의 파일 전문 (git show <sha>:<file>). 바이너리면 Err("binary") */
 export function getFileContent(path: string, sha: string, file: string): Promise<string> {
   return invoke<string>("get_file_content", { path, sha, file });
+}
+
+/** 미커밋 변경 상세 (staged / unstaged / untracked) */
+export function getWipDetails(path: string): Promise<WipDetails> {
+  return invoke<WipDetails>("get_wip_details", { path });
+}
+
+/** 워킹 트리 파일의 unified diff. area에 따라 인덱스/워킹 트리/신규 파일 diff */
+export function getWipFileDiff(path: string, file: string, area: WipArea): Promise<string> {
+  return invoke<string>("get_wip_file_diff", { path, file, area });
+}
+
+/** 워킹 트리의 현재 파일 내용. 바이너리면 Err("binary"), 5MB 초과면 Err("too large") */
+export function getWipFileContent(path: string, file: string): Promise<string> {
+  return invoke<string>("get_wip_file_content", { path, file });
 }
 
 /** 전체 히스토리 검색. index는 load_graph와 같은 topo 순서의 행 번호 */

@@ -123,9 +123,14 @@
   font-style: italic;
 }
 
-/* WIP은 커밋이 아니라 선택도 hover 강조도 없다. 스태시는 클릭 가능하므로 그대로 둔다 */
-.gl-row-wip:hover {
+/* shell이 onSelectWip을 배선하지 않으면 WIP은 예전처럼 선택도 hover 강조도 없다.
+   배선되면 일반 행과 같은 hover 배경 + 선택 하이라이트를 받는다 */
+.gl-row-wip:not(.gl-row-wip-clickable):hover {
   background: transparent;
+}
+
+.gl-row-wip-clickable {
+  cursor: pointer;
 }
 
 .gl-cell {

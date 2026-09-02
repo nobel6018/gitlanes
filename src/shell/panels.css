@@ -911,3 +911,129 @@ kbd.sc-key.wide {
 .hljs-emphasis {
   font-style: italic;
 }
+
+/* ============================================================
+   v0.14: WIP 상세 패널 + DiffPanel 배지
+   ============================================================ */
+
+.wip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+
+.wip-title {
+  flex: 1 1 auto;
+  color: var(--fg-2);
+  font-style: italic;
+  font-size: 13px;
+}
+
+.wip-refreshing {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-size: 10.5px;
+}
+
+.sum-untracked {
+  color: var(--fg-2);
+}
+
+/* 섹션 헤더 (STAGED / UNSTAGED / UNTRACKED) */
+.wip-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wip-count {
+  min-width: 16px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-1);
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 12px;
+  text-align: center;
+}
+
+.wip-count-staged {
+  color: var(--added);
+  border-color: rgba(84, 192, 138, 0.5);
+}
+
+.wip-count-unstaged {
+  color: var(--modified);
+  border-color: rgba(212, 180, 85, 0.5);
+}
+
+/* WIP 패널은 섹션 자체가 파일 목록이라 마지막 구분선을 지운다 */
+.file-nav > .panel-section.files:last-child {
+  border-bottom: none;
+}
+
+/* 로딩 스켈레톤 */
+.wip-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 2px 4px;
+}
+
+.wip-skel-line {
+  height: 10px;
+  border-radius: 3px;
+  background: var(--border-1);
+  opacity: 0.5;
+  animation: wip-pulse 1.2s ease-in-out infinite;
+}
+
+.wip-skel-line.w60 {
+  width: 60%;
+}
+
+.wip-skel-line.w85 {
+  width: 85%;
+}
+
+.wip-skel-line.w45 {
+  width: 45%;
+}
+
+@keyframes wip-pulse {
+  0%,
+  100% {
+    opacity: 0.28;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wip-skel-line {
+    animation: none;
+  }
+}
+
+/* DiffPanel 헤더 배지 */
+.dp-badge {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  height: 15px;
+  border: 1px solid var(--border-1);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--fg-2);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 13px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}

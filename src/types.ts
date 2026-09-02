@@ -172,3 +172,21 @@ export interface RepoState {
 // get_file_content(path, sha, file) -> string
 //   해당 커밋 시점의 파일 전문 (`git show <sha>:<file>`). 바이너리면 Err("binary").
 //   File View(전문 보기)와 split diff 렌더에 사용.
+
+/** Tauri command: get_wip_details(path) — 워킹 디렉토리 변경 파일 목록 (GitKraken WIP 노드) */
+export interface WipDetails {
+  /** 인덱스에 올라간 변경 (git diff --cached) */
+  staged: FileChange[];
+  /** 워킹 트리 변경 중 인덱스에 안 올라간 것 (git diff) */
+  unstaged: FileChange[];
+  /** 추적되지 않는 새 파일 (status 'A', additions = 줄 수, deletions 0) */
+  untracked: FileChange[];
+}
+
+export type WipArea = "staged" | "unstaged" | "untracked";
+
+// get_wip_file_diff(path, file, area) -> string
+//   staged: git diff --cached -- file / unstaged: git diff -- file /
+//   untracked: git diff --no-index /dev/null file. rename은 file=새 경로.
+// get_wip_file_content(path, file) -> string
+//   워킹 트리의 현재 파일 내용. 바이너리 Err("binary"), 5MB 초과 Err("too large").

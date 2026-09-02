@@ -195,6 +195,18 @@ pub struct FileChange {
     pub deletions: u64,
 }
 
+/// `get_wip_details` 응답. 세 영역은 서로 겹칠 수 있다(같은 파일이 staged와 unstaged 양쪽에).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WipDetails {
+    /// 인덱스에 올라간 변경 (`git diff --cached`)
+    pub staged: Vec<FileChange>,
+    /// 워킹 트리 변경 중 인덱스에 안 올라간 것 (`git diff`)
+    pub unstaged: Vec<FileChange>,
+    /// 추적되지 않는 새 파일. status는 항상 Added, deletions는 0이다
+    pub untracked: Vec<FileChange>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Signature {

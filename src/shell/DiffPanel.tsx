@@ -20,6 +20,8 @@ export interface DiffPanelProps {
   loading: boolean;
   error: string | null;
   onClose: () => void;
+  /** 파일명 옆 작은 pill (WIP의 "staged"/"unstaged"/"untracked" 등) */
+  badge?: string;
 }
 
 /** 줄 높이(px). panels.css의 .dp-line 높이와 반드시 일치 */
@@ -247,6 +249,7 @@ export function DiffPanel({
   loading,
   error,
   onClose,
+  badge,
 }: DiffPanelProps) {
   const [prefs, setPrefs] = useState<Prefs>(readPrefs);
   const [scrollTop, setScrollTop] = useState(0);
@@ -589,6 +592,7 @@ export function DiffPanel({
           <span className="path-dir">{dir}</span>
           <span className="path-base">{base}</span>
         </span>
+        {badge !== undefined && badge !== "" && <span className="dp-badge">{badge}</span>}
         <span className="dp-stat">
           {file.additions > 0 && <span className="stat-add">+{file.additions}</span>}
           {file.deletions > 0 && <span className="stat-del">-{file.deletions}</span>}

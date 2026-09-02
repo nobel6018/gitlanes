@@ -326,3 +326,45 @@ get_file_content(path: string, sha: string, file: string) -> string   // git sho
 ## v0.13 (Check for Updates 메뉴)
 - rust-core: macOS App 메뉴의 About 바로 아래(구분선 포함) "Check for Updates…" 항목, Windows/Linux는 Help 메뉴에 (Keyboard Shortcuts 아래 구분선 후). 클릭 시 `menu:check-updates` emit (payload 없음, accelerator 없음)
 - ui-shell: `menu:check-updates` 구독 → 기존 수동 업데이트 확인(useUpdateChecker의 manual 경로, 상단 pill 피드백) 실행. 툴바 버전 라벨 클릭과 동일 동작
+
+## v0.14 (WIP 변경 내용 보기 — GitKraken WIP 노드)
+
+- 사용자 요구: 파일을 수정하고 있으면 그 내용을 볼 수 있어야 한다. GitKraken처럼 WIP 행 클릭 → 오른쪽에 Staged/Unstaged/Untracked 파일 목록 → 파일 클릭 → 메인 영역 DiffPanel에 워킹 트리 diff. 읽기 전용(스테이징 조작 없음)
+
+### 공용
+- `WIP_SHA = "__WIP__"` (constants.ts): WIP 행 선택 시 `selectedSha`에 들어가는 센티널. 실제 sha와 충돌 불가
+- `WipDetails`, `WipArea` (types.ts)
+
+### rust-core
+```
+get_wip_details(path) -> WipDetails
+   staged: git diff --cached --raw --numstat -z (기존 raw+numstat 파서 재사용)
+   unstaged: git diff --raw --numstat -z
+   untracked: git ls-files --others --exclude-standard -z → 각 파일 줄 수를 additions로 (바이너리/대용량은 0), status "A"
+get_wip_file_diff(path, file, area: WipArea) -> string
+   staged → git diff --cached -- <file> / unstaged → git diff -- <file> / untracked → git diff --no-index -- /dev/null <file> (exit code 1이 정상)
+get_wip_file_content(path, file) -> string
+   워킹 트리 파일을 fs로 읽음(레포 루트 밖 경로 거부: canonicalize 후 prefix 검사). 바이너리/5MB 규칙은 get_file_content와 동일
+```
+
+### ui-graph
+- `GraphViewProps.onSelectWip?: () => void`. WIP 의사 행을 클릭 가능하게(커서 pointer, hover 배경) 하고 클릭 시 호출. `selectedSha === WIP_SHA`면 WIP 행에 선택 하이라이트. 키보드 ↑로 첫 커밋 위로 올라가면 WIP 행 선택(onSelectWip), WIP에서 ↓는 첫 커밋. 경로 강조는 WIP 선택 시 HEAD 기준으로(HEAD 조상 밝게)
+
+### ui-panels
+- 신규 `WipDetailPanel` (src/shell/WipDetailPanel.tsx):
+  ```ts
+  export interface WipDetailPanelProps {
+    details: WipDetails | null;   // 로딩 중 null
+    loading: boolean;
+    onOpenFile: (file: FileChange, area: WipArea) => void;
+    openFile: { path: string; area: WipArea } | null;   // 강조용
+  }
+  ```
+  - 헤더 "// WIP" + 요약 "N staged · N unstaged · N untracked". 섹션 3개(STAGED / UNSTAGED / UNTRACKED, 각 개수 뱃지, 비면 섹션 숨김). 파일 행은 기존 FileRow(아이콘·±·28px) 재사용, Path|Tree 토글 공유. 키보드 탐색은 CommitDetailPanel과 동일 규칙
+  - DiffPanel은 변경 없음(diffText/fileText만 받음). 단 헤더에 area 배지("staged"/"unstaged"/"untracked")를 표시할 수 있게 옵션 prop `badge?: string` 추가
+
+### ui-shell
+- WIP 선택 흐름: `onSelectWip` → `selectedSha = WIP_SHA` → 오른쪽에 CommitDetailPanel 대신 WipDetailPanel (get_wip_details 로드). 파일 열기 → get_wip_file_diff(area) → DiffPanel(badge=area), File View는 get_wip_file_content
+- 자동 새로고침 폴링에서 wip 요약이 바뀌면(이미 감지 중) WIP가 선택돼 있을 때 get_wip_details 재로드 + 열린 파일 diff 재요청 (파일이 사라졌으면 DiffPanel 닫기)
+- WIP_SHA는 검색/퀵스위처/scrollTarget 대상이 아님. 컨텍스트 메뉴(copy sha)는 WIP에서 비활성
+- Go to HEAD, Esc 선택 해제 등 기존 동작 유지. devApp mock에 3개 command 목(staged 2, unstaged 3, untracked 1)

@@ -14,6 +14,7 @@ import type {
   RepoState,
   SearchMatch,
   StashInfo,
+  WipDetails,
   WipInfo,
 } from "../types";
 import "../theme.css";
@@ -42,6 +43,74 @@ function currentToken(): string {
 function currentWip(): WipInfo {
   return flipped() ? { changedFiles: 9, stagedFiles: 4 } : { changedFiles: 7, stagedFiles: 3 };
 }
+/**
+ * WIP 상세. currentWip()의 요약(7 changed / 3 staged → 9 / 4)과 어긋나지 않게
+ * staged 2 + unstaged 3 + untracked 1로 두고, 30초 뒤에는 unstaged가 하나 늘어난다.
+ */
+function mockWipDetails(): WipDetails {
+  const unstaged: FileChange[] = [
+    { path: "src/shell/RepoWorkspace.tsx", oldPath: null, status: "M", additions: 42, deletions: 11 },
+    { path: "src/shell/shell.css", oldPath: null, status: "M", additions: 18, deletions: 2 },
+    { path: "src/graph/GraphView.tsx", oldPath: null, status: "M", additions: 7, deletions: 7 },
+  ];
+  if (flipped()) {
+    unstaged.push({
+      path: "src/shell/WipDetailPanel.tsx",
+      oldPath: null,
+      status: "M",
+      additions: 23,
+      deletions: 4,
+    });
+  }
+  return {
+    staged: [
+      { path: "src/shell/api.ts", oldPath: null, status: "M", additions: 15, deletions: 0 },
+      { path: "src/types.ts", oldPath: null, status: "M", additions: 9, deletions: 1 },
+    ],
+    unstaged,
+    untracked: [
+      { path: "docs/wip-viewer.md", oldPath: null, status: "A", additions: 64, deletions: 0 },
+    ],
+  };
+}
+
+/** area마다 다른 합성 diff. 헤더 배지와 내용이 짝이 맞는지 눈으로 확인할 수 있다 */
+function mockWipDiff(file: string, area: string): string {
+  if (area === "untracked") {
+    const lines = [
+      `diff --git a/dev/null b/${file}`,
+      "new file mode 100644",
+      "--- /dev/null",
+      `+++ b/${file}`,
+      "@@ -0,0 +1,6 @@",
+      "+# WIP 뷰어",
+      "+",
+      "+워킹 트리에만 있는 새 파일이다.",
+      "+아직 git이 추적하지 않는다.",
+      "+",
+      "+- staged / unstaged / untracked 세 영역",
+    ];
+    return lines.join("\n");
+  }
+  const marker = area === "staged" ? "인덱스에 올라간 변경" : "아직 스테이지하지 않은 변경";
+  return [
+    `diff --git a/${file} b/${file}`,
+    "index 8ac31f2..b5d90e7 100644",
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    `@@ -18,7 +18,10 @@ // ${marker}`,
+    " import { useCallback } from \"react\";",
+    " ",
+    "-const AREA = \"none\";",
+    `+const AREA = \"${area}\";`,
+    "+",
+    "+/** 하네스 합성 diff */",
+    "+export const WIP_MARKER = true;",
+    " ",
+    " export function noop(): void {}",
+  ].join("\n");
+}
+
 /** 이 파일을 열면 5,000줄짜리 diff가 와서 DiffView 가상 스크롤을 검증할 수 있다 */
 const HUGE_DIFF_FILE = "src/generated/api-schema.ts";
 /** get_file_content가 Err("binary")를 돌려주는 파일 (뷰어 오류 표시 검증용) */
@@ -513,6 +582,26 @@ mockIPC(async (cmd, payload) => {
       const picked = MOCK_PICK_PATHS[pickCursor % MOCK_PICK_PATHS.length];
       pickCursor += 1;
       return picked;
+    }
+
+    case "get_wip_details":
+      await sleep(70);
+      return mockWipDetails();
+
+    case "get_wip_file_diff": {
+      await sleep(90);
+      const file = String(readArg(payload, "file") ?? "");
+      const area = String(readArg(payload, "area") ?? "unstaged");
+      return mockWipDiff(file, area);
+    }
+
+    case "get_wip_file_content": {
+      await sleep(100);
+      const file = String(readArg(payload, "file") ?? "");
+      if (file === BINARY_FILE) {
+        throw new Error("binary");
+      }
+      return mockFileContent(file);
     }
 
     case "get_file_content": {

@@ -5,13 +5,15 @@ import type { CSSProperties, ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraphView } from "../graph";
-import { COMMITS_PER_PAGE } from "../constants";
+import { COMMITS_PER_PAGE, WIP_SHA } from "../constants";
 import type {
   FileChange,
   GraphData,
   RefEntry,
   RepoInfo,
   SearchMatch,
+  WipArea,
+  WipDetails,
   WipInfo,
 } from "../types";
 import {
@@ -19,6 +21,9 @@ import {
   getFileContent,
   getFileDiff,
   getRemoteUrl,
+  getWipDetails,
+  getWipFileContent,
+  getWipFileDiff,
   getRepoState,
   listRefs,
   loadGraph,
@@ -33,6 +38,7 @@ import { CommitDetailPanel } from "./CommitDetailPanel";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import { DiffPanel } from "./DiffPanel";
+import { WipDetailPanel } from "./WipDetailPanel";
 import { FilterResults } from "./FilterResults";
 import { QuickSwitcher } from "./QuickSwitcher";
 import {
@@ -158,6 +164,15 @@ type MenuState =
   | { kind: "commit"; sha: string; x: number; y: number }
   | { kind: "repo"; x: number; y: number };
 
+/**
+ * 메인 영역 뷰어가 펼친 파일. area가 null이면 커밋 파일,
+ * 값이 있으면 워킹 트리(WIP) 파일이다
+ */
+interface OpenFile {
+  file: FileChange;
+  area: WipArea | null;
+}
+
 /** 그래프 DATE 컬럼 표시 모드 */
 type DateMode = "absolute" | "relative";
 
@@ -231,7 +246,11 @@ export function RepoWorkspace({
   const [filterMode, setFilterMode] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   /** 메인 영역에 펼친 파일. null이면 그래프(또는 필터 목록)를 보여준다 */
-  const [openFile, setOpenFile] = useState<FileChange | null>(null);
+  const [openFile, setOpenFile] = useState<OpenFile | null>(null);
+  const [wipDetails, setWipDetails] = useState<WipDetails | null>(null);
+  const [wipLoading, setWipLoading] = useState(false);
+  /** wip 요약이 바뀔 때마다 오른다. WIP 상세와 열린 WIP diff를 다시 읽는 트리거 */
+  const [wipNonce, setWipNonce] = useState(0);
   const [diffText, setDiffText] = useState<string | null>(null);
   const [fileText, setFileText] = useState<string | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
@@ -630,8 +649,14 @@ export function RepoWorkspace({
     }
     getRepoState(repo.path)
       .then((state) => {
-        if (state.graphToken !== graphToken.current || !sameWip(state.wip, wipRef.current)) {
+        const wipChanged = !sameWip(state.wip, wipRef.current);
+        if (state.graphToken !== graphToken.current || wipChanged) {
           searchCache.current.clear();
+          if (wipChanged) {
+            // 워킹 트리 파일은 내용이 바뀌었을 수 있으니 캐시를 버리고 다시 읽는다
+            fileTextCache.current.clear();
+            setWipNonce((n) => n + 1);
+          }
           reloadFromStart();
         }
       })
@@ -901,7 +926,7 @@ export function RepoWorkspace({
   }, [sidebarOpen]);
 
   const copySelectedMessage = useCallback(() => {
-    if (selectedSha === null) {
+    if (selectedSha === null || selectedSha === WIP_SHA) {
       return;
     }
     const row = data.rows.find((r) => r.sha === selectedSha);
@@ -923,7 +948,7 @@ export function RepoWorkspace({
   const fileKey =
     repo === null || openFile === null || selectedSha === null
       ? null
-      : `${selectedSha}\u0000${openFile.path}`;
+      : `${selectedSha}\u0000${openFile.area ?? ""}\u0000${openFile.file.path}`;
   const fileKeyRef = useRef(fileKey);
   fileKeyRef.current = fileKey;
 
@@ -946,7 +971,11 @@ export function RepoWorkspace({
     setFileText(null);
     setDiffError(null);
     setDiffLoading(true);
-    getFileDiff(repo.path, selectedSha, openFile.path, openFile.oldPath)
+    const pending =
+      openFile.area === null
+        ? getFileDiff(repo.path, selectedSha, openFile.file.path, openFile.file.oldPath)
+        : getWipFileDiff(repo.path, openFile.file.path, openFile.area);
+    pending
       .then((text) => {
         if (alive) {
           setDiffText(text);
@@ -965,14 +994,15 @@ export function RepoWorkspace({
     return () => {
       alive = false;
     };
-  }, [repo, openFile, selectedSha]);
+    // wipNonce: 워킹 트리가 바뀌면 열린 WIP diff를 다시 읽는다
+  }, [repo, openFile, selectedSha, wipNonce]);
 
   /** File View/split이 파일 전문을 필요로 할 때만 get_file_content를 부른다 */
   const handleRequestFileText = useCallback(() => {
     if (repo === null || openFile === null || selectedSha === null) {
       return;
     }
-    const key = `${selectedSha}\u0000${openFile.path}`;
+    const key = `${selectedSha}\u0000${openFile.area ?? ""}\u0000${openFile.file.path}`;
     const cached = fileTextCache.current.get(key);
     if (cached !== undefined) {
       setFileText(cached);
@@ -983,7 +1013,11 @@ export function RepoWorkspace({
     }
     fileTextReq.current = key;
     setDiffLoading(true);
-    getFileContent(repo.path, selectedSha, openFile.path)
+    const pending =
+      openFile.area === null
+        ? getFileContent(repo.path, selectedSha, openFile.file.path)
+        : getWipFileContent(repo.path, openFile.file.path);
+    pending
       .then((text) => {
         fileTextCache.current.set(key, text);
         if (fileKeyRef.current === key) {
@@ -1006,7 +1040,68 @@ export function RepoWorkspace({
       });
   }, [repo, openFile, selectedSha]);
 
+  const isWipSelected = selectedSha === WIP_SHA;
+
+  // WIP 행을 고르면 커밋 상세 대신 워킹 트리 변경 목록을 읽는다 (get_commit_details 호출 없음)
+  useEffect(() => {
+    if (repo === null || !isWipSelected) {
+      setWipDetails(null);
+      setWipLoading(false);
+      return;
+    }
+    let alive = true;
+    setWipLoading(true);
+    getWipDetails(repo.path)
+      .then((details) => {
+        if (alive) {
+          setWipDetails(details);
+        }
+      })
+      .catch((err: unknown) => {
+        if (alive) {
+          showError(errorMessage(err));
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setWipLoading(false);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [repo, isWipSelected, wipNonce, showError]);
+
+  // 워킹 트리가 깨끗해지면 WIP 행 자체가 사라지므로 선택도 푼다
+  useEffect(() => {
+    if (isWipSelected && graph !== null && graph.wip === null) {
+      setSelectedSha(null);
+    }
+  }, [isWipSelected, graph]);
+
+  // 폴링으로 목록이 갱신됐는데 열어둔 WIP 파일이 사라졌으면 뷰어를 닫는다
+  useEffect(() => {
+    if (openFile === null || openFile.area === null || wipDetails === null) {
+      return;
+    }
+    const list = wipDetails[openFile.area];
+    if (!list.some((entry) => entry.path === openFile.file.path)) {
+      setOpenFile(null);
+    }
+  }, [wipDetails, openFile]);
+
+  const openCommitFile = useCallback((file: FileChange) => {
+    setOpenFile({ file, area: null });
+  }, []);
+
+  const openWipFile = useCallback((file: FileChange, area: WipArea) => {
+    setOpenFile({ file, area });
+  }, []);
+
   const closeFile = useCallback(() => setOpenFile(null), []);
+
+  /** WIP 의사 행 클릭. 센티널을 선택으로 넣으면 오른쪽이 WIP 패널로 바뀐다 */
+  const selectWip = useCallback(() => setSelectedSha(WIP_SHA), []);
 
   /**
    * Esc는 한 번에 한 단계만 되돌린다.
@@ -1085,7 +1180,12 @@ export function RepoWorkspace({
         setQuickOpen(true);
         return;
       }
-      if (event.code === "KeyC" && selectedSha !== null && !typingOrSelecting()) {
+      if (
+        event.code === "KeyC" &&
+        selectedSha !== null &&
+        selectedSha !== WIP_SHA &&
+        !typingOrSelecting()
+      ) {
         event.preventDefault();
         copySha(selectedSha);
       }
@@ -1213,7 +1313,8 @@ export function RepoWorkspace({
         <div className="graph-area">
           {openFile !== null ? (
             <DiffPanel
-              file={openFile}
+              file={openFile.file}
+              badge={openFile.area ?? undefined}
               diffText={diffText}
               fileText={fileText}
               onRequestFileText={handleRequestFileText}
@@ -1242,6 +1343,7 @@ export function RepoWorkspace({
               scrollTarget={scrollTarget}
               onRowDoubleClick={copySha}
               onRowContextMenu={handleRowContextMenu}
+              onSelectWip={selectWip}
               highlightQuery={query}
               dateMode={dateMode}
               onToggleDateMode={handleToggleDateMode}
@@ -1260,7 +1362,19 @@ export function RepoWorkspace({
             onReset={() => resetWidth("detail")}
           />
         )}
-        {selectedSha !== null && (
+        {isWipSelected && (
+          <WipDetailPanel
+            details={wipDetails}
+            loading={wipLoading}
+            onOpenFile={openWipFile}
+            openFile={
+              openFile === null || openFile.area === null
+                ? null
+                : { path: openFile.file.path, area: openFile.area }
+            }
+          />
+        )}
+        {selectedSha !== null && !isWipSelected && (
           <CommitDetailPanel
             key={selectedSha}
             repoPath={repo.path}
@@ -1268,8 +1382,8 @@ export function RepoWorkspace({
             isStash={data.stashes.some((stash) => stash.sha === selectedSha)}
             onSelectSha={setSelectedSha}
             onError={showError}
-            onOpenFile={setOpenFile}
-            openFilePath={openFile?.path ?? null}
+            onOpenFile={openCommitFile}
+            openFilePath={openFile === null || openFile.area !== null ? null : openFile.file.path}
           />
         )}
       </div>

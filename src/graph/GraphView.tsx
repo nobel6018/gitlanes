@@ -2,7 +2,7 @@
 // 접점 계약: CONTRACTS.md의 "GraphView 컴포넌트" 절. GraphViewProps는 동결이다.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
-import { ROW_HEIGHT } from "../constants";
+import { ROW_HEIGHT, WIP_SHA } from "../constants";
 import type { CommitRow, GraphData, StashInfo, WipInfo } from "../types";
 import { drawGraph } from "./canvas";
 import { buildPseudoLayout } from "./pseudo";
@@ -54,6 +54,11 @@ export interface GraphViewProps {
   dateMode?: DateMode;
   /** DATE 헤더 클릭 시 호출 (ui-shell이 토글·저장) */
   onToggleDateMode?: () => void;
+  /**
+   * WIP 의사 행 선택. 핸들러가 없으면 WIP 행은 예전처럼 클릭 불가로 남는다.
+   * shell은 이 콜백에서 selectedSha를 WIP_SHA로 바꾼다
+   */
+  onSelectWip?: () => void;
 }
 
 /** 보이는 범위 위아래로 더 그려두는 행 수 */
@@ -193,22 +198,35 @@ const Row = memo(function Row({
   );
 });
 
-/** 커밋이 아닌 의사 행이라 선택/클릭이 없다. 가상 스크롤 인덱스에는 포함된다 */
+/**
+ * 커밋이 아닌 의사 행이지만 워킹 트리 변경 상세가 있어 선택할 수 있다.
+ * onSelect가 없으면(shell이 배선하지 않으면) 클릭도 hover 강조도 없는 예전 동작이다.
+ */
 function WipRow({
   wip,
   top,
+  selected,
   graphWidth,
   dimmed,
+  onSelect,
 }: {
   wip: WipInfo;
   top: number;
+  selected: boolean;
   graphWidth: number;
   dimmed: boolean;
+  onSelect?: () => void;
 }) {
   return (
     <div
-      className={"gl-row gl-row-pseudo gl-row-wip" + (dimmed ? " gl-row-dim" : "")}
+      className={
+        "gl-row gl-row-pseudo gl-row-wip" +
+        (onSelect ? " gl-row-wip-clickable" : "") +
+        (selected ? " gl-row-selected" : "") +
+        (dimmed ? " gl-row-dim" : "")
+      }
       style={{ top, height: ROW_HEIGHT }}
+      onClick={onSelect}
     >
       <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
@@ -329,6 +347,7 @@ export function GraphView({
   highlightQuery = "",
   dateMode = "absolute",
   onToggleDateMode,
+  onSelectWip,
 }: GraphViewProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -484,11 +503,28 @@ export function GraphView({
   );
   const { displayCount, toDisplay, toRowIndex, pseudoAt } = layout;
 
-  // 경로 강조. 자식 맵은 rows에서 1회만 만들고, 집합은 선택이 바뀔 때만 다시 판다
+  /** WIP 의사 행의 화면 행 인덱스. 없으면 -1 */
+  const wipDisplayIndex = useMemo(() => {
+    const wipPseudo = layout.pseudos.find((item) => item.kind === "wip");
+    return wipPseudo ? wipPseudo.displayIndex : -1;
+  }, [layout]);
+  const wipSelected = selectedSha === WIP_SHA && wipDisplayIndex >= 0;
+
+  // 경로 강조. 자식 맵은 rows에서 1회만 만들고, 집합은 선택이 바뀔 때만 다시 판다.
+  // WIP은 HEAD의 (아직 없는) 자식이라 HEAD를 기준 삼되 자손 방향은 켜지 않는다
   const childrenMap = useMemo(() => buildChildrenMap(rows), [rows]);
+  const headSha = useMemo(() => rows.find((row) => row.isHead)?.sha ?? null, [rows]);
+  const highlightSha = selectedSha === WIP_SHA ? headSha : selectedSha;
   const highlight = useMemo(
-    () => buildHighlight(rows, shaToRow, childrenMap, selectedSha),
-    [rows, shaToRow, childrenMap, selectedSha],
+    () =>
+      buildHighlight(
+        rows,
+        shaToRow,
+        childrenMap,
+        highlightSha,
+        selectedSha !== WIP_SHA,
+      ),
+    [rows, shaToRow, childrenMap, highlightSha, selectedSha],
   );
   const isDimmed = useCallback(
     (rowIndex: number) => highlight !== null && highlight[rowIndex] !== 1,
@@ -516,6 +552,12 @@ export function GraphView({
     onSelectRef.current = onSelect;
   }, [onSelect]);
   const handleSelect = useCallback((sha: string) => onSelectRef.current(sha), []);
+
+  const onSelectWipRef = useRef(onSelectWip);
+  useEffect(() => {
+    onSelectWipRef.current = onSelectWip;
+  }, [onSelectWip]);
+  const handleSelectWip = useCallback(() => onSelectWipRef.current?.(), []);
 
   const onDoubleClickRef = useRef(onRowDoubleClick);
   useEffect(() => {
@@ -655,6 +697,11 @@ export function GraphView({
       return;
     }
     lastNonceRef.current = scrollTarget.nonce;
+    // WIP은 실제 sha가 아니라 목록 맨 위의 의사 행이다
+    if (scrollTarget.sha === WIP_SHA) {
+      scrollToDisplayIndex(0, "top");
+      return;
+    }
     const index = shaToRow.get(scrollTarget.sha);
     if (index !== undefined) {
       scrollToDisplayIndex(toDisplay(index), "center");
@@ -669,10 +716,13 @@ export function GraphView({
     }
   }, [scrollTarget, shaToRow, layout, toDisplay, scrollToDisplayIndex]);
 
-  /** 현재 선택의 화면 행 인덱스. 스태시가 선택돼 있으면 그 의사 행, 선택이 없으면 -1 */
+  /** 현재 선택의 화면 행 인덱스. 스태시/WIP가 선택돼 있으면 그 의사 행, 선택이 없으면 -1 */
   const selectedDisplayIndex = useCallback((): number => {
     if (selectedSha === null) {
       return -1;
+    }
+    if (selectedSha === WIP_SHA) {
+      return wipDisplayIndex;
     }
     const rowIndex = shaToRow.get(selectedSha);
     if (rowIndex !== undefined) {
@@ -682,7 +732,7 @@ export function GraphView({
       (item) => item.kind === "stash" && item.stash.sha === selectedSha,
     );
     return pseudo ? pseudo.displayIndex : -1;
-  }, [selectedSha, shaToRow, layout, toDisplay]);
+  }, [selectedSha, wipDisplayIndex, shaToRow, layout, toDisplay]);
 
   /** start에서 dir 방향으로 처음 만나는 커밋 행. 의사 행(WIP, 스태시)은 건너뛴다 */
   const findCommitDisplay = useCallback(
@@ -714,9 +764,18 @@ export function GraphView({
         return;
       }
 
+      // WIP 행은 목록 맨 위 커밋보다 위에 있으니 Home의 도착지도 WIP가 우선이다
+      const wipSelectable = wipDisplayIndex >= 0 && onSelectWipRef.current !== undefined;
       if (toFirst) {
-        onSelectRef.current(rows[0].sha);
-        scrollToDisplayIndex(toDisplay(0), "top");
+        if (wipSelectable) {
+          onSelectWipRef.current?.();
+          // 보통 WIP가 0번 행이라 결과는 맨 위 스크롤과 같다.
+          // HEAD가 첫 행이 아닌 레포에서도 선택 행이 화면에 남도록 nearest를 쓴다
+          scrollToDisplayIndex(wipDisplayIndex, "nearest");
+        } else {
+          onSelectRef.current(rows[0].sha);
+          scrollToDisplayIndex(toDisplay(0), "top");
+        }
         return;
       }
       if (toLast) {
@@ -741,6 +800,13 @@ export function GraphView({
           ? Math.max(0, Math.min(displayCount - 1, from + step * perPage))
           : from + step;
 
+      // 첫 커밋에서 한 칸 위는 WIP 행이다. 다른 의사 행과 달리 여기서 멈춘다
+      if (step === -1 && target === wipDisplayIndex && wipSelectable) {
+        onSelectWipRef.current?.();
+        scrollToDisplayIndex(wipDisplayIndex, "nearest");
+        return;
+      }
+
       let next = findCommitDisplay(target, step);
       // 페이지 이동이 목록 끝의 의사 행 구간에 떨어지면 반대 방향에서 가장 가까운 커밋을 잡는다
       if (next < 0 && byPage) {
@@ -757,6 +823,7 @@ export function GraphView({
       rowCount,
       displayCount,
       size.height,
+      wipDisplayIndex,
       toDisplay,
       toRowIndex,
       selectedDisplayIndex,
@@ -817,8 +884,10 @@ export function GraphView({
             key={pseudo.key}
             wip={pseudo.wip}
             top={top}
+            selected={wipSelected}
             graphWidth={graphWidth}
             dimmed={rowCount > 0 && isDimmed(pseudo.anchorRow)}
+            onSelect={onSelectWip ? handleSelectWip : undefined}
           />
         ),
       );

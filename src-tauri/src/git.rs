@@ -60,6 +60,31 @@ where
     Ok(output.stdout)
 }
 
+/// git을 실행해 stdout을 돌려주되, 종료 코드 1을 성공으로 본다.
+///
+/// `git diff --no-index`는 두 파일이 다르면 1로 끝난다. 그게 정상 결과라서 [`run`]의
+/// 실패 판정(성공 아니면 오류)을 그대로 쓸 수 없다. 2 이상만 실제 오류로 본다.
+pub fn run_allow_diff<P, S>(repo: P, args: &[S]) -> Result<String, String>
+where
+    P: AsRef<OsStr>,
+    S: AsRef<OsStr>,
+{
+    let output = base_command(repo)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
+
+    if !output.status.success() && output.status.code() != Some(1) {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err("git 명령이 실패했습니다".to_string());
+        }
+        return Err(stderr);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// 콜백이 계속할지 멈출지 알려주는 신호. `Stop`이면 남은 출력을 버리고 프로세스를 정리한다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
