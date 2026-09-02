@@ -1445,13 +1445,13 @@
 /* ---------- 세로 스플리터 ---------- */
 
 .split-handle {
-  flex: 0 0 5px;
+  flex: 0 0 9px;
   position: relative;
   z-index: 1;
   cursor: col-resize;
   background: transparent;
-  /* 얇은 핸들도 잡기 쉽게 좌우로 살짝 넓힌다 */
-  margin: 0 -2px;
+  /* 보이는 선은 1px이지만 잡는 영역은 9px. 음수 마진으로 레이아웃 점유는 1px만 */
+  margin: 0 -4px;
 }
 
 .split-handle::after {
@@ -1459,7 +1459,7 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 2px;
+  left: 4px;
   width: 1px;
   background: transparent;
   transition: background 90ms ease-out;
@@ -1467,7 +1467,7 @@
 
 .split-handle:hover::after,
 .split-handle.dragging::after {
-  left: 1px;
+  left: 3px;
   width: 3px;
   background: var(--accent);
 }
@@ -1613,10 +1613,11 @@ body.resizing * {
 /* 가로 스플리터: 터미널 상단 경계 */
 .split-handle-y {
   position: absolute;
-  top: -3px;
+  /* 도크 경계 위아래로 5px씩. 절대 배치라 레이아웃은 밀리지 않는다 */
+  top: -5px;
   left: 0;
   right: 0;
-  height: 7px;
+  height: 11px;
   z-index: 3;
   cursor: row-resize;
 }
@@ -1624,15 +1625,18 @@ body.resizing * {
 .split-handle-y::after {
   content: "";
   position: absolute;
-  top: 3px;
+  top: 5px;
   left: 0;
   right: 0;
   height: 1px;
   background: transparent;
+  transition: background 90ms ease-out;
 }
 
 .split-handle-y:hover::after,
 .split-handle-y.dragging::after {
+  top: 4px;
+  height: 3px;
   background: var(--accent);
 }
 
