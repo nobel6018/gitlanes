@@ -76,6 +76,11 @@ const LOAD_MORE_THRESHOLD_PX = 300;
 /** SHA 컬럼에 표시할 자릿수 (shortSha는 10자) */
 const SHA_DISPLAY_LENGTH = 8;
 const FOOTER_HEIGHT = 24;
+/**
+ * hover 강조를 적용하기까지 커서가 같은 행에 머물러야 하는 시간(ms).
+ * 스쳐 지나가는 행마다 강조가 바뀌는 산만함을 막는 hover intent 지연.
+ */
+const HOVER_DELAY_MS = 120;
 /** theme.css를 못 읽는 환경(단독 테스트 등)에서만 쓰이는 --bg-content 기본값 */
 const BG_FALLBACK = "#1C1E23";
 
@@ -540,37 +545,77 @@ export function GraphView({
   // 같은 행 위에서 mousemove가 계속 들어오므로 setState 이전에 ref로 먼저 걸러낸다
   const hoveredRef = useRef(hovered);
 
+  /** 타이머 만료를 기다리는 행. 아직 강조에 반영되지 않았다 */
+  const hoverPendingRef = useRef<{ sha: string; ancestorsOnly: boolean } | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelHoverTimer = useCallback(() => {
+    if (hoverTimerRef.current !== null) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+    hoverPendingRef.current = null;
+  }, []);
+
   // hover 강조는 선택이 없을 때만 쓴다. 선택이 생기면 그 즉시 hover 기준을 버린다
   const hoverActive = hoverHighlight === true && selectedSha === null;
   const hoverActiveRef = useRef(hoverActive);
   useEffect(() => {
     hoverActiveRef.current = hoverActive;
     if (!hoverActive) {
+      cancelHoverTimer();
       hoveredRef.current = null;
       setHovered(null);
     }
-  }, [hoverActive]);
+  }, [hoverActive, cancelHoverTimer]);
 
-  const handleHover = useCallback((sha: string, ancestorsOnly: boolean) => {
-    if (!hoverActiveRef.current) {
-      return;
-    }
-    const prev = hoveredRef.current;
-    if (prev !== null && prev.sha === sha && prev.ancestorsOnly === ancestorsOnly) {
-      return;
-    }
-    const next = { sha, ancestorsOnly };
-    hoveredRef.current = next;
-    setHovered(next);
-  }, []);
+  // 언마운트 시 대기 중인 타이머가 남아 setState를 부르지 않게 정리한다
+  useEffect(() => cancelHoverTimer, [cancelHoverTimer]);
+
+  /**
+   * hover intent: 행에 들어와도 바로 강조하지 않고 HOVER_DELAY_MS 뒤에 반영한다.
+   * 기다리는 동안 이전 강조는 그대로 두고(깜빡임 방지), 다른 행으로 넘어가면 타이머를 다시 건다.
+   */
+  const handleHover = useCallback(
+    (sha: string, ancestorsOnly: boolean) => {
+      if (!hoverActiveRef.current) {
+        return;
+      }
+      const applied = hoveredRef.current;
+      if (applied !== null && applied.sha === sha && applied.ancestorsOnly === ancestorsOnly) {
+        // 이미 강조된 행으로 되돌아왔다. 다른 행으로 넘어가려던 예약은 취소한다
+        cancelHoverTimer();
+        return;
+      }
+      const pending = hoverPendingRef.current;
+      // 같은 행 위의 mousemove로 타이머를 리셋하면 커서가 미세하게 흔들리는 동안 영원히 만료되지 않는다
+      if (pending !== null && pending.sha === sha && pending.ancestorsOnly === ancestorsOnly) {
+        return;
+      }
+      cancelHoverTimer();
+      const next = { sha, ancestorsOnly };
+      hoverPendingRef.current = next;
+      hoverTimerRef.current = setTimeout(() => {
+        hoverTimerRef.current = null;
+        hoverPendingRef.current = null;
+        if (!hoverActiveRef.current) {
+          return;
+        }
+        hoveredRef.current = next;
+        setHovered(next);
+      }, HOVER_DELAY_MS);
+    },
+    [cancelHoverTimer],
+  );
 
   const clearHover = useCallback(() => {
+    cancelHoverTimer();
     if (hoveredRef.current === null) {
       return;
     }
     hoveredRef.current = null;
     setHovered(null);
-  }, []);
+  }, [cancelHoverTimer]);
 
   // 경로 강조. 자식 맵은 rows에서 1회만 만들고, 집합은 기준 커밋이 바뀔 때만 다시 판다.
   // WIP은 HEAD의 (아직 없는) 자식이라 HEAD를 기준 삼되 자손 방향은 켜지 않는다
