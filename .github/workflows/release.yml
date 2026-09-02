@@ -18,7 +18,26 @@ jobs:
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
       prerelease: ${{ steps.set.outputs.prerelease }}
+      notes: ${{ steps.notes.outputs.notes }}
+      title: ${{ steps.notes.outputs.title }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 직전 태그까지 거슬러 릴리스 노트를 만든다
+
+      # 릴리스 노트: 변경 목록(PR/커밋 링크), 버전·커밋·시간, 받을 파일, 첫 실행 안내
+      - id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          body="$(.github/scripts/release-notes.sh "${GITHUB_REF_NAME}" "${GITHUB_REPOSITORY}")"
+          {
+            echo "notes<<GL_NOTES_EOF"
+            echo "$body"
+            echo "GL_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "title=GitLanes ${GITHUB_REF_NAME} · $(TZ=Asia/Seoul date '+%Y-%m-%d') ($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
+
       - id: set
         run: |
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
@@ -73,7 +92,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "GitLanes ${{ github.ref_name }}"
+          releaseName: ${{ needs.plan.outputs.title }}
+          releaseBody: ${{ needs.plan.outputs.notes }}
           releaseDraft: false
           prerelease: ${{ needs.plan.outputs.prerelease }}
           args: ${{ matrix.args }}
