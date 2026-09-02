@@ -1,0 +1,66 @@
+/* ---------- 탭 드래그 재정렬 / 탭 컨텍스트 메뉴 (ui-tabs) ----------
+   shell.css의 .tab / .tabbar 규칙은 그대로 두고, 여기서는 새 클래스만 더한다 */
+
+/* 드래그 중에는 탭 전체가 잡힌 상태로 보이게 커서를 바꾼다 */
+.tabbar.tabs-dragging,
+.tabbar.tabs-dragging .tab,
+.tabbar.tabs-dragging .tab-label {
+  cursor: grabbing;
+}
+
+/* 끌고 있는 원본 탭은 반투명하게 남긴다 */
+.tab.tabs-drag-source {
+  opacity: 0.45;
+}
+
+/* 삽입 위치 표시선. .tabbar-scroll이 position: relative라 offsetLeft 기준으로 놓인다 */
+.tabs-drop-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* 탭 우클릭 메뉴. 톤은 shell.css의 .context-menu와 맞춘다 */
+.tabs-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid var(--border-1);
+  border-radius: 5px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+}
+
+.tabs-menu-item {
+  display: block;
+  width: 100%;
+  padding: 5px 9px;
+  border-radius: 3px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--fg-1);
+  white-space: nowrap;
+}
+
+.tabs-menu-item:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.tabs-menu-item:disabled {
+  color: var(--fg-2);
+  cursor: default;
+}
+
+.tabs-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-1);
+}

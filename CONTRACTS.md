@@ -209,10 +209,10 @@ onToggleDateMode?: () => void;
 기존 props 유지 + 추가:
 ```ts
 onReorder: (fromIndex: number, toIndex: number) => void;   // 드래그 재정렬 결과
-onCloseOthers: (id: string) => void;
-onCloseToRight: (id: string) => void;
-onCopyPath: (id: string) => void;
-onRevealInFinder: (id: string) => void;
+onCloseOthers: (id: number) => void;   // TabInfo.id는 number
+onCloseToRight: (id: number) => void;
+onCopyPath: (id: number) => void;
+onRevealInFinder: (id: number) => void;
 onNewTab: () => void;                                       // 빈 영역 더블클릭 (기존 + 버튼과 동일 콜백)
 ```
 - 드래그: HTML5 DnD 대신 pointer 이벤트(pointer capture)로 구현, 드래그 중 고스트/삽입 위치 표시, 드롭 시 onReorder 1회 호출. 탭 클릭(활성화)과 드래그 시작을 이동 거리 4px로 구분
@@ -226,7 +226,7 @@ onNewTab: () => void;                                       // 빈 영역 더블
 onCopyRefName: (name: string) => void;
 onOpenRefOnRemote?: (ref: RefEntry) => void;   // remoteUrl이 있을 때만 전달됨 (없으면 undefined → 메뉴 항목 숨김)
 ```
-- 상단 필터 입력창: placeholder "Filter branches", 대소문자 무시 부분일치로 LOCAL/REMOTE/TAGS 모두 필터, 매치 없는 섹션은 접지 말고 "No matches" 한 줄. 입력 시 매치 문자열 <mark> 강조. Esc로 클리어. 외부에서 포커스할 수 있게 `filterInputRef?: RefObject<HTMLInputElement>` prop (ui-shell이 ⌘⇧F 대신 **⌘⌥F**로 포커스 — Shift 회피)
+- 상단 필터 입력창: placeholder "Filter branches", 대소문자 무시 부분일치로 LOCAL/REMOTE/TAGS 모두 필터, 매치 없는 섹션은 접지 말고 "No matches" 한 줄. 입력 시 매치 문자열 <mark> 강조. Esc로 클리어. 외부에서 포커스할 수 있게 `filterInputRef?: RefObject<HTMLInputElement | null>` prop (ui-shell이 ⌘⇧F 대신 **⌘⌥F**로 포커스 — Shift 회피)
 - 우클릭 메뉴(SidebarContextMenu): Copy Name, Open on Remote(있을 때), Jump to Commit(기존 클릭 동작과 동일)
 
 ### ui-panels 컴포넌트
@@ -276,3 +276,5 @@ export function useDropZone(onDropPaths: (paths: string[]) => void): { isOver: b
 - 검색 필터 모드: 켜면 GraphView 대신 FilterResults를 같은 자리에 렌더 (rows는 기존 로컬 매치 + 전체 검색 결과를 합쳐 ui-shell이 필터). 끄면 그래프 복귀, 선택은 유지
 - 툴바 레포명 우클릭 메뉴: Copy Path, Reveal in Finder, Open in Terminal (ContextMenu 재사용). File 메뉴의 Open Recent는 `set_recent_repos`로 동기화(최근 목록 변경마다)
 - 하네스(devApp): 새 command mock(reveal_path/open_in_terminal/set_recent_repos는 콘솔 로그), setZoom은 try/catch로 무시, 드롭은 HTML5 폴백 경로 사용
+- 오버레이 공통 규약: 모달형 오버레이(ShortcutsOverlay, QuickSwitcher 등)의 백드롭 요소는 반드시 클래스 `ov-backdrop`을 가진다. 컨텍스트 메뉴 루트는 `role="menu"`. ui-shell의 Esc 단계 사전 판정이 이 두 선택자로 "열린 오버레이 있음"을 판정하므로 이름 변경 금지
+- `CommitDetailPanel` 옵션 prop: `onDiffOpenChange?: (open: boolean) => void`, `closeDiffNonce?: number` (Esc 단계의 diff→목록 복귀용)

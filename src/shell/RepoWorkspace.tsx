@@ -13,7 +13,9 @@ import {
   getRepoState,
   listRefs,
   loadGraph,
+  openInTerminal,
   openRepo,
+  revealPath,
   searchCommits,
 } from "./api";
 import { copyText } from "./clipboard";
@@ -21,6 +23,8 @@ import { BranchSidebar } from "./BranchSidebar";
 import { CommitDetailPanel } from "./CommitDetailPanel";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
+import { FilterResults } from "./FilterResults";
+import { QuickSwitcher } from "./QuickSwitcher";
 import {
   DEFAULT_LAYOUT,
   DETAIL_MIN,
@@ -42,6 +46,7 @@ import { formatCount, shortSha } from "./format";
 
 const SHOW_TAGS_KEY = "gitlanes.showTags";
 const SIDEBAR_KEY = "gitlanes.sidebar";
+const DATE_MODE_KEY = "gitlanes.dateMode";
 
 const EMPTY_GRAPH: GraphData = {
   rows: [],
@@ -124,6 +129,8 @@ export interface RepoWorkspaceProps {
    */
   openDialogNonce: number;
   refreshNonce: number;
+  /** ⌘B(View > Toggle Sidebar). 활성 탭에만 올라온다 */
+  toggleSidebarNonce: number;
   /** 그래프 로드/새로고침 중인지 App에 알린다 (탭 스피너용) */
   onLoadingChange?: (loading: boolean) => void;
 }
@@ -136,11 +143,45 @@ export interface WorkspaceUpdateProps {
   onOpenRelease: () => void;
 }
 
-/** 커밋 행 우클릭 메뉴 위치와 대상 */
-interface MenuState {
-  sha: string;
-  x: number;
-  y: number;
+/** 우클릭 메뉴 위치와 대상. 커밋 행과 툴바 레포명이 같은 ContextMenu를 쓴다 */
+type MenuState =
+  | { kind: "commit"; sha: string; x: number; y: number }
+  | { kind: "repo"; x: number; y: number };
+
+/** 그래프 DATE 컬럼 표시 모드 */
+type DateMode = "absolute" | "relative";
+
+function readDateMode(): DateMode {
+  try {
+    return localStorage.getItem(DATE_MODE_KEY) === "relative" ? "relative" : "absolute";
+  } catch {
+    return "absolute";
+  }
+}
+
+/** 입력창에 포커스가 있거나 텍스트가 선택돼 있으면 브라우저 기본 복사를 방해하지 않는다 */
+function typingOrSelecting(): boolean {
+  const selection = window.getSelection()?.toString() ?? "";
+  if (selection !== "") {
+    return true;
+  }
+  const el = document.activeElement;
+  if (el === null) {
+    return false;
+  }
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    return true;
+  }
+  return el instanceof HTMLElement && el.isContentEditable;
+}
+
+/**
+ * 컨텍스트 메뉴(그래프/사이드바/탭)나 모달 오버레이(치트시트/퀵 스위처)가 열려 있는가.
+ * 오버레이는 포커스가 자기 안에 있으면 Esc를 직접 먹지만, 포커스를 잃었을 때는
+ * 이 판정이 셸의 다음 Esc 단계를 막아준다 (한 번에 하나만).
+ */
+function anyOverlayOpen(): boolean {
+  return document.querySelector('[role="menu"], .ov-backdrop') !== null;
 }
 
 export function RepoWorkspace({
@@ -152,6 +193,7 @@ export function RepoWorkspace({
   banner,
   openDialogNonce,
   refreshNonce,
+  toggleSidebarNonce,
   onLoadingChange,
 }: RepoWorkspaceProps) {
   const [repo, setRepo] = useState<RepoInfo | null>(null);
@@ -174,6 +216,14 @@ export function RepoWorkspace({
   const [remoteUrl, setRemoteUrl] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [layout, setLayout] = useState<LayoutWidths>(readLayout);
+  const [dateMode, setDateMode] = useState<DateMode>(readDateMode);
+  /** 검색 필터 모드. 켜지면 그래프 자리에 매치 목록만 그린다 */
+  const [filterMode, setFilterMode] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
+  /** 상세 패널이 diff를 펼쳐 놓았는가 (패널이 알려준다) */
+  const [diffOpen, setDiffOpen] = useState(false);
+  /** 값을 올리면 패널이 diff를 닫고 파일 목록으로 돌아간다 */
+  const [closeDiffNonce, setCloseDiffNonce] = useState(0);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
@@ -184,9 +234,12 @@ export function RepoWorkspace({
   const initialOpened = useRef(false);
   const lastOpenNonce = useRef(0);
   const lastRefreshNonce = useRef(0);
+  const lastSidebarNonce = useRef(0);
   const activeRef = useRef(active);
   const lastQuery = useRef("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  /** ⌘⌥F로 사이드바 브랜치 필터 입력창을 포커스한다 */
+  const sidebarFilterRef = useRef<HTMLInputElement | null>(null);
   /** 드래그 중에는 이 엘리먼트의 CSS 변수만 갱신한다 (리렌더 없음) */
   const mainRef = useRef<HTMLDivElement | null>(null);
   /** query -> search_commits 결과. Enter 연타에 재호출하지 않는다 */
@@ -503,7 +556,10 @@ export function RepoWorkspace({
       if (!activeRef.current) {
         return;
       }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      if (event.shiftKey || event.altKey) {
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.code === "KeyF") {
         event.preventDefault();
         const input = searchInputRef.current;
         if (input !== null) {
@@ -602,14 +658,19 @@ export function RepoWorkspace({
   );
 
   const handleRowContextMenu = useCallback((sha: string, x: number, y: number) => {
-    setMenu({ sha, x, y });
+    setMenu({ kind: "commit", sha, x, y });
+  }, []);
+
+  /** 툴바 레포명 우클릭 */
+  const handleRepoContextMenu = useCallback((x: number, y: number) => {
+    setMenu({ kind: "repo", x, y });
   }, []);
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
   /** 우클릭한 행의 메시지. 커밋이면 subject, 스태시면 스태시 메시지 */
   const menuMessage = useMemo(() => {
-    if (menu === null) {
+    if (menu === null || menu.kind !== "commit") {
       return "";
     }
     const row = data.rows.find((r) => r.sha === menu.sha);
@@ -619,9 +680,45 @@ export function RepoWorkspace({
     return data.stashes.find((stash) => stash.sha === menu.sha)?.message ?? "";
   }, [menu, data.rows, data.stashes]);
 
+  const copyPathItems: MenuItem[] = useMemo(() => {
+    if (repo === null) {
+      return [];
+    }
+    const path = repo.path;
+    return [
+      {
+        label: "Copy Path",
+        onSelect: () => {
+          void copyText(path).then((ok) => {
+            if (ok) {
+              showToast("경로 복사됨", "info");
+              return;
+            }
+            showError("클립보드에 복사하지 못했습니다.");
+          });
+        },
+      },
+      {
+        label: "Reveal in Finder",
+        onSelect: () => {
+          revealPath(path).catch((err: unknown) => showError(errorMessage(err)));
+        },
+      },
+      {
+        label: "Open in Terminal",
+        onSelect: () => {
+          openInTerminal(path).catch((err: unknown) => showError(errorMessage(err)));
+        },
+      },
+    ];
+  }, [repo, showToast, showError]);
+
   const menuItems: MenuItem[] = useMemo(() => {
     if (menu === null) {
       return [];
+    }
+    if (menu.kind === "repo") {
+      return copyPathItems;
     }
     const sha = menu.sha;
     const items: MenuItem[] = [
@@ -651,7 +748,7 @@ export function RepoWorkspace({
       });
     }
     return items;
-  }, [menu, menuMessage, remoteUrl, copySha, showToast, showError]);
+  }, [menu, menuMessage, remoteUrl, copySha, showToast, showError, copyPathItems]);
 
   const handleToggleTags = useCallback(() => {
     setShowTags((prev) => {
@@ -687,6 +784,233 @@ export function RepoWorkspace({
     });
   }, []);
 
+  // 메뉴 View > Toggle Sidebar (⌘B). 활성 탭에만 nonce가 올라온다
+  useEffect(() => {
+    if (toggleSidebarNonce === 0 || toggleSidebarNonce === lastSidebarNonce.current) {
+      return;
+    }
+    lastSidebarNonce.current = toggleSidebarNonce;
+    handleToggleSidebar();
+  }, [toggleSidebarNonce, handleToggleSidebar]);
+
+  /** ⌘⇧H / 툴바 버튼: HEAD 커밋을 선택하고 중앙으로 스크롤 */
+  const goToHead = useCallback(() => {
+    if (repo === null) {
+      return;
+    }
+    if (!loadedShas.has(repo.headSha)) {
+      showError("HEAD 커밋이 로드 범위 밖입니다. 더 불러오세요.");
+      return;
+    }
+    jumpTo(repo.headSha);
+  }, [repo, loadedShas, jumpTo, showError]);
+
+  const handleToggleDateMode = useCallback(() => {
+    setDateMode((prev) => {
+      const next: DateMode = prev === "absolute" ? "relative" : "absolute";
+      try {
+        localStorage.setItem(DATE_MODE_KEY, next);
+      } catch {
+        // 저장 실패는 무시 (이번 세션에만 적용)
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleFilterMode = useCallback(() => setFilterMode((prev) => !prev), []);
+
+  const handleCopyRefName = useCallback(
+    (name: string) => {
+      void copyText(name).then((ok) => {
+        if (ok) {
+          showToast(`이름 복사됨: ${name}`, "info");
+          return;
+        }
+        showError("클립보드에 복사하지 못했습니다.");
+      });
+    },
+    [showToast, showError],
+  );
+
+  /** 원격 브랜치는 "origin/" 같은 remote 접두를 떼고 링크를 만든다 */
+  const handleOpenRefOnRemote = useCallback(
+    (entry: RefEntry) => {
+      if (remoteUrl === null) {
+        return;
+      }
+      const branch = entry.kind === "remoteBranch" ? entry.name.replace(/^[^/]+\//, "") : entry.name;
+      const url =
+        entry.kind === "tag"
+          ? `${remoteUrl}/releases/tag/${entry.name}`
+          : `${remoteUrl}/tree/${branch}`;
+      void openUrl(url).catch((err: unknown) => showError(errorMessage(err)));
+    },
+    [remoteUrl, showError],
+  );
+
+  const handleQuickSelect = useCallback(
+    (entry: RefEntry) => {
+      setQuickOpen(false);
+      handleSelectRef(entry.sha);
+    },
+    [handleSelectRef],
+  );
+
+  const closeQuickSwitcher = useCallback(() => setQuickOpen(false), []);
+
+  // 다른 탭으로 넘어가면 이 탭의 오버레이는 접는다
+  useEffect(() => {
+    if (!active) {
+      setQuickOpen(false);
+      setMenu(null);
+    }
+  }, [active]);
+
+  /** ⌘⌥F: 사이드바가 접혀 있으면 펴고 브랜치 필터로 포커스 */
+  const focusSidebarFilter = useCallback(() => {
+    if (!sidebarOpen) {
+      writeFlag(SIDEBAR_KEY, true);
+      setSidebarOpen(true);
+      // 입력창이 마운트된 다음 프레임에 포커스한다
+      window.setTimeout(() => sidebarFilterRef.current?.focus(), 0);
+      return;
+    }
+    const input = sidebarFilterRef.current;
+    if (input !== null) {
+      input.focus();
+      input.select();
+    }
+  }, [sidebarOpen]);
+
+  const copySelectedMessage = useCallback(() => {
+    if (selectedSha === null) {
+      return;
+    }
+    const row = data.rows.find((r) => r.sha === selectedSha);
+    const message =
+      row?.subject ?? data.stashes.find((stash) => stash.sha === selectedSha)?.message ?? "";
+    if (message === "") {
+      return;
+    }
+    void copyText(message).then((ok) => {
+      if (ok) {
+        showToast("메시지 복사됨", "info");
+        return;
+      }
+      showError("클립보드에 복사하지 못했습니다.");
+    });
+  }, [selectedSha, data.rows, data.stashes, showToast, showError]);
+
+  /**
+   * Esc는 한 번에 한 단계만 되돌린다.
+   * 오버레이 → diff 뷰 → 검색어 → 선택. 처리했으면 true
+   */
+  const handleEscape = useCallback((): boolean => {
+    if (quickOpen) {
+      setQuickOpen(false);
+      return true;
+    }
+    if (menu !== null) {
+      setMenu(null);
+      return true;
+    }
+    if (anyOverlayOpen()) {
+      // 사이드바/탭 컨텍스트 메뉴와 오버레이는 자기 Esc 핸들러가 닫는다. 여기서 더 나가지 않는다
+      return true;
+    }
+    if (diffOpen) {
+      setCloseDiffNonce((n) => n + 1);
+      return true;
+    }
+    if (query !== "") {
+      handleClearSearch();
+      return true;
+    }
+    if (selectedSha !== null) {
+      setSelectedSha(null);
+      return true;
+    }
+    return false;
+  }, [quickOpen, menu, diffOpen, query, handleClearSearch, selectedSha]);
+
+  // 워크스페이스 단축키. 활성 탭에서만 반응한다 (탭마다 하나씩 등록돼 있다)
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!activeRef.current) {
+        return;
+      }
+      if (event.key === "Escape") {
+        if (handleEscape()) {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (repo === null || (!event.metaKey && !event.ctrlKey)) {
+        return;
+      }
+      // ⌘⌥F: Option이 끼면 key가 "ƒ"로 바뀌므로 물리 키로 본다
+      if (event.altKey) {
+        if (event.code === "KeyF") {
+          event.preventDefault();
+          focusSidebarFilter();
+        }
+        return;
+      }
+      if (event.shiftKey) {
+        if (event.code === "KeyH") {
+          event.preventDefault();
+          goToHead();
+          return;
+        }
+        if (event.code === "KeyF") {
+          event.preventDefault();
+          handleToggleFilterMode();
+          return;
+        }
+        if (event.code === "KeyC" && !typingOrSelecting()) {
+          event.preventDefault();
+          copySelectedMessage();
+        }
+        return;
+      }
+      if (event.code === "KeyP") {
+        event.preventDefault();
+        setQuickOpen(true);
+        return;
+      }
+      if (event.code === "KeyC" && selectedSha !== null && !typingOrSelecting()) {
+        event.preventDefault();
+        copySha(selectedSha);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    repo,
+    handleEscape,
+    focusSidebarFilter,
+    goToHead,
+    handleToggleFilterMode,
+    copySelectedMessage,
+    copySha,
+    selectedSha,
+  ]);
+
+  /** 필터 모드에서 보여줄 행. 기존 로컬 매치 로직을 그대로 재사용한다 */
+  const filteredRows = useMemo(() => {
+    if (!filterMode) {
+      return [];
+    }
+    const hits = new Set(matches);
+    return data.rows.filter((row) => hits.has(row.sha));
+  }, [filterMode, matches, data.rows]);
+
+  /** 전체 매치 수. 전체 검색을 이미 돌린 질의어면 그 결과 수가 더 정확하다 */
+  const filterTotal = Math.max(
+    filteredRows.length,
+    searchCache.current.get(query.trim())?.length ?? 0,
+  );
+
   const toastNode =
     toast === null ? null : (
       <Toast key={toast.id} message={toast.message} tone={toast.tone} onClose={dismissToast} />
@@ -714,6 +1038,8 @@ export function RepoWorkspace({
         repo={repo}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={handleToggleSidebar}
+        onGoToHead={goToHead}
+        onRepoContextMenu={handleRepoContextMenu}
         search={
           <SearchBox
             query={query}
@@ -722,6 +1048,8 @@ export function RepoWorkspace({
             searching={searching}
             exhausted={searchExhausted}
             inputRef={searchInputRef}
+            filterMode={filterMode}
+            onToggleFilterMode={handleToggleFilterMode}
             onChange={setQuery}
             onNext={handleNextMatch}
             onPrev={handlePrevMatch}
@@ -760,6 +1088,9 @@ export function RepoWorkspace({
               loading={refsLoading}
               selectedSha={selectedSha}
               onSelectRef={handleSelectRef}
+              onCopyRefName={handleCopyRefName}
+              onOpenRefOnRemote={remoteUrl === null ? undefined : handleOpenRefOnRemote}
+              filterInputRef={sidebarFilterRef}
             />
             <SplitHandle
               label="사이드바 폭 조절"
@@ -773,17 +1104,32 @@ export function RepoWorkspace({
           </>
         )}
         <div className="graph-area">
-          <GraphView
-            data={data}
-            selectedSha={selectedSha}
-            onSelect={setSelectedSha}
-            onLoadMore={handleLoadMore}
-            loading={graphLoading}
-            showTags={showTags}
-            scrollTarget={scrollTarget}
-            onRowDoubleClick={copySha}
-            onRowContextMenu={handleRowContextMenu}
-          />
+          {filterMode ? (
+            <FilterResults
+              rows={filteredRows}
+              query={query}
+              selectedSha={selectedSha}
+              onSelect={setSelectedSha}
+              total={filterTotal}
+              hasMore={data.hasMore}
+              onLoadMore={handleLoadMore}
+            />
+          ) : (
+            <GraphView
+              data={data}
+              selectedSha={selectedSha}
+              onSelect={setSelectedSha}
+              onLoadMore={handleLoadMore}
+              loading={graphLoading}
+              showTags={showTags}
+              scrollTarget={scrollTarget}
+              onRowDoubleClick={copySha}
+              onRowContextMenu={handleRowContextMenu}
+              highlightQuery={query}
+              dateMode={dateMode}
+              onToggleDateMode={handleToggleDateMode}
+            />
+          )}
         </div>
         {selectedSha !== null && (
           <SplitHandle
@@ -805,6 +1151,8 @@ export function RepoWorkspace({
             isStash={data.stashes.some((stash) => stash.sha === selectedSha)}
             onSelectSha={setSelectedSha}
             onError={showError}
+            onDiffOpenChange={setDiffOpen}
+            closeDiffNonce={closeDiffNonce}
           />
         )}
       </div>
@@ -828,6 +1176,13 @@ export function RepoWorkspace({
       {menu !== null && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={closeMenu} />
       )}
+
+      <QuickSwitcher
+        open={quickOpen}
+        refs={refs}
+        onSelect={handleQuickSelect}
+        onClose={closeQuickSwitcher}
+      />
 
       {toastNode}
     </div>

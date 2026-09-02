@@ -37,6 +37,16 @@
   white-space: nowrap;
 }
 
+/* DATE 헤더 라벨. 토글 콜백이 있을 때만 클릭 가능하게 보인다 */
+.gl-date-toggle {
+  cursor: pointer;
+}
+
+.gl-date-toggle:hover {
+  color: var(--fg-1);
+  text-decoration: underline;
+}
+
 /* ── 본문 ───────────────────────────────────────── */
 
 .gl-body {
@@ -201,6 +211,14 @@
 .gl-cell-date {
   color: var(--fg-2);
   font-variant-numeric: tabular-nums;
+}
+
+/* 검색어 매치 구간. 브라우저 기본 mark(노란 배경 + 검은 글자)를 덮고
+   글자색은 셀에서 물려받아 MESSAGE/AUTHOR/SHA가 각자 색을 유지한다 */
+.gl-mark {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: inherit;
 }
 
 /* 폭이 부족해 드롭된 컬럼. 헤더와 행이 같은 클래스를 보므로 함께 사라진다.

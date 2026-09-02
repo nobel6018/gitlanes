@@ -1,4 +1,5 @@
-//! Tauri command 9개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
+//! 저장소를 읽는 Tauri command 9개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
+//! 파일관리자/터미널/최근 목록 command 3개는 [`crate::native`]에 있다.
 //!
 //! @see CONTRACTS.md
 

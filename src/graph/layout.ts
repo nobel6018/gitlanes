@@ -37,6 +37,39 @@ export function formatDate(unixSeconds: number): string {
   return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** DATE 컬럼 표시 모드. 토글 상태는 shell이 쥐고 GraphView는 prop으로만 받는다 */
+export type DateMode = "absolute" | "relative";
+
+const MINUTE_SECONDS = 60;
+const HOUR_SECONDS = 60 * MINUTE_SECONDS;
+const DAY_SECONDS = 24 * HOUR_SECONDS;
+const WEEK_SECONDS = 7 * DAY_SECONDS;
+
+/**
+ * "just now" / "5m ago" / "3h ago" / "2d ago" / "3w ago". 5주를 넘기면 절대 날짜로 돌아간다.
+ * nowMs는 GraphView가 렌더당 1회 읽어 내려주는 기준 시각이라 행마다 시계를 보지 않는다.
+ * 미래 타임스탬프(커밋 시각이 앞선 경우)는 "just now"로 접는다.
+ */
+export function formatRelativeDate(unixSeconds: number, nowMs: number): string {
+  const diff = Math.floor(nowMs / 1000) - unixSeconds;
+  if (diff < MINUTE_SECONDS) {
+    return "just now";
+  }
+  if (diff < HOUR_SECONDS) {
+    return `${Math.floor(diff / MINUTE_SECONDS)}m ago`;
+  }
+  if (diff < DAY_SECONDS) {
+    return `${Math.floor(diff / HOUR_SECONDS)}h ago`;
+  }
+  if (diff < WEEK_SECONDS) {
+    return `${Math.floor(diff / DAY_SECONDS)}d ago`;
+  }
+  if (diff < 5 * WEEK_SECONDS) {
+    return `${Math.floor(diff / WEEK_SECONDS)}w ago`;
+  }
+  return formatDate(unixSeconds);
+}
+
 /** authorEmail → LANE_COLORS 인덱스. 문자 코드 누적만 하는 가벼운 결정적 해시 */
 export function authorColorIndex(email: string): number {
   let hash = 0;

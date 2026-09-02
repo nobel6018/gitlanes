@@ -3,18 +3,33 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { errorMessage, getStartupRepo } from "./shell/api";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { errorMessage, getStartupRepo, revealPath, setRecentRepos } from "./shell/api";
+import { copyText } from "./shell/clipboard";
 import { basename } from "./shell/format";
 import { RepoWorkspace } from "./shell/RepoWorkspace";
+import { ShortcutsOverlay } from "./shell/ShortcutsOverlay";
 import { TabBar } from "./shell/TabBar";
 import type { TabInfo } from "./shell/TabBar";
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { UpdatePill } from "./shell/UpdatePill";
+import { useDropZone } from "./shell/useDropZone";
+import { useRecentRepos } from "./shell/useRecentRepos";
 import { useUpdateChecker } from "./shell/useUpdateChecker";
 import type { WorkspaceUpdateProps } from "./shell/RepoWorkspace";
 import "./shell/shell.css";
 
 const TABS_KEY = "gitlanes.tabs";
+const ZOOM_KEY = "gitlanes.zoom";
+
+/** 웹뷰 줌 범위와 단계 (계약 고정값) */
+const ZOOM_MIN = 0.8;
+const ZOOM_MAX = 1.6;
+const ZOOM_STEP = 0.1;
+const ZOOM_DEFAULT = 1;
+
+/** ⌘⇧T로 되살릴 수 있는 닫은 탭 경로 스택의 최대 길이 (세션 메모리) */
+const MAX_REOPEN = 10;
 
 interface StoredTabs {
   paths: string[];
@@ -59,13 +74,54 @@ function writeStoredTabs(tabs: TabInfo[], activeId: number): void {
   }
 }
 
+function readZoom(): number {
+  try {
+    const raw = localStorage.getItem(ZOOM_KEY);
+    if (raw === null) {
+      return ZOOM_DEFAULT;
+    }
+    const parsed = Number.parseFloat(raw);
+    if (!Number.isFinite(parsed)) {
+      return ZOOM_DEFAULT;
+    }
+    return clampZoom(parsed);
+  } catch {
+    return ZOOM_DEFAULT;
+  }
+}
+
+function clampZoom(level: number): number {
+  // 0.1 단계에서 부동소수 오차가 쌓이지 않게 한 자리로 반올림한다
+  const rounded = Math.round(level * 10) / 10;
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, rounded));
+}
+
+/** 웹뷰 줌 적용. 하네스(브라우저)에는 webview API가 없으므로 조용히 넘어간다 */
+function applyZoom(level: number): void {
+  try {
+    void getCurrentWebview()
+      .setZoom(level)
+      .catch(() => {
+        // 권한/플랫폼 미지원은 무시
+      });
+  } catch {
+    // Tauri 웹뷰가 아니다
+  }
+  try {
+    localStorage.setItem(ZOOM_KEY, String(level));
+  } catch {
+    // 저장 실패는 무시
+  }
+}
+
 /** 탭별 메뉴 명령 카운터. 값이 오른 탭만 그 명령을 실행한다 */
 interface TabCommands {
   open: number;
   refresh: number;
+  toggleSidebar: number;
 }
 
-const NO_COMMANDS: TabCommands = { open: 0, refresh: 0 };
+const NO_COMMANDS: TabCommands = { open: 0, refresh: 0, toggleSidebar: 0 };
 
 /** 탭 스피너 최소 표시 시간(ms). 로컬 레포는 30ms에 끝나 번쩍임만 남는다 */
 const MIN_SPINNER_MS = 250;
@@ -73,6 +129,16 @@ const MIN_SPINNER_MS = 250;
 /** Tauri 웹뷰인가. 하네스(브라우저)에서는 메뉴 이벤트가 없어 keydown 폴백을 쓴다 */
 function hasTauriInternals(): boolean {
   return typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== "undefined";
+}
+
+/** 단축키 표기(⌘ vs Ctrl) 분기용 플랫폼 판정 */
+function detectPlatform(): "mac" | "other" {
+  const data = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  const platform = data?.platform ?? navigator.platform ?? "";
+  if (/mac/i.test(platform)) {
+    return "mac";
+  }
+  return /mac os x/i.test(navigator.userAgent) ? "mac" : "other";
 }
 
 let nextTabId = 1;
@@ -109,13 +175,38 @@ export default function App() {
   const loadingStartedAt = useRef<Record<number, number>>({});
   const loadingTimers = useRef<Record<number, number>>({});
   const [menuFallback, setMenuFallback] = useState(() => !hasTauriInternals());
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const platform = useMemo(detectPlatform, []);
+  /** 닫은 탭 경로 스택. 세션 메모리라 앱을 껐다 켜면 비어 있다 */
+  const reopenStack = useRef<string[]>([]);
+  const zoom = useRef(readZoom());
   // 업데이트 확인은 탭 수와 무관하게 앱 전역에서 하나만 돈다
   const updater = useUpdateChecker();
+  const { recents, clearRecents } = useRecentRepos();
 
   // 탭 구성이 바뀔 때마다 저장한다
   useEffect(() => {
     writeStoredTabs(tabs, activeId);
   }, [tabs, activeId]);
+
+  // 저장된 줌을 시작 시 1회 적용한다
+  useEffect(() => {
+    if (zoom.current !== ZOOM_DEFAULT) {
+      applyZoom(zoom.current);
+    }
+  }, []);
+
+  // 네이티브 Open Recent 서브메뉴 초기 동기화. 이후 변경은 useRecentRepos가 직접 밀어준다
+  const recentsSynced = useRef(false);
+  useEffect(() => {
+    if (recentsSynced.current) {
+      return;
+    }
+    recentsSynced.current = true;
+    setRecentRepos(recents).catch(() => {
+      // 하네스에는 메뉴가 없다
+    });
+  }, [recents]);
 
   /** 콜백에서 최신 탭 목록을 읽기 위한 거울. 콜백 identity를 안정적으로 유지한다 */
   const tabsRef = useRef(tabs);
@@ -123,26 +214,42 @@ export default function App() {
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
 
-  /** 이미 열린 탭이 있으면 활성화, 빈 웰컴 탭이 있으면 거기에, 아니면 새 탭 */
-  const openInTab = useCallback((path: string) => {
-    const prev = tabsRef.current;
-    const existing = prev.find((tab) => tab.path === path);
-    if (existing !== undefined) {
-      setActiveId(existing.id);
+  /**
+   * 여러 경로를 한 번에 연다(폴더 드롭). 이미 열린 레포는 활성화, 빈 웰컴 탭이 있으면 거기에,
+   * 아니면 새 탭. 같은 tick에 여러 번 불려도 잃지 않도록 tabsRef를 함께 갱신한다.
+   */
+  const openMany = useCallback((paths: string[]) => {
+    let next = [...tabsRef.current];
+    let activate: number | null = null;
+    for (const path of paths) {
+      const existing = next.find((tab) => tab.path === path);
+      if (existing !== undefined) {
+        activate = existing.id;
+        continue;
+      }
+      const empty = next.find((tab) => tab.path === null);
+      if (empty !== undefined) {
+        next = next.map((tab) =>
+          tab.id === empty.id ? { ...tab, path, label: basename(path) } : tab,
+        );
+        activate = empty.id;
+        continue;
+      }
+      const created = makeTab(path);
+      next = [...next, created];
+      activate = created.id;
+    }
+    if (activate === null) {
       return;
     }
-    const empty = prev.find((tab) => tab.path === null);
-    if (empty !== undefined) {
-      setTabs(
-        prev.map((tab) => (tab.id === empty.id ? { ...tab, path, label: basename(path) } : tab)),
-      );
-      setActiveId(empty.id);
-      return;
-    }
-    const created = makeTab(path);
-    setTabs([...prev, created]);
-    setActiveId(created.id);
+    tabsRef.current = next;
+    setTabs(next);
+    setActiveId(activate);
   }, []);
+
+  const openInTab = useCallback((path: string) => openMany([path]), [openMany]);
+
+  const { isOver } = useDropZone(openMany);
 
   /** 워크스페이스의 로딩 상태를 받아 최소 250ms는 스피너가 보이도록 늦춰 끈다 */
   const handleLoadingChange = useCallback((tabId: number, loading: boolean) => {
@@ -219,39 +326,131 @@ export default function App() {
     setActiveId(created.id);
   }, []);
 
-  const handleCloseTab = useCallback((id: number) => {
-    const timer = loadingTimers.current[id];
-    if (timer !== undefined) {
-      window.clearTimeout(timer);
-      delete loadingTimers.current[id];
-    }
-    delete loadingStartedAt.current[id];
-    setTabLoading((current) => {
-      if (!(id in current)) {
-        return current;
-      }
-      const next = { ...current };
-      delete next[id];
-      return next;
-    });
-    const prev = tabsRef.current;
-    const index = prev.findIndex((tab) => tab.id === id);
-    if (index < 0) {
+  /** 닫은 탭의 경로를 복원 스택에 쌓는다. 빈 탭은 되살릴 게 없어 무시 */
+  const rememberClosed = useCallback((path: string | null) => {
+    if (path === null) {
       return;
     }
-    const next = prev.filter((tab) => tab.id !== id);
-    if (next.length === 0) {
-      // 마지막 탭을 닫으면 빈 웰컴 탭으로 돌아간다
-      const fresh = makeTab(null);
-      setTabs([fresh]);
-      setActiveId(fresh.id);
-      return;
-    }
-    setTabs(next);
-    setActiveId((current) =>
-      current === id ? next[Math.min(index, next.length - 1)].id : current,
-    );
+    const stack = reopenStack.current.filter((p) => p !== path);
+    stack.push(path);
+    reopenStack.current = stack.slice(-MAX_REOPEN);
   }, []);
+
+  /** 탭 여러 개를 한 번에 닫는다. 닫기/다른 탭 닫기/오른쪽 닫기가 함께 쓴다 */
+  const closeIds = useCallback(
+    (ids: number[]) => {
+      const targets = new Set(ids);
+      const prev = tabsRef.current;
+      const closing = prev.filter((tab) => targets.has(tab.id));
+      if (closing.length === 0) {
+        return;
+      }
+      for (const tab of closing) {
+        const timer = loadingTimers.current[tab.id];
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          delete loadingTimers.current[tab.id];
+        }
+        delete loadingStartedAt.current[tab.id];
+        rememberClosed(tab.path);
+      }
+      setTabLoading((current) => {
+        const next = { ...current };
+        let changed = false;
+        for (const tab of closing) {
+          if (tab.id in next) {
+            delete next[tab.id];
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+
+      const firstIndex = prev.findIndex((tab) => targets.has(tab.id));
+      const next = prev.filter((tab) => !targets.has(tab.id));
+      if (next.length === 0) {
+        // 마지막 탭을 닫으면 빈 웰컴 탭으로 돌아간다
+        const fresh = makeTab(null);
+        tabsRef.current = [fresh];
+        setTabs([fresh]);
+        setActiveId(fresh.id);
+        return;
+      }
+      tabsRef.current = next;
+      setTabs(next);
+      setActiveId((current) =>
+        targets.has(current) ? next[Math.min(firstIndex, next.length - 1)].id : current,
+      );
+    },
+    [rememberClosed],
+  );
+
+  const handleCloseTab = useCallback((id: number) => closeIds([id]), [closeIds]);
+
+  const handleCloseOthers = useCallback(
+    (id: number) => {
+      closeIds(tabsRef.current.filter((tab) => tab.id !== id).map((tab) => tab.id));
+    },
+    [closeIds],
+  );
+
+  const handleCloseToRight = useCallback(
+    (id: number) => {
+      const tabs = tabsRef.current;
+      const index = tabs.findIndex((tab) => tab.id === id);
+      if (index < 0) {
+        return;
+      }
+      closeIds(tabs.slice(index + 1).map((tab) => tab.id));
+    },
+    [closeIds],
+  );
+
+  /** 드래그 재정렬. 순서만 바꾸고 활성 탭은 그대로 둔다 */
+  const handleReorder = useCallback((fromIndex: number, toIndex: number) => {
+    const prev = tabsRef.current;
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      fromIndex >= prev.length ||
+      toIndex < 0 ||
+      toIndex >= prev.length
+    ) {
+      return;
+    }
+    const next = [...prev];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    tabsRef.current = next;
+    setTabs(next);
+  }, []);
+
+  const handleCopyTabPath = useCallback((id: number) => {
+    const tab = tabsRef.current.find((t) => t.id === id);
+    if (tab === undefined || tab.path === null) {
+      return;
+    }
+    void copyText(tab.path);
+  }, []);
+
+  const handleRevealTab = useCallback((id: number) => {
+    const tab = tabsRef.current.find((t) => t.id === id);
+    if (tab === undefined || tab.path === null) {
+      return;
+    }
+    revealPath(tab.path).catch((err: unknown) => {
+      console.error("reveal_path:", errorMessage(err));
+    });
+  }, []);
+
+  /** ⌘⇧T: 가장 최근에 닫은 레포 탭을 되살린다 */
+  const handleReopenClosed = useCallback(() => {
+    const path = reopenStack.current.pop();
+    if (path === undefined) {
+      return;
+    }
+    openInTab(path);
+  }, [openInTab]);
 
   /** 워크스페이스가 레포를 열었을 때 탭 라벨/경로를 갱신 */
   const handleRepoOpened = useCallback((tabId: number, path: string, name: string) => {
@@ -291,6 +490,26 @@ export default function App() {
   const handleMenuCloseTab = useCallback(() => {
     handleCloseTab(activeIdRef.current);
   }, [handleCloseTab]);
+
+  /** ⌘B: 사이드바 상태는 탭마다 따로라 활성 탭에만 토글 명령을 보낸다 */
+  const handleMenuToggleSidebar = useCallback(() => {
+    bumpCommand(activeIdRef.current, "toggleSidebar");
+  }, [bumpCommand]);
+
+  const handleZoom = useCallback((kind: "in" | "out" | "reset") => {
+    const next =
+      kind === "reset"
+        ? ZOOM_DEFAULT
+        : clampZoom(zoom.current + (kind === "in" ? ZOOM_STEP : -ZOOM_STEP));
+    if (next === zoom.current && kind !== "reset") {
+      return;
+    }
+    zoom.current = next;
+    applyZoom(next);
+  }, []);
+
+  const handleShowShortcuts = useCallback(() => setShortcutsOpen((prev) => !prev), []);
+  const handleCloseShortcuts = useCallback(() => setShortcutsOpen(false), []);
 
   /** 활성 탭 기준 좌우 이동. 양끝에서는 순환한다 */
   const handleCycleTab = useCallback((direction: -1 | 1) => {
@@ -333,6 +552,12 @@ export default function App() {
     refresh: handleMenuRefresh,
     gotoTab: handleGotoTab,
     cycleTab: handleCycleTab,
+    toggleSidebar: handleMenuToggleSidebar,
+    zoom: handleZoom,
+    shortcuts: handleShowShortcuts,
+    openPath: openInTab,
+    clearRecents,
+    reopenClosed: handleReopenClosed,
   });
   menuHandlers.current = {
     newTab: handleNewTab,
@@ -341,6 +566,12 @@ export default function App() {
     refresh: handleMenuRefresh,
     gotoTab: handleGotoTab,
     cycleTab: handleCycleTab,
+    toggleSidebar: handleMenuToggleSidebar,
+    zoom: handleZoom,
+    shortcuts: handleShowShortcuts,
+    openPath: openInTab,
+    clearRecents,
+    reopenClosed: handleReopenClosed,
   };
 
   useEffect(() => {
@@ -371,6 +602,19 @@ export default function App() {
     );
     track(listen("menu:prev-tab", () => menuHandlers.current.cycleTab(-1)));
     track(listen("menu:next-tab", () => menuHandlers.current.cycleTab(1)));
+    track(listen("menu:toggle-sidebar", () => menuHandlers.current.toggleSidebar()));
+    track(listen("menu:zoom-in", () => menuHandlers.current.zoom("in")));
+    track(listen("menu:zoom-out", () => menuHandlers.current.zoom("out")));
+    track(listen("menu:zoom-reset", () => menuHandlers.current.zoom("reset")));
+    track(listen("menu:shortcuts", () => menuHandlers.current.shortcuts()));
+    track(
+      listen<string>("menu:open-recent", (event) => {
+        if (typeof event.payload === "string" && event.payload !== "") {
+          menuHandlers.current.openPath(event.payload);
+        }
+      }),
+    );
+    track(listen("menu:clear-recent", () => menuHandlers.current.clearRecents()));
 
     return () => {
       disposed = true;
@@ -383,9 +627,16 @@ export default function App() {
 
   // ⌘⇧[ / ⌘⇧]는 macOS 네이티브 메뉴 accelerator로 잡을 수 없어(AppKit이 Shift 적용된 "{"로 비교)
   // 키 이벤트가 웹뷰까지 내려온다. 그래서 Tauri 여부와 무관하게 항상 여기서 처리한다.
-  // 네이티브 메뉴는 ⌥⌘← / ⌥⌘→로 등록돼 있어 조합이 겹치지 않는다
+  // 네이티브 메뉴는 ⌥⌘← / ⌥⌘→로 등록돼 있어 조합이 겹치지 않는다.
+  // Shift+알파벳(⌘⇧T)도 muda 버그로 네이티브에 못 넣어 같이 여기서 받는다
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Ctrl+Tab / Ctrl+⇧Tab 탭 순환 (macOS에서도 Ctrl 조합 그대로)
+      if (event.ctrlKey && !event.metaKey && !event.altKey && event.code === "Tab") {
+        event.preventDefault();
+        menuHandlers.current.cycleTab(event.shiftKey ? -1 : 1);
+        return;
+      }
       if (!event.shiftKey || (!event.metaKey && !event.ctrlKey)) {
         return;
       }
@@ -398,6 +649,11 @@ export default function App() {
       if (event.code === "BracketRight") {
         event.preventDefault();
         menuHandlers.current.cycleTab(1);
+        return;
+      }
+      if (event.code === "KeyT") {
+        event.preventDefault();
+        menuHandlers.current.reopenClosed();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -426,6 +682,31 @@ export default function App() {
         // 브라우저 새로고침을 막는다
         event.preventDefault();
         menuHandlers.current.refresh();
+        return;
+      }
+      if (key === "b") {
+        event.preventDefault();
+        menuHandlers.current.toggleSidebar();
+        return;
+      }
+      if (key === "/") {
+        event.preventDefault();
+        menuHandlers.current.shortcuts();
+        return;
+      }
+      if (key === "=" || key === "+") {
+        event.preventDefault();
+        menuHandlers.current.zoom("in");
+        return;
+      }
+      if (key === "-") {
+        event.preventDefault();
+        menuHandlers.current.zoom("out");
+        return;
+      }
+      if (key === "0") {
+        event.preventDefault();
+        menuHandlers.current.zoom("reset");
         return;
       }
       if (key >= "1" && key <= "9") {
@@ -465,6 +746,11 @@ export default function App() {
         onActivate={setActiveId}
         onClose={handleCloseTab}
         onNewTab={handleNewTab}
+        onReorder={handleReorder}
+        onCloseOthers={handleCloseOthers}
+        onCloseToRight={handleCloseToRight}
+        onCopyPath={handleCopyTabPath}
+        onRevealInFinder={handleRevealTab}
       />
       {tabs.map((tab) => (
         <TabPanel
@@ -480,6 +766,12 @@ export default function App() {
         />
       ))}
       <UpdatePill checking={updater.checking} result={updater.result} />
+      <ShortcutsOverlay open={shortcutsOpen} onClose={handleCloseShortcuts} platform={platform} />
+      {isOver && (
+        <div className="drop-overlay">
+          <div className="drop-overlay-card">Drop to open repository</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -535,6 +827,7 @@ function TabPanel({
         banner={banner}
         openDialogNonce={commands.open}
         refreshNonce={commands.refresh}
+        toggleSidebarNonce={commands.toggleSidebar}
         onLoadingChange={handleLoadingChange}
       />
     </div>

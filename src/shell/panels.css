@@ -1,0 +1,446 @@
+/* ============================================================
+   ui-panels 전용 스타일. shell.css는 ui-shell 소유이므로
+   상세 패널 키보드 탐색과 신규 오버레이 스타일만 여기에 둔다.
+   기존 shell.css 규칙과 충돌하지 않도록 새 클래스명을 쓴다.
+   ============================================================ */
+
+/* ---------- 공통: 매치 강조 ---------- */
+
+.qs-item mark,
+.fr-cell mark {
+  background: rgba(212, 180, 85, 0.28);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* ---------- 상세 패널 키보드 탐색 ---------- */
+
+/* 파일 목록 컨테이너. tabIndex=0으로 포커스를 받는다 */
+.file-nav {
+  outline: none;
+  border-radius: 3px;
+}
+
+.file-nav:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 포커스 행 강조. 클릭 선택과 구분되도록 왼쪽 막대 + 옅은 배경 */
+.file-nav .file-row.kb-focus,
+.file-nav .tree-dir.kb-focus {
+  background: var(--hover-bg);
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--fg-1);
+}
+
+.file-nav:focus-visible .file-row.kb-focus,
+.file-nav:focus-visible .tree-dir.kb-focus {
+  background: var(--accent-soft);
+}
+
+/* diff 화면 래퍼. ←/Backspace로 목록 복귀를 받기 위해 포커스 가능 */
+.panel-diff-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.panel-diff-nav:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* ---------- 오버레이 공통 ---------- */
+
+.ov-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  background: rgba(12, 13, 16, 0.55);
+}
+
+/* ---------- 단축키 치트시트 ---------- */
+
+.ov-backdrop.sc-backdrop {
+  align-items: center;
+  justify-content: center;
+}
+
+.sc-modal {
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-1);
+  border-radius: 6px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.sc-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.sc-title {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-2);
+}
+
+.sc-close {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 15px;
+  line-height: 22px;
+  text-align: center;
+}
+
+.sc-close:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.sc-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 10px 12px 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 22px;
+  align-items: start;
+}
+
+.sc-group {
+  min-width: 0;
+  break-inside: avoid;
+}
+
+.sc-group-title {
+  margin: 6px 0 3px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-2);
+}
+
+.sc-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 20px;
+  padding: 1px 0;
+  font-size: 12px;
+}
+
+.sc-keys {
+  flex: 0 0 168px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.sc-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-1);
+}
+
+.sc-or {
+  color: var(--fg-2);
+  font-size: 10.5px;
+}
+
+kbd.sc-key {
+  display: inline-block;
+  min-width: 17px;
+  padding: 0 4px;
+  border: 1px solid var(--border-1);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  background: var(--bg-toolbar);
+  color: var(--fg-1);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+kbd.sc-key.wide {
+  font-size: 10.5px;
+}
+
+@media (max-width: 700px) {
+  .sc-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- 퀵 스위처 ---------- */
+
+.ov-backdrop.qs-backdrop {
+  align-items: flex-start;
+  justify-content: center;
+  background: rgba(12, 13, 16, 0.4);
+}
+
+.qs-modal {
+  margin-top: 84px;
+  width: min(560px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-1);
+  border-radius: 6px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.qs-input {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 11px;
+  border: none;
+  border-bottom: 1px solid var(--border-1);
+  background: transparent;
+  color: var(--fg-1);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  outline: none;
+}
+
+.qs-input::placeholder {
+  color: var(--fg-2);
+}
+
+.qs-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 336px;
+  overflow-y: auto;
+}
+
+.qs-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 3px;
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 26px;
+}
+
+.qs-item:hover {
+  background: var(--hover-bg);
+}
+
+.qs-item.on {
+  background: var(--accent-soft);
+}
+
+.qs-icon {
+  flex: 0 0 14px;
+  color: var(--fg-2);
+  font-size: 11px;
+  text-align: center;
+}
+
+.qs-item.on .qs-icon {
+  color: var(--fg-1);
+}
+
+.qs-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qs-tag {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.qs-sha {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-2);
+}
+
+.qs-empty {
+  padding: 12px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.qs-foot {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 10px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border-1);
+  color: var(--fg-2);
+  font-size: 10.5px;
+}
+
+/* ---------- 검색 필터 결과 목록 ---------- */
+
+.fr-root {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-content);
+}
+
+.fr-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-toolbar);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--fg-2);
+}
+
+.fr-count {
+  flex: 1 1 auto;
+}
+
+.fr-cols {
+  flex: 0 0 auto;
+  display: flex;
+  height: 20px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-1);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--fg-2);
+  line-height: 20px;
+}
+
+.fr-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  outline: none;
+}
+
+.fr-spacer {
+  position: relative;
+}
+
+.fr-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 12.5px;
+  cursor: default;
+}
+
+.fr-row:hover {
+  background: var(--hover-bg);
+}
+
+.fr-row.on {
+  background: var(--accent-soft);
+}
+
+.fr-cell {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fr-cell-message {
+  flex: 1 1 auto;
+  padding-right: 12px;
+}
+
+.fr-cell-author {
+  flex: 0 0 150px;
+  color: var(--fg-2);
+}
+
+.fr-cell-date {
+  flex: 0 0 130px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  text-align: right;
+}
+
+.fr-empty {
+  padding: 16px 12px;
+  color: var(--fg-2);
+}
+
+.fr-more {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fr-more-btn {
+  height: 22px;
+  padding: 0 12px;
+  border: 1px solid var(--border-1);
+  border-radius: 11px;
+  color: var(--link);
+  font-size: 11.5px;
+}
+
+.fr-more-btn:hover {
+  background: var(--hover-bg);
+}
+
+.sc-combo {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}

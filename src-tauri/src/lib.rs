@@ -9,6 +9,7 @@ mod layout;
 #[cfg(desktop)]
 mod menu;
 mod model;
+mod native;
 mod parse;
 mod remote;
 mod search;
@@ -32,7 +33,10 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        // 창 크기·위치를 저장했다가 다음 실행에 복원한다. tauri.conf.json의 width/height는
+        // 저장된 상태가 없는 첫 실행에만 쓰인다.
+        .plugin(tauri_plugin_window_state::Builder::default().build());
 
     // 기본 메뉴를 쓰면 macOS의 Close Window가 ⌘W를 선점해 탭 대신 창이 닫힌다
     #[cfg(desktop)]
@@ -42,6 +46,10 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.setup(|_app| {
         menu::fix_shift_accelerators();
+        // accelerator가 실제로 어떻게 등록됐는지 확인하는 디버그 경로
+        if std::env::var_os("GITLANES_DUMP_MENU").is_some() {
+            menu::dump_menu();
+        }
         Ok(())
     });
 
@@ -56,6 +64,9 @@ pub fn run() {
             commands::search_commits,
             commands::get_repo_state,
             commands::get_remote_url,
+            native::reveal_path,
+            native::open_in_terminal,
+            native::set_recent_repos,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
