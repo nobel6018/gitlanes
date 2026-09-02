@@ -155,6 +155,8 @@ export interface RepoWorkspaceProps {
   toggleSidebarNonce: number;
   /** ⌃`(View > Toggle Terminal). 활성 탭에만 올라온다 */
   toggleTerminalNonce: number;
+  /** ⌘W를 터미널 포커스에서 눌렀을 때. 토글이 아니라 닫기 */
+  closeTerminalNonce: number;
   /** 전역 설정 (App 소유, Preferences로 조절) */
   prefs: PrefValues;
   /** 그래프 로드/새로고침 중인지 App에 알린다 (탭 스피너용) */
@@ -224,6 +226,7 @@ export function RepoWorkspace({
   refreshNonce,
   toggleSidebarNonce,
   toggleTerminalNonce,
+  closeTerminalNonce,
   prefs,
   onLoadingChange,
 }: RepoWorkspaceProps) {
@@ -275,6 +278,7 @@ export function RepoWorkspace({
   const lastRefreshNonce = useRef(0);
   const lastSidebarNonce = useRef(0);
   const lastTerminalNonce = useRef(0);
+  const lastCloseTerminalNonce = useRef(0);
   /** 드래그 중 높이는 이 엘리먼트에 직접 쓴다 (리렌더 없음) */
   const dockRef = useRef<HTMLDivElement | null>(null);
 
@@ -853,6 +857,15 @@ export function RepoWorkspace({
     lastTerminalNonce.current = toggleTerminalNonce;
     toggleTerminal();
   }, [toggleTerminalNonce, toggleTerminal]);
+
+  // ⌘W (터미널 포커스): 토글이 아니라 닫기만
+  useEffect(() => {
+    if (closeTerminalNonce === 0 || closeTerminalNonce === lastCloseTerminalNonce.current) {
+      return;
+    }
+    lastCloseTerminalNonce.current = closeTerminalNonce;
+    setTerminalOpen(false);
+  }, [closeTerminalNonce]);
 
   const previewTermHeight = useCallback((height: number) => {
     dockRef.current?.style.setProperty("height", `${height}px`);

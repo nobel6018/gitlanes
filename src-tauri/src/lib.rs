@@ -40,7 +40,8 @@ pub fn run() {
         // 저장된 상태가 없는 첫 실행에만 쓰인다.
         .plugin(tauri_plugin_window_state::Builder::default().build());
 
-    // 기본 메뉴를 쓰면 macOS의 Close Window가 ⌘W를 선점해 탭 대신 창이 닫힌다
+    // 기본 메뉴를 쓰면 macOS의 Close Window가 ⌘W를 선점해 탭 대신 창이 닫힌다.
+    // 직접 구성한 메뉴에는 ⌘W accelerator가 없어서 그 키가 웹뷰로 내려간다.
     #[cfg(desktop)]
     let builder = builder.menu(menu::build).on_menu_event(menu::handle);
 

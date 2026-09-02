@@ -1,8 +1,10 @@
 //! 네이티브 앱 메뉴와 단축키.
 //!
 //! macOS 기본 메뉴는 Close Window가 ⌘W를 선점해서, 탭을 닫으려는 ⌘W가 창을 닫아버린다.
-//! 기본 메뉴를 쓰지 않고 직접 구성해 ⌘W를 Close Tab에 주고, Close Window는 단축키 없이
-//! 메뉴 클릭으로만 쓴다.
+//! 기본 메뉴를 쓰지 않고 직접 구성해 **어느 항목도 ⌘W를 갖지 않게** 한다. 네이티브
+//! accelerator는 웹뷰보다 먼저 키를 먹어서, 포커스에 따라 동작을 나눌 수가 없다.
+//! ⌘W는 웹뷰 keydown으로 내려보내고 프론트가 판단한다(터미널 포커스면 터미널 닫기,
+//! 아니면 탭 닫기). Close Tab과 Close Window는 메뉴 클릭 경로로 남는다.
 //! 복사/붙여넣기처럼 웹뷰 입력에 필요한 항목은 표준 PredefinedMenuItem으로 유지한다.
 //!
 //! File 메뉴와 탭 이동 항목은 동작을 rust 쪽에서 하지 않고 웹뷰로 이벤트만 브로드캐스트한다.
@@ -103,16 +105,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some("CmdOrCtrl+O"),
     )?;
-    let close_tab = MenuItem::with_id(
-        app,
-        "file:close-tab",
-        "Close Tab",
-        true,
-        Some("CmdOrCtrl+W"),
-    )?;
-    // 단축키 없이 클릭으로만 창을 닫는다. ⌘W는 Close Tab이 쓰고, 대안이던 ⇧⌘W는
-    // muda/AppKit 경로에서 실제 키 입력에 반응하지 않는다(fix_shift_accelerators 주석 참고).
-    // 남은 조합을 억지로 붙이는 대신 accelerator를 두지 않는다.
+    // accelerator를 일부러 비워 둔다. ⌘W를 여기 붙이면 네이티브가 웹뷰보다 먼저 키를 먹어
+    // "터미널에 포커스가 있으면 터미널을 닫는다"를 프론트가 구현할 수 없다. ⌘W는 웹뷰
+    // keydown으로 내려가고, 이 항목은 메뉴 클릭으로 menu:close-tab을 보내는 경로로 남는다.
+    let close_tab = MenuItem::with_id(app, "file:close-tab", "Close Tab", true, None::<&str>)?;
+    // 단축키 없이 클릭으로만 창을 닫는다. 대안이던 ⇧⌘W는 muda/AppKit 경로에서 실제 키
+    // 입력에 반응하지 않는다(fix_shift_accelerators 주석 참고). 남은 조합을 억지로 붙이는
+    // 대신 accelerator를 두지 않는다.
     let close_window = MenuItem::with_id(app, CLOSE_WINDOW_ID, "Close Window", true, None::<&str>)?;
     let refresh = MenuItem::with_id(app, "file:refresh", "Refresh", true, Some("CmdOrCtrl+R"))?;
 
