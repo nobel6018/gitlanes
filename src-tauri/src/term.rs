@@ -257,6 +257,7 @@ fn lock_error<E>(_: E) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn env_shell이_있으면_그것을_쓴다() {
@@ -271,11 +272,13 @@ mod tests {
     fn env_shell이_비면_표준_후보로_떨어진다() {
         for empty in [None, Some(""), Some("   ")] {
             let shell = pick_shell(empty);
-            assert!(
-                shell.starts_with('/') || shell.ends_with("cmd.exe"),
-                "{shell}"
-            );
             assert!(!shell.is_empty());
+
+            #[cfg(unix)]
+            assert!(shell.starts_with('/'), "{shell}");
+            // %COMSPEC%은 보통 C:\WINDOWS\system32\cmd.exe다. 대소문자는 보장되지 않는다.
+            #[cfg(windows)]
+            assert!(shell.to_lowercase().contains("cmd"), "{shell}");
         }
     }
 
@@ -288,9 +291,14 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
-        assert_eq!(argv.len(), 2, "{argv:?}");
-        #[cfg(not(windows))]
-        assert_eq!(argv[1], "-l");
+        // 로그인 셸 옵션은 유닉스 셸에만 있다. cmd.exe에는 대응하는 옵션이 없어 프로그램만 실린다.
+        #[cfg(unix)]
+        {
+            assert_eq!(argv.len(), 2, "{argv:?}");
+            assert_eq!(argv[1], "-l");
+        }
+        #[cfg(windows)]
+        assert_eq!(argv.len(), 1, "{argv:?}");
         assert_eq!(
             cmd.get_cwd().map(|cwd| cwd.to_string_lossy().into_owned()),
             Some(".".to_string())
@@ -331,10 +339,84 @@ mod tests {
         assert!(pending.len() < 3, "진도가 나가지 않으면 무한히 쌓인다");
     }
 
-    #[test]
-    fn pty를_열어_입력한_것이_출력으로_돌아온다() {
-        use portable_pty::PtySize;
+    /// 한 줄을 출력하는 최소 명령. 셸 프로필이 끼어들지 않게 `-l` 없이 직접 부른다.
+    ///
+    /// Windows에는 `/bin/sh`가 없어 `cmd /C`를 쓴다. cmd의 출력 코드페이지는 UTF-8이
+    /// 아닐 수 있어 기대 문자열도 플랫폼별로 다르게 둔다(유닉스만 한글).
+    fn echo_command() -> (CommandBuilder, &'static str) {
+        let needle = if cfg!(windows) {
+            "roundtrip"
+        } else {
+            "왕복확인"
+        };
 
+        let mut cmd = if cfg!(windows) {
+            let mut cmd = CommandBuilder::new("cmd");
+            cmd.args(["/C", "echo roundtrip"]);
+            cmd
+        } else {
+            let mut cmd = CommandBuilder::new("/bin/sh");
+            cmd.args(["-c", "echo 왕복확인"]);
+            cmd
+        };
+        cmd.cwd(".");
+        (cmd, needle)
+    }
+
+    /// ASCII 공백(개행, 캐리지 리턴, 공백, 탭)을 모두 지운다.
+    ///
+    /// ConPTY는 좁은 화면에서 출력을 줄바꿈으로 쪼개고 CRLF를 끼워 넣는다. "roundtrip"이
+    /// "round\r\ntrip"으로 도착해도 같은 출력으로 봐야 한다. 유닉스의 "왕복확인"에는
+    /// 공백이 없어 영향이 없다.
+    fn strip_ws(text: &str) -> String {
+        text.chars()
+            .filter(|ch| !ch.is_ascii_whitespace())
+            .collect()
+    }
+
+    /// 기대 문자열이 보일 때까지 모은다.
+    ///
+    /// `read_to_end`를 쓰지 않는 이유는 EOF 시점이 플랫폼마다 다르기 때문이다. ConPTY는
+    /// master를 놓아도 EOF가 늦게 오거나 오지 않을 수 있어 CI가 그대로 멈춘다. 읽기는
+    /// 블로킹이라 deadline으로 끊을 수 없으니, 별도 스레드에 맡기고 채널에서 기다린다.
+    fn collect_until(mut reader: Box<dyn Read + Send>, needle: &str) -> String {
+        use std::sync::mpsc::{channel, RecvTimeoutError};
+
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 1024];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        if tx.send(buffer[..read].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut collected = Vec::new();
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(chunk) => {
+                    collected.extend_from_slice(&chunk);
+                    if strip_ws(&String::from_utf8_lossy(&collected)).contains(&strip_ws(needle)) {
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        String::from_utf8_lossy(&collected).into_owned()
+    }
+
+    #[test]
+    fn pty를_열어_실행한_명령의_출력이_돌아온다() {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 24,
@@ -344,21 +426,18 @@ mod tests {
             })
             .unwrap();
 
-        // 셸 프로필이 끼어들지 않게 sh -c로 직접 확인한다
-        let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.args(["-c", "echo 왕복확인"]);
-        cmd.cwd(".");
+        let (cmd, needle) = echo_command();
         let mut child = pair.slave.spawn_command(cmd).unwrap();
         drop(pair.slave);
 
-        let mut reader = pair.master.try_clone_reader().unwrap();
+        let reader = pair.master.try_clone_reader().unwrap();
         drop(pair.master);
 
-        let mut output = Vec::new();
-        reader.read_to_end(&mut output).unwrap();
-        let text = String::from_utf8_lossy(&output);
-
-        assert!(text.contains("왕복확인"), "{text:?}");
+        let text = collect_until(reader, needle);
+        assert!(
+            strip_ws(&text).contains(&strip_ws(needle)),
+            "{needle:?}를 찾지 못했다: {text:?}"
+        );
         assert_eq!(child.wait().unwrap().exit_code(), 0);
     }
 
