@@ -26,6 +26,47 @@
   z-index: 3;
 }
 
+/* 탭 이니셜 타일(파비콘 역할).
+   .tab-label / .tab-menu-item과 같은 요소에 얹히므로 우선순위를 한 단계 높여 둔다 */
+.tab .tabs-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+}
+
+.tab .tabs-label-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tabs-icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.tabs-icon-empty {
+  background: var(--hover-bg);
+  color: var(--fg-2);
+}
+
+/* 드롭다운 항목은 두 줄이라(align-items: flex-start) 첫 줄에 맞춰 살짝 내린다 */
+.tabs-icon-menu {
+  margin-top: 1px;
+}
+
 /* 탭 우클릭 메뉴. 톤은 shell.css의 .context-menu와 맞춘다 */
 .tabs-menu {
   position: fixed;
