@@ -145,11 +145,13 @@ export interface FileTreeProps {
   rows: FileNavRow[];
   /** 키보드 포커스 행 인덱스. 없으면 -1 */
   focusIndex: number;
+  /** 메인 영역 diff 뷰어에 열려 있는 파일 경로 */
+  activePath?: string | null;
   onOpen: (file: FileChange, index: number) => void;
   onToggle: (path: string, index: number) => void;
 }
 
-export function FileTree({ rows, focusIndex, onOpen, onToggle }: FileTreeProps) {
+export function FileTree({ rows, focusIndex, activePath, onOpen, onToggle }: FileTreeProps) {
   return (
     <ul className="file-list tree">
       {rows.map((row, index) =>
@@ -161,13 +163,14 @@ export function FileTree({ rows, focusIndex, onOpen, onToggle }: FileTreeProps) 
             nameOnly
             navIndex={index}
             focused={index === focusIndex}
+            active={row.file.path === activePath}
             onOpen={() => onOpen(row.file, index)}
           />
         ) : (
           <li key={row.key}>
             <button
               className={index === focusIndex ? "tree-dir kb-focus" : "tree-dir"}
-              style={{ paddingLeft: 4 + row.depth * 12 }}
+              style={{ paddingLeft: 4 + row.depth * 14 }}
               data-nav-index={index}
               tabIndex={-1}
               onClick={() => onToggle(row.path, index)}

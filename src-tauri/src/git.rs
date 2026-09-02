@@ -31,6 +31,19 @@ where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
 {
+    // git 출력은 커밋 메시지나 diff 본문이 임의 인코딩일 수 있어 lossy 변환을 쓴다.
+    run_bytes(repo, args).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+/// git을 실행해 stdout을 바이트 그대로 돌려준다.
+///
+/// [`run`]의 lossy 변환은 잘못된 바이트를 U+FFFD로 바꿔서, 원본이 UTF-8이었는지
+/// 판정할 수 없게 만든다. 바이너리 판정처럼 바이트가 그대로 필요한 곳은 이쪽을 쓴다.
+pub fn run_bytes<P, S>(repo: P, args: &[S]) -> Result<Vec<u8>, String>
+where
+    P: AsRef<OsStr>,
+    S: AsRef<OsStr>,
+{
     let output = base_command(repo)
         .args(args)
         .output()
@@ -44,8 +57,7 @@ where
         return Err(stderr);
     }
 
-    // git 출력은 커밋 메시지나 diff 본문이 임의 인코딩일 수 있어 lossy 변환을 쓴다.
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }
 
 /// 콜백이 계속할지 멈출지 알려주는 신호. `Stop`이면 남은 출력을 버리고 프로세스를 정리한다.

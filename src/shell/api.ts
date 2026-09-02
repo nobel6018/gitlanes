@@ -32,6 +32,11 @@ export function getFileDiff(
   return invoke<string>("get_file_diff", { path, sha, file, oldFile });
 }
 
+/** 커밋 시점의 파일 전문 (git show <sha>:<file>). 바이너리면 Err("binary") */
+export function getFileContent(path: string, sha: string, file: string): Promise<string> {
+  return invoke<string>("get_file_content", { path, sha, file });
+}
+
 /** 전체 히스토리 검색. index는 load_graph와 같은 topo 순서의 행 번호 */
 export function searchCommits(path: string, query: string, limit: number): Promise<SearchMatch[]> {
   return invoke<SearchMatch[]>("search_commits", { path, query, limit });

@@ -44,6 +44,8 @@ function currentWip(): WipInfo {
 }
 /** 이 파일을 열면 5,000줄짜리 diff가 와서 DiffView 가상 스크롤을 검증할 수 있다 */
 const HUGE_DIFF_FILE = "src/generated/api-schema.ts";
+/** get_file_content가 Err("binary")를 돌려주는 파일 (뷰어 오류 표시 검증용) */
+const BINARY_FILE = "public/icon.png";
 
 const REPO: RepoInfo = {
   path: MOCK_PATH,
@@ -244,6 +246,7 @@ function mockFiles(seed: number): FileChange[] {
     { path: "src/graph/lane-layout.ts", oldPath: "src/graph/layout.ts", status: "R", additions: 9, deletions: 4 },
     { path: "src/legacy/OldGraph.tsx", oldPath: null, status: "D", additions: 0, deletions: 212 },
     { path: "docs/graph-rendering.md", oldPath: null, status: "A", additions: 47, deletions: 0 },
+    { path: BINARY_FILE, oldPath: null, status: "M", additions: 0, deletions: 0 },
     // 가상 스크롤 검증용 대형 diff
     { path: HUGE_DIFF_FILE, oldPath: null, status: "M", additions: 2480, deletions: 2470 },
   ];
@@ -311,6 +314,9 @@ function mockDiff(file: string, oldFile: string | null): string {
   if (file === HUGE_DIFF_FILE) {
     return hugeDiff(file);
   }
+  if (file === BINARY_FILE) {
+    return `diff --git a/${file} b/${file}\nBinary files a/${file} and b/${file} differ\n`;
+  }
   const header = oldFile === null
     ? `diff --git a/${file} b/${file}\nindex 3a91c04..7de2b18 100644\n--- a/${file}\n+++ b/${file}`
     : `diff --git a/${oldFile} b/${file}\nsimilarity index 86%\nrename from ${oldFile}\nrename to ${file}\nindex 3a91c04..7de2b18 100644\n--- a/${oldFile}\n+++ b/${file}`;
@@ -353,6 +359,46 @@ function mockDiff(file: string, oldFile: string | null): string {
     "\\ No newline at end of file",
     "",
   ].join("\n");
+}
+
+/**
+ * 커밋 시점 파일 전문. 기본 200줄이고, 대형 파일만 5,400줄을 돌려줘
+ * DiffPanel의 "5,000줄 이상은 하이라이트 생략" 경로까지 확인할 수 있게 한다.
+ */
+function mockFileContent(file: string): string {
+  const total = file === HUGE_DIFF_FILE ? 5400 : 200;
+  const name = splitBase(file);
+  const out: string[] = [
+    `// ${file}`,
+    `// 하네스 합성 파일 — ${total}줄`,
+    'import type { GraphData } from "../types";',
+    "",
+    `export interface ${name}Options {`,
+    "  limit: number;",
+    "  skip: number;",
+    "}",
+    "",
+  ];
+  while (out.length < total) {
+    const i = out.length;
+    if (i % 20 === 0) {
+      out.push(`export function step${i}(data: GraphData, options: ${name}Options): number {`);
+      out.push(`  const rows = data.rows.slice(options.skip, options.skip + options.limit);`);
+      out.push(`  return rows.length + ${i};`);
+      out.push("}");
+      out.push("");
+      continue;
+    }
+    out.push(`  const value${i} = ${i} * 2; // 합성 라인 ${i}`);
+  }
+  return out.slice(0, total).join("\n");
+}
+
+/** "src/shell/App.tsx" -> "App" (합성 코드의 식별자로 쓴다) */
+function splitBase(file: string): string {
+  const base = file.split("/").pop() ?? file;
+  const stem = base.split(".")[0];
+  return stem.charAt(0).toUpperCase() + stem.slice(1).replace(/[^A-Za-z0-9]/g, "");
 }
 
 function readArg(payload: unknown, key: string): unknown {
@@ -467,6 +513,15 @@ mockIPC(async (cmd, payload) => {
       const picked = MOCK_PICK_PATHS[pickCursor % MOCK_PICK_PATHS.length];
       pickCursor += 1;
       return picked;
+    }
+
+    case "get_file_content": {
+      await sleep(110);
+      const file = String(readArg(payload, "file") ?? "");
+      if (file === BINARY_FILE) {
+        throw new Error("binary");
+      }
+      return mockFileContent(file);
     }
 
     // v0.11 새 command. 하네스에는 OS 연동이 없으므로 로그만 남긴다

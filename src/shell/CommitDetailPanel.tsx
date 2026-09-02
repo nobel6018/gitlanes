@@ -22,6 +22,10 @@ export interface CommitDetailPanelProps {
   onDiffOpenChange?: (open: boolean) => void;
   /** 값이 바뀌면(0이 아니고 직전 값과 다르면) diff를 닫고 파일 목록으로 복귀한다 */
   closeDiffNonce?: number;
+  /** 주어지면 인라인 diff를 열지 않고 이 콜백만 부른다 (메인 영역 DiffPanel 경유) */
+  onOpenFile?: (file: FileChange) => void;
+  /** 메인 영역 뷰어에 열려 있는 파일 경로. 그 행을 accent로 강조한다 */
+  openFilePath?: string | null;
 }
 
 interface DiffState {
@@ -53,6 +57,8 @@ export function CommitDetailPanel({
   onError,
   onDiffOpenChange,
   closeDiffNonce,
+  onOpenFile,
+  openFilePath,
 }: CommitDetailPanelProps) {
   const [details, setDetails] = useState<CommitDetails | null>(null);
   const [loading, setLoading] = useState(false);
@@ -105,6 +111,11 @@ export function CommitDetailPanel({
 
   const openDiff = useCallback(
     async (file: FileChange) => {
+      // 셸이 메인 영역 뷰어를 붙였으면 인라인 diff는 열지 않는다 (계약 v0.12)
+      if (onOpenFile !== undefined) {
+        onOpenFile(file);
+        return;
+      }
       setDiffFile(file.path);
       setDiff(null);
       try {
@@ -115,7 +126,7 @@ export function CommitDetailPanel({
         onError(errorMessage(err));
       }
     },
-    [repoPath, sha, onError],
+    [repoPath, sha, onError, onOpenFile],
   );
 
   const closeDiff = useCallback(() => {
@@ -485,6 +496,7 @@ export function CommitDetailPanel({
               </button>
             </span>
           </h3>
+          <FileSummary files={details.files} />
           {details.files.length === 0 ? (
             <div className="panel-empty small">변경된 파일이 없습니다.</div>
           ) : (
@@ -500,6 +512,7 @@ export function CommitDetailPanel({
                 <FileTree
                   rows={treeRows}
                   focusIndex={focusIndex}
+                  activePath={openFilePath ?? null}
                   onOpen={(file, index) => {
                     setFocusIndex(index);
                     void openDiff(file);
@@ -517,6 +530,7 @@ export function CommitDetailPanel({
                       file={file}
                       navIndex={index}
                       focused={index === focusIndex}
+                      active={file.path === openFilePath}
                       onOpen={() => {
                         setFocusIndex(index);
                         void openDiff(file);
@@ -530,6 +544,51 @@ export function CommitDetailPanel({
         </section>
       </div>
     </aside>
+  );
+}
+
+/** "N modified · N added · N deleted" 한 줄 요약. 0인 항목은 생략한다 */
+function FileSummary({ files }: { files: FileChange[] }) {
+  if (files.length === 0) {
+    return null;
+  }
+  let modified = 0;
+  let added = 0;
+  let deleted = 0;
+  let renamed = 0;
+  for (const file of files) {
+    if (file.status === "A") {
+      added += 1;
+    } else if (file.status === "D") {
+      deleted += 1;
+    } else if (file.status === "R" || file.status === "C") {
+      renamed += 1;
+    } else {
+      modified += 1;
+    }
+  }
+  const parts: { key: string; className: string; text: string }[] = [];
+  if (modified > 0) {
+    parts.push({ key: "m", className: "sum-mod", text: `${modified} modified` });
+  }
+  if (added > 0) {
+    parts.push({ key: "a", className: "sum-add", text: `${added} added` });
+  }
+  if (deleted > 0) {
+    parts.push({ key: "d", className: "sum-del", text: `${deleted} deleted` });
+  }
+  if (renamed > 0) {
+    parts.push({ key: "r", className: "sum-ren", text: `${renamed} renamed` });
+  }
+  return (
+    <div className="file-summary">
+      {parts.map((part, i) => (
+        <span key={part.key}>
+          {i > 0 && <span className="sum-sep"> · </span>}
+          <span className={part.className}>{part.text}</span>
+        </span>
+      ))}
+    </div>
   );
 }
 

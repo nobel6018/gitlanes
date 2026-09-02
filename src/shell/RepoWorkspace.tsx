@@ -6,9 +6,18 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraphView } from "../graph";
 import { COMMITS_PER_PAGE } from "../constants";
-import type { GraphData, RefEntry, RepoInfo, SearchMatch, WipInfo } from "../types";
+import type {
+  FileChange,
+  GraphData,
+  RefEntry,
+  RepoInfo,
+  SearchMatch,
+  WipInfo,
+} from "../types";
 import {
   errorMessage,
+  getFileContent,
+  getFileDiff,
   getRemoteUrl,
   getRepoState,
   listRefs,
@@ -23,6 +32,7 @@ import { BranchSidebar } from "./BranchSidebar";
 import { CommitDetailPanel } from "./CommitDetailPanel";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
+import { DiffPanel } from "./DiffPanel";
 import { FilterResults } from "./FilterResults";
 import { QuickSwitcher } from "./QuickSwitcher";
 import {
@@ -220,10 +230,12 @@ export function RepoWorkspace({
   /** 검색 필터 모드. 켜지면 그래프 자리에 매치 목록만 그린다 */
   const [filterMode, setFilterMode] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
-  /** 상세 패널이 diff를 펼쳐 놓았는가 (패널이 알려준다) */
-  const [diffOpen, setDiffOpen] = useState(false);
-  /** 값을 올리면 패널이 diff를 닫고 파일 목록으로 돌아간다 */
-  const [closeDiffNonce, setCloseDiffNonce] = useState(0);
+  /** 메인 영역에 펼친 파일. null이면 그래프(또는 필터 목록)를 보여준다 */
+  const [openFile, setOpenFile] = useState<FileChange | null>(null);
+  const [diffText, setDiffText] = useState<string | null>(null);
+  const [fileText, setFileText] = useState<string | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
@@ -242,6 +254,10 @@ export function RepoWorkspace({
   const sidebarFilterRef = useRef<HTMLInputElement | null>(null);
   /** 드래그 중에는 이 엘리먼트의 CSS 변수만 갱신한다 (리렌더 없음) */
   const mainRef = useRef<HTMLDivElement | null>(null);
+  /** "sha\0path" -> 파일 전문. File View를 오갈 때 재요청하지 않는다 */
+  const fileTextCache = useRef(new Map<string, string>());
+  /** 진행 중인 파일 전문 요청 키. 같은 파일을 두 번 부르지 않는다 */
+  const fileTextReq = useRef<string | null>(null);
   /** query -> search_commits 결과. Enter 연타에 재호출하지 않는다 */
   const searchCache = useRef(new Map<string, SearchMatch[]>());
   /** append 완료 후 점프할 sha */
@@ -354,6 +370,8 @@ export function RepoWorkspace({
         lastQuery.current = "";
         setSearchExhausted(false);
         searchCache.current.clear();
+        fileTextCache.current.clear();
+        setOpenFile(null);
         pendingJump.current = null;
         setGraph(null);
         setRefs([]);
@@ -901,9 +919,98 @@ export function RepoWorkspace({
     });
   }, [selectedSha, data.rows, data.stashes, showToast, showError]);
 
+  /** 지금 뷰어가 보여주는 파일의 캐시 키. 늦게 온 응답을 버리는 데 쓴다 */
+  const fileKey =
+    repo === null || openFile === null || selectedSha === null
+      ? null
+      : `${selectedSha}\u0000${openFile.path}`;
+  const fileKeyRef = useRef(fileKey);
+  fileKeyRef.current = fileKey;
+
+  // 다른 커밋을 고르거나 선택을 풀면 열린 파일도 닫는다
+  useEffect(() => {
+    setOpenFile(null);
+  }, [selectedSha]);
+
+  // 파일이 열리면 그 커밋 기준 unified diff를 읽는다
+  useEffect(() => {
+    if (repo === null || openFile === null || selectedSha === null) {
+      setDiffText(null);
+      setFileText(null);
+      setDiffError(null);
+      setDiffLoading(false);
+      return;
+    }
+    let alive = true;
+    setDiffText(null);
+    setFileText(null);
+    setDiffError(null);
+    setDiffLoading(true);
+    getFileDiff(repo.path, selectedSha, openFile.path, openFile.oldPath)
+      .then((text) => {
+        if (alive) {
+          setDiffText(text);
+        }
+      })
+      .catch((err: unknown) => {
+        if (alive) {
+          setDiffError(errorMessage(err));
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setDiffLoading(false);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [repo, openFile, selectedSha]);
+
+  /** File View/split이 파일 전문을 필요로 할 때만 get_file_content를 부른다 */
+  const handleRequestFileText = useCallback(() => {
+    if (repo === null || openFile === null || selectedSha === null) {
+      return;
+    }
+    const key = `${selectedSha}\u0000${openFile.path}`;
+    const cached = fileTextCache.current.get(key);
+    if (cached !== undefined) {
+      setFileText(cached);
+      return;
+    }
+    if (fileTextReq.current === key) {
+      return;
+    }
+    fileTextReq.current = key;
+    setDiffLoading(true);
+    getFileContent(repo.path, selectedSha, openFile.path)
+      .then((text) => {
+        fileTextCache.current.set(key, text);
+        if (fileKeyRef.current === key) {
+          setFileText(text);
+        }
+      })
+      .catch((err: unknown) => {
+        // "binary" / "too large" 같은 Err는 그대로 뷰어에 넘긴다
+        if (fileKeyRef.current === key) {
+          setDiffError(errorMessage(err));
+        }
+      })
+      .finally(() => {
+        if (fileTextReq.current === key) {
+          fileTextReq.current = null;
+        }
+        if (fileKeyRef.current === key) {
+          setDiffLoading(false);
+        }
+      });
+  }, [repo, openFile, selectedSha]);
+
+  const closeFile = useCallback(() => setOpenFile(null), []);
+
   /**
    * Esc는 한 번에 한 단계만 되돌린다.
-   * 오버레이 → diff 뷰 → 검색어 → 선택. 처리했으면 true
+   * 오버레이 → diff 패널 닫기 → 검색어 → 선택. 처리했으면 true
    */
   const handleEscape = useCallback((): boolean => {
     if (quickOpen) {
@@ -918,8 +1025,8 @@ export function RepoWorkspace({
       // 사이드바/탭 컨텍스트 메뉴와 오버레이는 자기 Esc 핸들러가 닫는다. 여기서 더 나가지 않는다
       return true;
     }
-    if (diffOpen) {
-      setCloseDiffNonce((n) => n + 1);
+    if (openFile !== null) {
+      setOpenFile(null);
       return true;
     }
     if (query !== "") {
@@ -931,7 +1038,7 @@ export function RepoWorkspace({
       return true;
     }
     return false;
-  }, [quickOpen, menu, diffOpen, query, handleClearSearch, selectedSha]);
+  }, [quickOpen, menu, openFile, query, handleClearSearch, selectedSha]);
 
   // 워크스페이스 단축키. 활성 탭에서만 반응한다 (탭마다 하나씩 등록돼 있다)
   useEffect(() => {
@@ -1104,7 +1211,17 @@ export function RepoWorkspace({
           </>
         )}
         <div className="graph-area">
-          {filterMode ? (
+          {openFile !== null ? (
+            <DiffPanel
+              file={openFile}
+              diffText={diffText}
+              fileText={fileText}
+              onRequestFileText={handleRequestFileText}
+              loading={diffLoading}
+              error={diffError}
+              onClose={closeFile}
+            />
+          ) : filterMode ? (
             <FilterResults
               rows={filteredRows}
               query={query}
@@ -1151,8 +1268,8 @@ export function RepoWorkspace({
             isStash={data.stashes.some((stash) => stash.sha === selectedSha)}
             onSelectSha={setSelectedSha}
             onError={showError}
-            onDiffOpenChange={setDiffOpen}
-            closeDiffNonce={closeDiffNonce}
+            onOpenFile={setOpenFile}
+            openFilePath={openFile?.path ?? null}
           />
         )}
       </div>

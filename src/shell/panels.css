@@ -444,3 +444,470 @@ kbd.sc-key.wide {
   align-items: center;
   gap: 3px;
 }
+
+/* ============================================================
+   v0.12: 파일 목록 크기 복원(GitKraken 수준) + 메인 영역 diff 뷰어
+   shell.css의 .file-row(22px)를 .file-nav 하위에서만 덮어쓴다
+   ============================================================ */
+
+.file-nav .file-row {
+  height: 28px;
+  line-height: 28px;
+  gap: 8px;
+  padding: 0 6px;
+  font-size: 13px;
+}
+
+.file-nav .file-row .file-path {
+  font-size: 13px;
+}
+
+.file-nav .file-row .path-dir {
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+
+.file-nav .file-row .path-base {
+  color: var(--fg-1);
+}
+
+.file-nav .file-row .file-stat {
+  font-size: 11px;
+}
+
+.file-nav .tree-dir {
+  height: 28px;
+  line-height: 28px;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.file-nav .tree-dir-name {
+  font-size: 12.5px;
+}
+
+.file-nav .tree-dir-count {
+  font-size: 11px;
+}
+
+/* status 아이콘 (글자 뱃지 대체) */
+.file-icon {
+  flex: 0 0 14px;
+  width: 14px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: inherit;
+}
+
+.st-M,
+.st-T {
+  color: var(--modified);
+}
+
+.st-A {
+  color: var(--added);
+}
+
+.st-D {
+  color: var(--deleted);
+}
+
+.st-R,
+.st-C {
+  color: var(--fg-2);
+}
+
+/* 메인 영역 뷰어에 열려 있는 파일 */
+.file-nav .file-row.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.file-nav .file-row.active .path-dir {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.file-nav .file-row.active .path-base {
+  color: #fff;
+}
+
+/* "N modified · N added · N deleted" */
+.file-summary {
+  padding: 0 6px 4px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+}
+
+.sum-mod {
+  color: var(--modified);
+}
+
+.sum-add {
+  color: var(--added);
+}
+
+.sum-del {
+  color: var(--deleted);
+}
+
+.sum-ren {
+  color: var(--fg-2);
+}
+
+.sum-sep {
+  color: var(--fg-2);
+}
+
+/* ---------- DiffPanel ---------- */
+
+.dp-root {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-content);
+}
+
+.dp-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-toolbar);
+}
+
+.dp-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dp-path .path-base {
+  color: var(--fg-1);
+  font-weight: 600;
+}
+
+.dp-stat {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.dp-loading {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.dp-close {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 15px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.dp-close:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.dp-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  height: 26px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.dp-hunks {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dp-icon-btn {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.dp-icon-btn:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.dp-icon-btn:disabled,
+.dp-toggle:disabled,
+.view-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.dp-hunk-count {
+  min-width: 34px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-2);
+}
+
+.dp-toggle {
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  color: var(--fg-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.dp-toggle:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.dp-toggle.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.dp-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.dp-body:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.dp-spacer {
+  position: relative;
+  min-width: max-content;
+}
+
+/* 줄바꿈 모드에서만 쓰이는 컨테이너. 가로로 늘리지 않아 줄이 접힌다 */
+.dp-flow {
+  min-width: 100%;
+}
+
+/* 한 줄. 가상 스크롤에서는 spacer 안에 절대 배치된다 */
+.dp-line,
+.dp-srow {
+  display: flex;
+  align-items: stretch;
+  height: 20px; /* DiffPanel의 LINE_HEIGHT와 일치해야 한다 */
+  line-height: 20px;
+  min-width: 100%;
+  white-space: pre;
+}
+
+.dp-window {
+  position: absolute;
+  left: 0;
+  min-width: 100%;
+}
+
+.dp-no {
+  flex: 0 0 46px;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--fg-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dp-sign {
+  flex: 0 0 14px;
+  text-align: center;
+  color: var(--fg-2);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dp-code {
+  flex: 1 1 auto;
+  padding: 0 10px 0 2px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.dp-line.dp-add {
+  background: var(--added-bg);
+}
+
+.dp-line.dp-add .dp-sign {
+  color: var(--added);
+}
+
+.dp-line.dp-del {
+  background: var(--deleted-bg);
+}
+
+.dp-line.dp-del .dp-sign {
+  color: var(--deleted);
+}
+
+.dp-line.dp-hunk {
+  background: rgba(111, 168, 232, 0.08);
+  color: var(--link);
+}
+
+.dp-line.dp-meta {
+  color: var(--fg-2);
+}
+
+/* split: 좌 old / 우 new */
+.dp-srow {
+  align-items: stretch;
+}
+
+.dp-half {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.dp-half-left {
+  border-right: 1px solid var(--border-1);
+}
+
+.dp-half.dp-add {
+  background: var(--added-bg);
+}
+
+.dp-half.dp-del {
+  background: var(--deleted-bg);
+}
+
+/* 대응하는 줄이 없는 쪽은 해칭으로 비운다 */
+.dp-half.dp-empty {
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.035) 0,
+    rgba(255, 255, 255, 0.035) 1px,
+    transparent 1px,
+    transparent 6px
+  );
+}
+
+/* 줄바꿈 모드: 고정 높이를 버리고 흐르게 둔다 (가상 스크롤 off) */
+.dp-body.dp-wrap .dp-line,
+.dp-body.dp-wrap .dp-srow {
+  height: auto;
+  min-height: 20px;
+  align-items: flex-start;
+}
+
+.dp-body.dp-wrap .dp-code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dp-message {
+  padding: 16px 12px;
+  color: var(--fg-2);
+}
+
+/* ---------- highlight.js 토큰 색 (우리 팔레트에 맞춘 다크) ---------- */
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-meta .hljs-keyword {
+  color: #C09AE8;
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string,
+.hljs-quote {
+  color: var(--added);
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: #E88A5C;
+}
+
+.hljs-comment,
+.hljs-meta,
+.hljs-deletion {
+  color: var(--fg-2);
+  font-style: italic;
+}
+
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-title.class_,
+.hljs-built_in,
+.hljs-builtin-name {
+  color: #52C4AE;
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-function .hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: #7B99E3;
+}
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attr,
+.hljs-params,
+.hljs-property {
+  color: var(--fg-1);
+}
+
+.hljs-tag {
+  color: var(--fg-2);
+}
+
+.hljs-strong {
+  font-weight: 700;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}

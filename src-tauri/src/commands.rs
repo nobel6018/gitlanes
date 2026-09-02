@@ -1,4 +1,4 @@
-//! 저장소를 읽는 Tauri command 9개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
+//! 저장소를 읽는 Tauri command 10개. 계약은 CONTRACTS.md의 "Tauri Commands" 절.
 //! 파일관리자/터미널/최근 목록 command 3개는 [`crate::native`]에 있다.
 //!
 //! @see CONTRACTS.md
@@ -32,6 +32,10 @@ const REF_ARGS: [&str; 5] = [
 ];
 const STATUS_ARGS: [&str; 3] = ["status", "--porcelain", "-z"];
 const HEAD_ARGS: [&str; 2] = ["rev-parse", "HEAD"];
+
+/// `get_file_content`의 상한. 넘으면 내용을 읽지 않고 거절한다.
+/// 뷰어가 한 화면에 올릴 수 있는 크기를 한참 넘고, 문법 강조도 의미가 없어진다.
+const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
 
 /// 저장소를 검증하고 루트 경로, 현재 브랜치, HEAD sha를 돌려준다.
 #[tauri::command]
@@ -424,6 +428,36 @@ pub fn get_file_diff(
     git::run(&path, &args).map_err(|e| format!("diff를 읽지 못했습니다: {e}"))
 }
 
+/// 커밋 시점의 파일 전문. `git show <sha>:<file>`이다.
+///
+/// 오류 문자열 두 개는 프론트가 분기에 쓰는 계약이다(CONTRACTS.md v0.12).
+/// 바이너리는 `"binary"`, 상한 초과는 `"too large"`를 그대로 돌려준다. 그 밖의 실패는
+/// git stderr를 그대로 올려서 "path 'x' does not exist in '<sha>'" 같은 원문이 보이게 한다.
+#[tauri::command]
+pub fn get_file_content(path: String, sha: String, file: String) -> Result<String, String> {
+    let sha = validate_rev(&sha)?;
+    let file = validate_pathspec(&file)?;
+    let spec = format!("{sha}:{file}");
+
+    // 크기를 먼저 묻는다. cat-file -s는 blob 헤더만 읽어서, 상한을 넘는 파일을 메모리에
+    // 올리지 않고 거절할 수 있다. 파일이 그 커밋에 없으면 이 호출이 먼저 실패한다.
+    let size = git::run_bytes(&path, &["cat-file", "-s", spec.as_str()])
+        .map(|out| String::from_utf8_lossy(&out).trim().to_string())?;
+    let size: usize = size
+        .parse()
+        .map_err(|_| format!("파일 크기를 읽지 못했습니다: {size}"))?;
+    if size > MAX_FILE_BYTES {
+        return Err("too large".to_string());
+    }
+
+    // lossy 변환을 쓰는 git::run으로는 잘못된 바이트가 U+FFFD로 바뀌어 판정이 불가능하다
+    let bytes = git::run_bytes(&path, &["show", spec.as_str()])?;
+    if bytes.contains(&0) {
+        return Err("binary".to_string());
+    }
+    String::from_utf8(bytes).map_err(|_| "binary".to_string())
+}
+
 /// 시작 시 열 저장소 경로. CLI 첫 위치 인자 → `GITLANES_REPO` 환경변수 순으로 찾는다.
 /// 경로 존재 검증은 하지 않는다. 검증은 [`open_repo`]가 한다.
 #[tauri::command]
@@ -500,6 +534,18 @@ fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
     let mut tokens = out.split_whitespace();
     tokens.next(); // 첫 토큰은 커밋 자신
     Ok(tokens.map(str::to_string).collect())
+}
+
+/// 파일 경로가 옵션으로 해석되지 않도록 막는다. `<sha>:<file>` 조립 전에 거른다.
+fn validate_pathspec(file: &str) -> Result<String, String> {
+    let file = file.trim();
+    if file.is_empty() {
+        return Err("파일 경로가 비어 있습니다".to_string());
+    }
+    if file.starts_with('-') {
+        return Err(format!("파일 경로 형식이 올바르지 않습니다: {file}"));
+    }
+    Ok(file.to_string())
 }
 
 /// rev 문자열이 옵션으로 해석되지 않도록 막는다.
@@ -1358,5 +1404,93 @@ mod integration_tests {
         let sha = repo.rev("HEAD~3");
         let diff = get_file_diff(repo.path(), sha, "docs/설계 문서.md".to_string(), None).unwrap();
         assert!(diff.contains("docs/설계 문서.md"), "{diff}");
+    }
+
+    #[test]
+    fn 커밋_시점의_파일_전문을_그대로_돌려준다() {
+        let repo = fixture();
+        // a.txt는 root 커밋에만 있고, 다음 커밋에서 b.txt로 rename + 세 번째 줄이 바뀐다
+        let root = repo.rev("HEAD~3");
+        let content = get_file_content(repo.path(), root, "a.txt".to_string()).unwrap();
+        assert_eq!(content, "a\nb\nc\n");
+
+        let head = repo.rev("HEAD");
+        let renamed = get_file_content(repo.path(), head, "b.txt".to_string()).unwrap();
+        assert_eq!(renamed, "a\nb\nd\n");
+    }
+
+    #[test]
+    fn 공백과_한글이_섞인_경로도_전문을_읽는다() {
+        let repo = fixture();
+        let sha = repo.rev("HEAD~3");
+        let content = get_file_content(repo.path(), sha, "docs/설계 문서.md".to_string()).unwrap();
+        assert_eq!(content, "제목\n");
+    }
+
+    #[test]
+    fn nul이_섞인_파일은_binary다() {
+        let repo = TempRepo::init("gitlanes-binary");
+        repo.write_bytes("blob.dat", b"PNG\x00\x01\x02text");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "binary"]);
+
+        let sha = repo.rev("HEAD");
+        let error = get_file_content(repo.path(), sha, "blob.dat".to_string()).unwrap_err();
+        assert_eq!(error, "binary");
+    }
+
+    #[test]
+    fn utf8이_아닌_파일도_binary다() {
+        let repo = TempRepo::init("gitlanes-latin1");
+        // NUL은 없지만 UTF-8로 해석할 수 없는 바이트열(latin-1 "é")
+        repo.write_bytes("latin1.txt", b"caf\xe9\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "latin1"]);
+
+        let sha = repo.rev("HEAD");
+        let error = get_file_content(repo.path(), sha, "latin1.txt".to_string()).unwrap_err();
+        assert_eq!(error, "binary");
+    }
+
+    #[test]
+    fn 상한을_넘는_파일은_too_large다() {
+        let repo = TempRepo::init("gitlanes-huge");
+        repo.write_bytes("huge.txt", &vec![b'a'; MAX_FILE_BYTES + 1]);
+        repo.write("small.txt", "ok\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "huge"]);
+
+        let sha = repo.rev("HEAD");
+        let error = get_file_content(repo.path(), sha.clone(), "huge.txt".to_string()).unwrap_err();
+        assert_eq!(error, "too large");
+        // 같은 커밋의 작은 파일은 정상이다
+        assert_eq!(
+            get_file_content(repo.path(), sha, "small.txt".to_string()).unwrap(),
+            "ok\n"
+        );
+    }
+
+    #[test]
+    fn 그_커밋에_없는_파일은_git_오류를_올린다() {
+        let repo = fixture();
+        let sha = repo.rev("HEAD");
+        let error = get_file_content(repo.path(), sha, "없는파일.txt".to_string()).unwrap_err();
+        assert!(error.contains("없는파일.txt"), "{error}");
+        assert_ne!(error, "binary");
+        assert_ne!(error, "too large");
+    }
+
+    #[test]
+    fn 옵션처럼_생긴_인자는_전문을_읽기_전에_거부한다() {
+        let repo = fixture();
+        let sha = repo.rev("HEAD");
+        assert!(get_file_content(repo.path(), sha.clone(), "  ".to_string()).is_err());
+        assert!(get_file_content(repo.path(), sha, "-x".to_string()).is_err());
+        assert!(get_file_content(
+            repo.path(),
+            "--upload-pack=evil".to_string(),
+            "a.txt".to_string()
+        )
+        .is_err());
     }
 }
