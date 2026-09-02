@@ -25,6 +25,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+portable-pty = "0.9.0"
 
 # macOS 전용: muda가 Shift 조합 accelerator에 소문자 keyEquivalent를 넣어
 # AppKit이 ⇧⌘W를 매칭하지 못한다. 메뉴 설치 후 직접 대문자로 고치려고 쓴다.

@@ -411,3 +411,39 @@ git_stash_pop(path) -> OpResult                            // stash@{0}
 - 그래프 행 컨텍스트 메뉴에 추가: "Create branch here…", "Checkout <branch>"(행에 로컬 브랜치 pill이 있을 때, 여러 개면 각각), "Cherry-pick"은 다음 라운드
 - 단축키: Fetch ⌘⇧L? → **없음**(GitKraken도 없음). Push/Stash도 단축키 없음. 실수 방지 우선
 - README/릴리스 노트의 "읽기 전용" 문구는 감독이 수정
+
+## v0.16 (쓰기 작업 롤백 + 하단 내장 터미널)
+
+사용자 결정: 읽기 전용으로 되돌리고, 인증이 필요한 git 작업은 앱 하단 내장 터미널에서 사용자 환경 그대로 하게 한다. (v0.15 쓰기 작업 전체 롤백)
+
+### 롤백 (감독 + 각 소유자)
+- 툴바의 Fetch▾/Push/Branch/Stash/Pop 그룹 제거(Terminal은 하단 토글로 대체). 사이드바 브랜치 우클릭의 checkout/create/merge/delete/push 제거(Copy Name/Open on Remote/Jump만 남김), 더블클릭 checkout 제거(더블클릭=Jump로). 그래프 행 메뉴의 Create branch/Checkout 제거. ConfirmDialog/PromptDialog/ConflictBanner는 파일로 남겨도 되나 미사용(정리는 감독)
+- rust-core: ops.rs의 쓰기 command 10개는 파일째 삭제하지 않고 `#[cfg(feature = "write-ops")]`로 봉인 + invoke_handler 등록 해제(테스트는 유지). get_sync_state도 봉인(ahead/behind 배지 제거)
+- README/웰컴/릴리스 노트: "읽기 전용" 문구 복원 + "내장 터미널" 추가
+- src/types.ts의 OpResult/SyncState/PullMode는 남겨두되 미사용 주석
+
+### 내장 터미널 (신규)
+xterm.js 6(@xterm/xterm, @xterm/addon-fit, @xterm/addon-web-links 설치됨) + portable-pty 0.9(설치됨).
+
+rust-core:
+```
+term_open(path: string, cols: number, rows: number) -> string   // PTY 생성, 세션 id 반환. 셸은 $SHELL(없으면 /bin/zsh→/bin/bash), cwd=path, 로그인 셸(-l)
+term_write(id: string, data: string) -> ()                       // 키 입력을 PTY stdin에 씀
+term_resize(id: string, cols: number, rows: number) -> ()
+term_close(id: string) -> ()                                     // PTY kill + reader 정리
+```
+- PTY 출력은 Tauri 이벤트 `term:data:{id}` payload=string(UTF-8, lossy)로 프론트에 스트리밍. 종료는 `term:exit:{id}` payload=exitCode. 세션은 앱 상태(Mutex<HashMap>)로 관리, 앱 종료 시 전부 kill
+- capability: 새 이벤트 listen은 core:event:default로 커버됨. 별도 권한 불필요
+
+ui-panels: 신규 `Terminal.tsx`
+```ts
+export interface TerminalProps { repoPath: string; visible: boolean; onClose: () => void; }
+export function Terminal(props: TerminalProps): JSX.Element;
+```
+- @xterm/xterm Terminal + FitAddon + WebLinksAddon. 다크 테마 색을 우리 팔레트로(bg var(--bg-content), fg var(--fg-1), 커서 var(--accent), 16색은 LANE_COLORS 근사). visible이 true가 될 때 term_open(아직 없으면), onData→term_write, term:data 이벤트→write, resize observer→fit+term_resize. term:exit면 "[프로세스 종료: N] — 클릭해서 재시작" 표시. 폰트는 ui-monospace 12.5px
+- 세션은 repoPath당 1개 유지(탭 전환해도 살아있게 — 컴포넌트는 hidden으로 숨기고 언마운트 안 함). visible=false면 display:none(PTY는 유지)
+
+ui-shell:
+- 하단 터미널 패널: RepoWorkspace 하단에 접히는 영역(기본 접힘, 높이 기억 localStorage `gitlanes.termHeight`, 상단 경계 드래그로 높이 조절 — SplitHandle 가로 버전 또는 수평 스플리터). 툴바에 Terminal 토글 버튼(아이콘, active 상태 표시), 단축키 `⌃\`` (Ctrl+백틱, 웹뷰 keydown, 네이티브 메뉴 View에도 "Toggle Terminal" 항목은 rust-core가 추가 → menu:toggle-terminal). 열릴 때 자동 포커스, 패널 헤더에 레포 경로 + × 닫기
+- 기존 툴바 open_in_terminal(외부 터미널)은 제거 (내장으로 대체). ContextMenu의 "Open in Terminal"도 제거
+- rust-core에 `menu:toggle-terminal`(View 메뉴, ⌃` accelerator — 백틱은 Shift 아니라 muda 문제 없음) 요청
