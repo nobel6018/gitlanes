@@ -322,3 +322,7 @@ get_file_content(path: string, sha: string, file: string) -> string   // git sho
 - RepoWorkspace: `openFile: FileChange | null` 상태. 파일 열림이면 메인 영역에 `GraphView` 대신 `DiffPanel` 렌더(사이드바/상세 패널은 유지). diffText는 get_file_diff, fileText는 onRequestFileText 시 get_file_content 호출(캐시 sha+path). 커밋 변경 시 openFile=null. Esc 단계에 "diff 패널 열려 있으면 닫기"를 diff 복귀 단계로 대체
 - CommitDetailPanel에 `onOpenFile`/`openFilePath` 전달. 검색 필터 모드와 diff 패널이 동시에 켜지면 diff 패널 우선
 - 툴바 상태 표시: 파일 열림 중엔 그래프 관련 단축키(Home/End 등)가 diff 패널로 가므로 충돌 없음
+
+## v0.13 (Check for Updates 메뉴)
+- rust-core: macOS App 메뉴의 About 바로 아래(구분선 포함) "Check for Updates…" 항목, Windows/Linux는 Help 메뉴에 (Keyboard Shortcuts 아래 구분선 후). 클릭 시 `menu:check-updates` emit (payload 없음, accelerator 없음)
+- ui-shell: `menu:check-updates` 구독 → 기존 수동 업데이트 확인(useUpdateChecker의 manual 경로, 상단 pill 피드백) 실행. 툴바 버전 라벨 클릭과 동일 동작
