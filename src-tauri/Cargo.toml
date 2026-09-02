@@ -1,6 +1,6 @@
 [package]
 name = "gitlanes"
-version = "0.11.0"
+version = "0.11.1"
 description = "GitKraken-style read-only commit graph viewer"
 authors = ["you"]
 edition = "2021"
