@@ -27,7 +27,7 @@ while IFS='|' read -r h s; do
     perf*) PERF+=("$line") ;;
     *) OTHER+=("$line") ;;
   esac
-done < <(git log "$RANGE" --no-merges --pretty='%h|%s')
+done < <(git log "$RANGE" --no-merges --pretty='%h|%s' | grep -v '|docs' || true)
 
 section() { local title="$1"; shift; [ "$#" -eq 0 ] && return; printf '## %s\n\n' "$title"; printf '%s\n' "$@"; printf '\n'; }
 
