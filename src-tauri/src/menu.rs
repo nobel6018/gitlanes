@@ -47,6 +47,10 @@ const VIEW_EVENTS: [(&str, &str); 4] = [
 /// Help 메뉴 항목. payload는 없다.
 const HELP_EVENTS: [(&str, &str); 1] = [("help:shortcuts", "menu:shortcuts")];
 
+/// 업데이트 확인. macOS에서는 App 메뉴의 About 아래, 나머지 플랫폼에서는 Help 끝에 붙는다.
+/// 어느 쪽이든 id와 이벤트는 같다. payload와 accelerator는 없다.
+const CHECK_UPDATES: (&str, &str) = ("app:check-updates", "menu:check-updates");
+
 /// `set_recent_repos`가 다시 찾아야 하는 두 메뉴의 id.
 const FILE_MENU_ID: &str = "file";
 const RECENT_MENU_ID: &str = "file:open-recent";
@@ -221,7 +225,30 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some("CmdOrCtrl+/"),
     )?;
+    // macOS는 이 항목을 App 메뉴의 About 아래에 두는 것이 관례라 Help에는 넣지 않는다
+    #[cfg(target_os = "macos")]
     let help = Submenu::with_items(app, "Help", true, &[&shortcuts])?;
+
+    #[cfg(not(target_os = "macos"))]
+    let help = {
+        let check_updates = MenuItem::with_id(
+            app,
+            CHECK_UPDATES.0,
+            "Check for Updates…",
+            true,
+            None::<&str>,
+        )?;
+        Submenu::with_items(
+            app,
+            "Help",
+            true,
+            &[
+                &shortcuts,
+                &PredefinedMenuItem::separator(app)?,
+                &check_updates,
+            ],
+        )?
+    };
 
     // 브라우저 관례대로 ⌘1~⌘8은 그 번호 탭, ⌘9는 마지막 탭이다.
     // 숫자 키는 Shift를 쓰지 않아 fix_shift_accelerators의 대상이 아니다.
@@ -283,12 +310,21 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
     {
         // macOS는 첫 서브메뉴가 애플리케이션 메뉴다
+        let check_updates = MenuItem::with_id(
+            app,
+            CHECK_UPDATES.0,
+            "Check for Updates…",
+            true,
+            None::<&str>,
+        )?;
         let app_menu = Submenu::with_items(
             app,
             "GitLanes",
             true,
             &[
                 &PredefinedMenuItem::about(app, None, Some(AboutMetadata::default()))?,
+                &PredefinedMenuItem::separator(app)?,
+                &check_updates,
                 &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::services(app, None)?,
                 &PredefinedMenuItem::separator(app)?,
@@ -337,6 +373,7 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
         .chain(TAB_CYCLE_EVENTS.iter())
         .chain(VIEW_EVENTS.iter())
         .chain(HELP_EVENTS.iter())
+        .chain(std::iter::once(&CHECK_UPDATES))
         .find(|(item, _)| *item == id);
 
     if let Some((_, name)) = payloadless {

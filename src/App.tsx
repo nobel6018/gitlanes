@@ -550,6 +550,7 @@ export default function App() {
     shortcuts: handleShowShortcuts,
     openPath: openInTab,
     clearRecents,
+    checkUpdates: updater.checkNow,
     reopenClosed: handleReopenClosed,
   });
   menuHandlers.current = {
@@ -564,6 +565,7 @@ export default function App() {
     shortcuts: handleShowShortcuts,
     openPath: openInTab,
     clearRecents,
+    checkUpdates: updater.checkNow,
     reopenClosed: handleReopenClosed,
   };
 
@@ -608,6 +610,8 @@ export default function App() {
       }),
     );
     track(listen("menu:clear-recent", () => menuHandlers.current.clearRecents()));
+    // 툴바 버전 라벨 클릭과 같은 경로. 확인 중이면 useUpdateChecker가 알아서 무시한다
+    track(listen("menu:check-updates", () => menuHandlers.current.checkUpdates()));
 
     return () => {
       disposed = true;
