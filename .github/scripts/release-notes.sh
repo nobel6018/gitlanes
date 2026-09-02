@@ -31,6 +31,13 @@ done < <(git log "$RANGE" --no-merges --pretty='%h|%s' | grep -v '|docs' || true
 
 section() { local title="$1"; shift; [ "$#" -eq 0 ] && return; printf '## %s\n\n' "$title"; printf '%s\n' "$@"; printf '\n'; }
 
+summary=""
+[ "${#FEAT[@]}" -gt 0 ] && summary+="기능 ${#FEAT[@]}"
+[ "${#FIX[@]}" -gt 0 ] && summary+="${summary:+ · }수정 ${#FIX[@]}"
+[ "${#PERF[@]}" -gt 0 ] && summary+="${summary:+ · }성능 ${#PERF[@]}"
+[ "${#OTHER[@]}" -gt 0 ] && summary+="${summary:+ · }기타 ${#OTHER[@]}"
+[ -n "$summary" ] && printf '**이번 릴리스** %s\n\n' "$summary"
+
 section "기능" "${FEAT[@]+"${FEAT[@]}"}"
 section "수정" "${FIX[@]+"${FIX[@]}"}"
 section "성능" "${PERF[@]+"${PERF[@]}"}"
@@ -60,8 +67,14 @@ xattr -cr /Applications/GitLanes.app
 
 "Windows의 PC 보호" 창이 뜨면 추가 정보 → 실행을 누르세요.
 
+## 이미 설치했다면
+
+앱을 켜두면 상단에 새 버전 배너가 뜹니다. 배너의 "릴리스 페이지 열기"로 여기 와서 받거나, 메뉴 GitLanes > Check for Updates… 로 직접 확인할 수 있습니다. 새 dmg의 앱을 응용 프로그램 폴더에 덮어쓰면 끝입니다(설정과 최근 레포는 유지).
+
 ## 실행 방법
 
 앱을 열고 \`⌘O\`(Windows/Linux는 \`Ctrl+O\`)로 로컬 git 레포 폴더를 선택하거나, Finder에서 폴더를 창으로 드래그하세요.
 터미널에서는 \`open -a GitLanes <레포경로>\`로 바로 열 수 있습니다. 읽기 전용 뷰어라 레포를 변경하지 않습니다.
+${PREV:+
+**Full Changelog**: [${PREV}...${TAG}](https://github.com/${REPO}/compare/${PREV}...${TAG})}
 MD
