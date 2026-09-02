@@ -447,3 +447,15 @@ ui-shell:
 - 하단 터미널 패널: RepoWorkspace 하단에 접히는 영역(기본 접힘, 높이 기억 localStorage `gitlanes.termHeight`, 상단 경계 드래그로 높이 조절 — SplitHandle 가로 버전 또는 수평 스플리터). 툴바에 Terminal 토글 버튼(아이콘, active 상태 표시), 단축키 `⌃\`` (Ctrl+백틱, 웹뷰 keydown, 네이티브 메뉴 View에도 "Toggle Terminal" 항목은 rust-core가 추가 → menu:toggle-terminal). 열릴 때 자동 포커스, 패널 헤더에 레포 경로 + × 닫기
 - 기존 툴바 open_in_terminal(외부 터미널)은 제거 (내장으로 대체). ContextMenu의 "Open in Terminal"도 제거
 - rust-core에 `menu:toggle-terminal`(View 메뉴, ⌃` accelerator — 백틱은 Shift 아니라 muda 문제 없음) 요청
+
+## v0.17 (hover 부모/자식 강조 + 설정)
+
+- 사용자 요청: 커밋 선택이 없을 때 그래프 행에 hover하면 그 커밋의 조상/자손 경로를 강조(기존 클릭 강조와 동일 로직). 선택된 커밋이 있으면 선택이 우선하고 hover 강조는 무시. 취향차라 옵션으로, 기본값 on.
+- `GraphViewProps`에 옵션 prop 추가:
+  ```ts
+  /** hover 시 부모/자식 경로 강조 (selectedSha가 null일 때만 동작). 기본 렌더에서 undefined면 false 취급 */
+  hoverHighlight?: boolean;
+  ```
+- ui-graph: hoverHighlight가 true이고 selectedSha가 null이면, 마우스가 올라간 커밋 행 기준으로 기존 강조 집합(buildHighlight, 조상+자손)을 계산해 dim 적용. selectedSha가 있으면 그게 우선(hover 무시). 성능: hover 행이 바뀔 때만 재계산(sha→row Map + 이미 있는 자식 맵 재사용), 캔버스는 기존 강조 렌더 경로 그대로. WIP/스태시 의사 행 hover는 앵커 커밋 기준. 마우스가 그래프 밖으로 나가면 강조 해제. rAF/throttle로 마우스 이동당 과도한 재계산 방지(같은 행이면 skip)
+- ui-shell: 설정 상태 `hoverHighlight`(localStorage `gitlanes.hoverHighlight`, 기본 true). GraphView에 전달. View 메뉴에 "Highlight on Hover" 체크 항목(rust-core가 `menu:toggle-hover-highlight` 요청) + 툴바나 설정에서 토글 가능하면 좋으나 최소 메뉴 하나. 상태 변경 시 저장.
+- rust-core: View 메뉴에 "Highlight on Hover" 체크 가능 항목(CheckMenuItem, 단축키 없음) → emit `menu:toggle-hover-highlight`. 초기 체크 상태는 프론트가 관리하므로 rust는 토글 이벤트만 보냄(체크 표시는 프론트 상태와 별개로 rust가 자체 토글하거나, 단순 MenuItem으로 두고 체크는 안 해도 됨 — 판단은 rust-core)
