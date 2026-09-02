@@ -38,6 +38,18 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "title=GitLanes ${GITHUB_REF_NAME} · $(TZ=Asia/Seoul date '+%Y-%m-%d') ($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
 
+      # 태그와 매니페스트 버전이 어긋나면(과거 sed 누락 사고) 여기서 멈춘다
+      - name: Verify tag matches manifest version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          for f in package.json src-tauri/tauri.conf.json; do
+            got="$(grep -m1 '"version"' "$f" | sed -E 's/.*"version": *"([^"]+)".*/\1/')"
+            [ "$got" = "$want" ] || { echo "::error::$f has $got, tag is $want"; exit 1; }
+          done
+          cargo_got="$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          [ "$cargo_got" = "$want" ] || { echo "::error::Cargo.toml has $cargo_got, tag is $want"; exit 1; }
+          echo "version ok: $want"
+
       - id: set
         run: |
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then

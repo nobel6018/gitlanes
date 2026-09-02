@@ -1333,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "gitlanes"
-version = "0.11.1"
+version = "0.13.0"
 dependencies = [
  "objc2",
  "objc2-app-kit",
