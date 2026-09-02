@@ -1,4 +1,5 @@
 import type { RefObject } from "react";
+import { withKbd } from "./shortcuts";
 
 export interface SearchBoxProps {
   query: string;
@@ -51,7 +52,7 @@ export function SearchBox({
         type="text"
         value={query}
         spellCheck={false}
-        placeholder="Search commits (⌘F)"
+        placeholder={withKbd("Search commits", "Mod+F")}
         aria-label="Search commits"
         onChange={(e) => onChange(e.currentTarget.value)}
         onKeyDown={(e) => {
@@ -72,7 +73,7 @@ export function SearchBox({
       <button
         className={filterMode ? "search-filter on" : "search-filter"}
         onClick={onToggleFilterMode}
-        title="Filter mode (⌘⇧F)"
+        title={withKbd("Filter mode", "Mod+Shift+F")}
         aria-pressed={filterMode}
         aria-label="Toggle filter mode"
       >
@@ -106,13 +107,13 @@ export function SearchBox({
               {exhausted && matchCount > 0 ? " (전체)" : ""}
             </span>
           )}
-          <button className="search-nav" onClick={onPrev} title="Previous match (Shift+Enter)">
+          <button className="search-nav" onClick={onPrev} title={withKbd("Previous match", "Shift+Enter")}>
             ‹
           </button>
-          <button className="search-nav" onClick={onNext} title="Next match (Enter)">
+          <button className="search-nav" onClick={onNext} title={withKbd("Next match", "Enter")}>
             ›
           </button>
-          <button className="search-clear" onClick={onClear} title="Clear (Esc)">
+          <button className="search-clear" onClick={onClear} title={withKbd("Clear", "Esc")}>
             ×
           </button>
         </>

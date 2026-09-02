@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { RepoInfo } from "../types";
 import { formatCount } from "./format";
+import { withKbd } from "./shortcuts";
 
 export interface ToolbarProps {
   repo: RepoInfo;
@@ -51,7 +52,7 @@ export function Toolbar({
       <button
         className={sidebarOpen ? "toolbar-icon on" : "toolbar-icon"}
         onClick={onToggleSidebar}
-        title={sidebarOpen ? "Hide branch sidebar" : "Show branch sidebar"}
+        title={withKbd(sidebarOpen ? "Hide branch sidebar" : "Show branch sidebar", "Mod+B")}
         aria-pressed={sidebarOpen}
         aria-label="Toggle branch sidebar"
       >
@@ -97,7 +98,7 @@ export function Toolbar({
         className="version-label"
         onClick={onCheckUpdates}
         disabled={checkingUpdate}
-        title="업데이트 확인"
+        title="Check for updates"
       >
         v{appVersion}
       </button>
@@ -112,7 +113,7 @@ export function Toolbar({
         </button>
       )}
 
-      <button className="toolbar-btn" onClick={onGoToHead} title="Go to HEAD (⌘⇧H)">
+      <button className="toolbar-btn" onClick={onGoToHead} title={withKbd("Go to HEAD", "Mod+Shift+H")}>
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
           <g fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
             <circle cx="8" cy="10.6" r="2.4" />
@@ -145,7 +146,7 @@ export function Toolbar({
         className="toolbar-btn"
         onClick={onRefresh}
         disabled={loading}
-        title="Reload graph"
+        title={withKbd("Reload graph", "Mod+R")}
       >
         <svg
           viewBox="0 0 16 16"

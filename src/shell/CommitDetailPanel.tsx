@@ -7,6 +7,7 @@ import { FileTree, buildFileNavRows } from "./FileTree";
 import { copyText } from "./clipboard";
 import { DiffView } from "./DiffView";
 import { formatTimestamp, shortSha, splitPath } from "./format";
+import { withKbd } from "./shortcuts";
 import "./panels.css";
 
 export interface CommitDetailPanelProps {
@@ -387,7 +388,11 @@ export function CommitDetailPanel({
     return (
       <aside className="detail-panel">
         <div className="panel-head">
-          <button className="back-btn" onClick={closeDiff} title="← 또는 Backspace">
+          <button
+            className="back-btn"
+            onClick={closeDiff}
+            title={withKbd("Back to files", "Esc")}
+          >
             ‹ Files
           </button>
           <span className="panel-head-path" title={diffFile}>
@@ -558,8 +563,8 @@ function CopyShaButton({ sha, onError }: { sha: string; onError: (message: strin
     <button
       className={copied ? "copy-btn copied" : "copy-btn"}
       onClick={handleCopy}
-      title="Copy full sha"
-      aria-label="Copy full sha"
+      title={withKbd("Copy sha", "Mod+C")}
+      aria-label="Copy sha"
     >
       {copied ? (
         <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">

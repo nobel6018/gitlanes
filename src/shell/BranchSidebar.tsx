@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { MouseEvent, ReactNode, RefObject } from "react";
 import type { RefEntry } from "../types";
 import { shortSha } from "./format";
+import { kbd, withKbd } from "./shortcuts";
 import { SidebarContextMenu } from "./SidebarContextMenu";
 import "./sidebar.css";
 
@@ -179,7 +180,7 @@ export function BranchSidebar({
           className="sb-filter-input"
           type="text"
           value={filter}
-          placeholder="Filter branches"
+          placeholder={`Filter branches (${kbd("Mod+Alt+F")})`}
           aria-label="Filter branches"
           spellCheck={false}
           autoComplete="off"
@@ -203,7 +204,7 @@ export function BranchSidebar({
           <button
             className="sb-filter-clear"
             onClick={() => setFilter("")}
-            title="Clear filter (Esc)"
+            title={withKbd("Clear filter", "Esc")}
             aria-label="Clear filter"
           >
             ×
@@ -339,7 +340,12 @@ function Section({
   }
   return (
     <section className={nested === true ? "sb-section nested" : "sb-section"}>
-      <button className="sb-head" onClick={onToggle} aria-expanded={!collapsed}>
+      <button
+        className="sb-head"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        title={collapsed ? "Expand" : "Collapse"}
+      >
         <span className={collapsed ? "sb-caret collapsed" : "sb-caret"} aria-hidden="true">
           ▾
         </span>

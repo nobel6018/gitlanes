@@ -9,6 +9,7 @@ import { copyText } from "./shell/clipboard";
 import { basename } from "./shell/format";
 import { RepoWorkspace } from "./shell/RepoWorkspace";
 import { ShortcutsOverlay } from "./shell/ShortcutsOverlay";
+import { IS_MAC } from "./shell/shortcuts";
 import { TabBar } from "./shell/TabBar";
 import type { TabInfo } from "./shell/TabBar";
 import { UpdateBanner } from "./shell/UpdateBanner";
@@ -131,15 +132,8 @@ function hasTauriInternals(): boolean {
   return typeof (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== "undefined";
 }
 
-/** 단축키 표기(⌘ vs Ctrl) 분기용 플랫폼 판정 */
-function detectPlatform(): "mac" | "other" {
-  const data = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
-  const platform = data?.platform ?? navigator.platform ?? "";
-  if (/mac/i.test(platform)) {
-    return "mac";
-  }
-  return /mac os x/i.test(navigator.userAgent) ? "mac" : "other";
-}
+/** 치트시트 표기는 툴팁과 같은 판정을 쓴다 (shortcuts.ts가 단일 출처) */
+const PLATFORM: "mac" | "other" = IS_MAC ? "mac" : "other";
 
 let nextTabId = 1;
 
@@ -176,7 +170,6 @@ export default function App() {
   const loadingTimers = useRef<Record<number, number>>({});
   const [menuFallback, setMenuFallback] = useState(() => !hasTauriInternals());
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const platform = useMemo(detectPlatform, []);
   /** 닫은 탭 경로 스택. 세션 메모리라 앱을 껐다 켜면 비어 있다 */
   const reopenStack = useRef<string[]>([]);
   const zoom = useRef(readZoom());
@@ -766,7 +759,7 @@ export default function App() {
         />
       ))}
       <UpdatePill checking={updater.checking} result={updater.result} />
-      <ShortcutsOverlay open={shortcutsOpen} onClose={handleCloseShortcuts} platform={platform} />
+      <ShortcutsOverlay open={shortcutsOpen} onClose={handleCloseShortcuts} platform={PLATFORM} />
       {isOver && (
         <div className="drop-overlay">
           <div className="drop-overlay-card">Drop to open repository</div>

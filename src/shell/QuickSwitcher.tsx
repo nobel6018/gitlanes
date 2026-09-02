@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import type { RefEntry, RefKind } from "../types";
+import { kbd } from "./shortcuts";
 import "./panels.css";
 
 export interface QuickSwitcherProps {
@@ -316,10 +317,10 @@ export function QuickSwitcher({ open, refs, onSelect, onClose }: QuickSwitcherPr
             setQuery(event.target.value);
             setActive(0);
           }}
-          placeholder="Jump to branch or tag"
+          placeholder={`Go to branch or tag (${kbd("Mod+P")})`}
           spellCheck={false}
           autoComplete="off"
-          aria-label="Jump to branch or tag"
+          aria-label="Go to branch or tag"
         />
         {results.length === 0 ? (
           <div className="qs-empty">No matching refs</div>
