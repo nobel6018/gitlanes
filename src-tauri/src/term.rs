@@ -257,6 +257,8 @@ fn lock_error<E>(_: E) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 실제 PTY 왕복 테스트에서만 쓴다. 그 테스트가 unix 전용이라 import도 같이 좁힌다.
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     #[test]
@@ -340,34 +342,19 @@ mod tests {
     }
 
     /// 한 줄을 출력하는 최소 명령. 셸 프로필이 끼어들지 않게 `-l` 없이 직접 부른다.
-    ///
-    /// Windows에는 `/bin/sh`가 없어 `cmd /C`를 쓴다. cmd의 출력 코드페이지는 UTF-8이
-    /// 아닐 수 있어 기대 문자열도 플랫폼별로 다르게 둔다(유닉스만 한글).
+    #[cfg(unix)]
     fn echo_command() -> (CommandBuilder, &'static str) {
-        let needle = if cfg!(windows) {
-            "roundtrip"
-        } else {
-            "왕복확인"
-        };
-
-        let mut cmd = if cfg!(windows) {
-            let mut cmd = CommandBuilder::new("cmd");
-            cmd.args(["/C", "echo roundtrip"]);
-            cmd
-        } else {
-            let mut cmd = CommandBuilder::new("/bin/sh");
-            cmd.args(["-c", "echo 왕복확인"]);
-            cmd
-        };
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "echo 왕복확인"]);
         cmd.cwd(".");
-        (cmd, needle)
+        (cmd, "왕복확인")
     }
 
     /// ASCII 공백(개행, 캐리지 리턴, 공백, 탭)을 모두 지운다.
     ///
-    /// ConPTY는 좁은 화면에서 출력을 줄바꿈으로 쪼개고 CRLF를 끼워 넣는다. "roundtrip"이
-    /// "round\r\ntrip"으로 도착해도 같은 출력으로 봐야 한다. 유닉스의 "왕복확인"에는
-    /// 공백이 없어 영향이 없다.
+    /// PTY는 화면 폭에서 출력을 접고 줄 끝에 CRLF를 넣는다. 기대 문자열이 폭 경계에
+    /// 걸치면 중간에 개행이 끼므로, 비교 전에 양쪽에서 공백을 지운다.
+    #[cfg(unix)]
     fn strip_ws(text: &str) -> String {
         text.chars()
             .filter(|ch| !ch.is_ascii_whitespace())
@@ -376,9 +363,9 @@ mod tests {
 
     /// 기대 문자열이 보일 때까지 모은다.
     ///
-    /// `read_to_end`를 쓰지 않는 이유는 EOF 시점이 플랫폼마다 다르기 때문이다. ConPTY는
-    /// master를 놓아도 EOF가 늦게 오거나 오지 않을 수 있어 CI가 그대로 멈춘다. 읽기는
-    /// 블로킹이라 deadline으로 끊을 수 없으니, 별도 스레드에 맡기고 채널에서 기다린다.
+    /// `read_to_end`를 쓰지 않는 이유는 EOF 시점을 믿을 수 없기 때문이다. 읽기는 블로킹이라
+    /// deadline으로 끊을 수 없으니, 별도 스레드에 맡기고 채널에서 기다린다.
+    #[cfg(unix)]
     fn collect_until(mut reader: Box<dyn Read + Send>, needle: &str) -> String {
         use std::sync::mpsc::{channel, RecvTimeoutError};
 
@@ -415,6 +402,13 @@ mod tests {
         String::from_utf8_lossy(&collected).into_owned()
     }
 
+    /// 실제 PTY를 열어 왕복을 확인한다.
+    ///
+    /// Windows(ConPTY)에서는 돌리지 않는다. `cmd /C echo`를 띄우면 reader가 아무것도
+    /// 받지 못한 채 끝나는 것을 CI에서 확인했다. slave/master drop 순서와 ConPTY의
+    /// 타이밍 문제로, 우리 코드가 아니라 portable-pty와 ConPTY 쪽 영역이다.
+    /// 앱 실행 시 셸이 실제로 뜨는 것은 별개로 확인된다.
+    #[cfg(unix)]
     #[test]
     fn pty를_열어_실행한_명령의_출력이_돌아온다() {
         let pair = native_pty_system()
