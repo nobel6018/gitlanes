@@ -52,13 +52,21 @@ export interface GraphViewProps {
   highlightQuery?: string;
   /** 날짜 표시 모드. 기본 "absolute" */
   dateMode?: DateMode;
-  /** DATE 헤더 클릭 시 호출 (ui-shell이 토글·저장) */
+  /**
+   * 미사용. dateMode 토글은 Preferences로 옮겼고 DATE 헤더는 일반 라벨이다.
+   * 기존 호출부가 계속 넘겨도 깨지지 않게 시그니처만 남긴다
+   */
   onToggleDateMode?: () => void;
   /**
    * WIP 의사 행 선택. 핸들러가 없으면 WIP 행은 예전처럼 클릭 불가로 남는다.
    * shell은 이 콜백에서 selectedSha를 WIP_SHA로 바꾼다
    */
   onSelectWip?: () => void;
+  /**
+   * hover 시 부모/자식 경로 강조. selectedSha가 null일 때만 동작하고
+   * undefined/false면 강조하지 않는다 (선택 강조가 항상 우선)
+   */
+  hoverHighlight?: boolean;
 }
 
 /** 보이는 범위 위아래로 더 그려두는 행 수 */
@@ -119,6 +127,8 @@ interface RowProps {
   onSelect: (sha: string) => void;
   onDoubleClick: (sha: string) => void;
   onContextMenu: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
+  /** hover 강조 기준 커밋 보고. 같은 행이면 GraphView가 재계산 없이 버린다 */
+  onHover: (sha: string, ancestorsOnly: boolean) => void;
 }
 
 const Row = memo(function Row({
@@ -136,6 +146,7 @@ const Row = memo(function Row({
   onSelect,
   onDoubleClick,
   onContextMenu,
+  onHover,
 }: RowProps) {
   const className =
     "gl-row" +
@@ -154,6 +165,9 @@ const Row = memo(function Row({
       onClick={() => onSelect(row.sha)}
       onDoubleClick={() => onDoubleClick(row.sha)}
       onContextMenu={(event) => onContextMenu(row.sha, event)}
+      // enter만으로는 커서가 멈춘 사이 가상 스크롤로 행이 바뀐 경우를 놓친다
+      onMouseEnter={() => onHover(row.sha, false)}
+      onMouseMove={() => onHover(row.sha, false)}
     >
       <div className="gl-cell gl-col-branch gl-cell-branch" title={refsLabel}>
         {/* 드롭된 컬럼은 display:none이지만 DOM에는 남으므로 pill 실측까지 건너뛴다 */}
@@ -209,6 +223,7 @@ function WipRow({
   graphWidth,
   dimmed,
   onSelect,
+  onHover,
 }: {
   wip: WipInfo;
   top: number;
@@ -216,6 +231,7 @@ function WipRow({
   graphWidth: number;
   dimmed: boolean;
   onSelect?: () => void;
+  onHover: () => void;
 }) {
   return (
     <div
@@ -227,6 +243,8 @@ function WipRow({
       }
       style={{ top, height: ROW_HEIGHT }}
       onClick={onSelect}
+      onMouseEnter={onHover}
+      onMouseMove={onHover}
     >
       <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
@@ -254,6 +272,7 @@ function StashRow({
   onSelect,
   onDoubleClick,
   onContextMenu,
+  onHover,
 }: {
   stash: StashInfo;
   top: number;
@@ -267,6 +286,7 @@ function StashRow({
   onSelect: (sha: string) => void;
   onDoubleClick: (sha: string) => void;
   onContextMenu: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
+  onHover: () => void;
 }) {
   const shortSha = stash.shortSha.slice(0, SHA_DISPLAY_LENGTH);
   const date =
@@ -284,6 +304,8 @@ function StashRow({
       onClick={() => onSelect(stash.sha)}
       onDoubleClick={() => onDoubleClick(stash.sha)}
       onContextMenu={(event) => onContextMenu(stash.sha, event)}
+      onMouseEnter={onHover}
+      onMouseMove={onHover}
     >
       <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
@@ -346,8 +368,8 @@ export function GraphView({
   onRowContextMenu,
   highlightQuery = "",
   dateMode = "absolute",
-  onToggleDateMode,
   onSelectWip,
+  hoverHighlight,
 }: GraphViewProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -510,21 +532,58 @@ export function GraphView({
   }, [layout]);
   const wipSelected = selectedSha === WIP_SHA && wipDisplayIndex >= 0;
 
-  // 경로 강조. 자식 맵은 rows에서 1회만 만들고, 집합은 선택이 바뀔 때만 다시 판다.
+  /**
+   * hover 강조 기준. ancestorsOnly는 의사 행(WIP, 스태시) hover 때 켜진다.
+   * 앵커 커밋의 자손은 스태시/WIP의 자손이 아니라 밝히면 거짓 경로가 된다
+   */
+  const [hovered, setHovered] = useState<{ sha: string; ancestorsOnly: boolean } | null>(null);
+  // 같은 행 위에서 mousemove가 계속 들어오므로 setState 이전에 ref로 먼저 걸러낸다
+  const hoveredRef = useRef(hovered);
+
+  // hover 강조는 선택이 없을 때만 쓴다. 선택이 생기면 그 즉시 hover 기준을 버린다
+  const hoverActive = hoverHighlight === true && selectedSha === null;
+  const hoverActiveRef = useRef(hoverActive);
+  useEffect(() => {
+    hoverActiveRef.current = hoverActive;
+    if (!hoverActive) {
+      hoveredRef.current = null;
+      setHovered(null);
+    }
+  }, [hoverActive]);
+
+  const handleHover = useCallback((sha: string, ancestorsOnly: boolean) => {
+    if (!hoverActiveRef.current) {
+      return;
+    }
+    const prev = hoveredRef.current;
+    if (prev !== null && prev.sha === sha && prev.ancestorsOnly === ancestorsOnly) {
+      return;
+    }
+    const next = { sha, ancestorsOnly };
+    hoveredRef.current = next;
+    setHovered(next);
+  }, []);
+
+  const clearHover = useCallback(() => {
+    if (hoveredRef.current === null) {
+      return;
+    }
+    hoveredRef.current = null;
+    setHovered(null);
+  }, []);
+
+  // 경로 강조. 자식 맵은 rows에서 1회만 만들고, 집합은 기준 커밋이 바뀔 때만 다시 판다.
   // WIP은 HEAD의 (아직 없는) 자식이라 HEAD를 기준 삼되 자손 방향은 켜지 않는다
   const childrenMap = useMemo(() => buildChildrenMap(rows), [rows]);
   const headSha = useMemo(() => rows.find((row) => row.isHead)?.sha ?? null, [rows]);
-  const highlightSha = selectedSha === WIP_SHA ? headSha : selectedSha;
+  const hoverSource = hoverActive ? hovered : null;
+  const highlightSha =
+    selectedSha === WIP_SHA ? headSha : (selectedSha ?? hoverSource?.sha ?? null);
+  const ancestorsOnly =
+    selectedSha === WIP_SHA || (selectedSha === null && hoverSource?.ancestorsOnly === true);
   const highlight = useMemo(
-    () =>
-      buildHighlight(
-        rows,
-        shaToRow,
-        childrenMap,
-        highlightSha,
-        selectedSha !== WIP_SHA,
-      ),
-    [rows, shaToRow, childrenMap, highlightSha, selectedSha],
+    () => buildHighlight(rows, shaToRow, childrenMap, highlightSha, !ancestorsOnly),
+    [rows, shaToRow, childrenMap, highlightSha, ancestorsOnly],
   );
   const isDimmed = useCallback(
     (rowIndex: number) => highlight !== null && highlight[rowIndex] !== 1,
@@ -878,6 +937,8 @@ export function GraphView({
             onSelect={handleSelect}
             onDoubleClick={handleDoubleClick}
             onContextMenu={handleContextMenu}
+            // 스태시 커밋은 로드된 rows에 없으니 앵커 커밋을 기준 삼는다
+            onHover={() => handleHover(rows[pseudo.anchorRow].sha, true)}
           />
         ) : (
           <WipRow
@@ -888,6 +949,13 @@ export function GraphView({
             graphWidth={graphWidth}
             dimmed={rowCount > 0 && isDimmed(pseudo.anchorRow)}
             onSelect={onSelectWip ? handleSelectWip : undefined}
+            // WIP은 HEAD의 자식이라 HEAD(= 앵커 커밋) 조상만 밝힌다
+            onHover={() => {
+              // 커밋이 하나도 없으면 앵커 커밋이 없어 기준을 잡을 수 없다
+              if (rowCount > 0) {
+                handleHover(rows[pseudo.anchorRow].sha, true);
+              }
+            }}
           />
         ),
       );
@@ -912,6 +980,7 @@ export function GraphView({
         onSelect={handleSelect}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
+        onHover={handleHover}
       />,
     );
   }
@@ -940,14 +1009,7 @@ export function GraphView({
         </div>
         <div className="gl-cell gl-col-date">
           <Resizer column="date" side="left" active={resizing === "date"} onStart={startResize} onReset={resetColumn} />
-          {/* 라벨만 클릭 대상이라 컬럼 경계 드래그와 겹치지 않는다 */}
-          <span
-            className={"gl-date-label" + (onToggleDateMode ? " gl-date-toggle" : "")}
-            title="Click to toggle relative/absolute"
-            onClick={onToggleDateMode}
-          >
-            Date
-          </span>
+          Date
         </div>
       </div>
 
@@ -967,6 +1029,8 @@ export function GraphView({
           tabIndex={0}
           onScroll={handleScroll}
           onKeyDown={handleKeyDown}
+          // 그래프 영역을 벗어나면 hover 강조를 즉시 해제한다
+          onMouseLeave={clearHover}
         >
           {displayCount === 0 ? (
             <div className="gl-empty">{loading ? "Loading…" : "No commits"}</div>

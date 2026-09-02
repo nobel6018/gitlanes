@@ -56,6 +56,7 @@ import {
   writeTermHeight,
 } from "./layout";
 import type { LayoutWidths } from "./layout";
+import type { PrefValues } from "./Preferences";
 import { SearchBox } from "./SearchBox";
 import { SplitHandle } from "./SplitHandle";
 import { Toast } from "./Toast";
@@ -65,9 +66,7 @@ import { useRecentRepos } from "./useRecentRepos";
 import { APP_VERSION } from "./version";
 import { formatCount, shortSha } from "./format";
 
-const SHOW_TAGS_KEY = "gitlanes.showTags";
 const SIDEBAR_KEY = "gitlanes.sidebar";
-const DATE_MODE_KEY = "gitlanes.dateMode";
 
 const EMPTY_GRAPH: GraphData = {
   rows: [],
@@ -156,6 +155,8 @@ export interface RepoWorkspaceProps {
   toggleSidebarNonce: number;
   /** ⌃`(View > Toggle Terminal). 활성 탭에만 올라온다 */
   toggleTerminalNonce: number;
+  /** 전역 설정 (App 소유, Preferences로 조절) */
+  prefs: PrefValues;
   /** 그래프 로드/새로고침 중인지 App에 알린다 (탭 스피너용) */
   onLoadingChange?: (loading: boolean) => void;
 }
@@ -180,17 +181,6 @@ type MenuState =
 interface OpenFile {
   file: FileChange;
   area: WipArea | null;
-}
-
-/** 그래프 DATE 컬럼 표시 모드 */
-type DateMode = "absolute" | "relative";
-
-function readDateMode(): DateMode {
-  try {
-    return localStorage.getItem(DATE_MODE_KEY) === "relative" ? "relative" : "absolute";
-  } catch {
-    return "absolute";
-  }
 }
 
 /** 입력창(xterm의 textarea 포함)에 포커스가 있는가 */
@@ -234,6 +224,7 @@ export function RepoWorkspace({
   refreshNonce,
   toggleSidebarNonce,
   toggleTerminalNonce,
+  prefs,
   onLoadingChange,
 }: RepoWorkspaceProps) {
   const [repo, setRepo] = useState<RepoInfo | null>(null);
@@ -246,7 +237,6 @@ export function RepoWorkspace({
   const [opening, setOpening] = useState(false);
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<ScrollTarget | null>(null);
-  const [showTags, setShowTags] = useState<boolean>(() => readFlag(SHOW_TAGS_KEY, true));
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readFlag(SIDEBAR_KEY, true));
   const [query, setQuery] = useState("");
   const [matchIndex, setMatchIndex] = useState(0);
@@ -256,7 +246,6 @@ export function RepoWorkspace({
   const [remoteUrl, setRemoteUrl] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [layout, setLayout] = useState<LayoutWidths>(readLayout);
-  const [dateMode, setDateMode] = useState<DateMode>(readDateMode);
   /** 하단 내장 터미널. 기본 접힘 (세션은 열린 뒤 탭이 살아있는 동안 유지된다) */
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [termHeight, setTermHeight] = useState<number>(readTermHeight);
@@ -817,13 +806,6 @@ export function RepoWorkspace({
     return items;
   }, [menu, menuMessage, remoteUrl, copySha, showToast, showError, copyPathItems]);
 
-  const handleToggleTags = useCallback(() => {
-    setShowTags((prev) => {
-      writeFlag(SHOW_TAGS_KEY, !prev);
-      return !prev;
-    });
-  }, []);
-
   const previewWidth = useCallback((name: "sidebar" | "detail", width: number) => {
     mainRef.current?.style.setProperty(`--${name}-w`, `${width}px`);
   }, []);
@@ -892,18 +874,6 @@ export function RepoWorkspace({
     }
     jumpTo(repo.headSha);
   }, [repo, loadedShas, jumpTo, showError]);
-
-  const handleToggleDateMode = useCallback(() => {
-    setDateMode((prev) => {
-      const next: DateMode = prev === "absolute" ? "relative" : "absolute";
-      try {
-        localStorage.setItem(DATE_MODE_KEY, next);
-      } catch {
-        // 저장 실패는 무시 (이번 세션에만 적용)
-      }
-      return next;
-    });
-  }, []);
 
   const handleToggleFilterMode = useCallback(() => setFilterMode((prev) => !prev), []);
 
@@ -1332,8 +1302,6 @@ export function RepoWorkspace({
         commitCount={data.totalLoaded}
         hasMore={data.hasMore}
         loading={graphLoading}
-        showTags={showTags}
-        onToggleTags={handleToggleTags}
         onRefresh={reloadFromStart}
         updateTag={update.tag}
         onOpenRelease={update.onOpenRelease}
@@ -1405,14 +1373,14 @@ export function RepoWorkspace({
               onSelect={setSelectedSha}
               onLoadMore={handleLoadMore}
               loading={graphLoading}
-              showTags={showTags}
+              showTags={prefs.showTags}
               scrollTarget={scrollTarget}
               onRowDoubleClick={copySha}
               onRowContextMenu={handleRowContextMenu}
               onSelectWip={selectWip}
               highlightQuery={query}
-              dateMode={dateMode}
-              onToggleDateMode={handleToggleDateMode}
+              hoverHighlight={prefs.hoverHighlight}
+              dateMode={prefs.dateMode}
             />
           )}
         </div>

@@ -1,14 +1,17 @@
 import type { FileChange, FileStatus } from "../types";
 import { splitPath, statusLabel } from "./format";
 
-/** status 아이콘 (글자 뱃지 대신). 색은 panels.css의 .st-* 가 준다 */
-export const STATUS_ICON: Record<FileStatus, string> = {
-  M: "✎",
-  A: "+",
-  D: "−",
-  R: "⇢",
-  C: "⇢",
-  T: "✎",
+/**
+ * status 뱃지에 넣는 글자. GitKraken처럼 색 뱃지 안에 한 글자를 둔다.
+ * 배경/글자색은 panels.css의 .st-* 가 준다 (뱃지는 DiffPanel 헤더도 같은 클래스를 쓴다)
+ */
+export const STATUS_LETTER: Record<FileStatus, string> = {
+  M: "M",
+  A: "A",
+  D: "D",
+  R: "R",
+  C: "C",
+  T: "T",
 };
 
 export interface FileRowProps {
@@ -55,16 +58,13 @@ export function FileRow({
         style={depth === undefined ? undefined : { paddingLeft: 4 + depth * 14 }}
       >
         <span className={`file-icon st-${file.status}`} aria-hidden="true">
-          {STATUS_ICON[file.status]}
+          {STATUS_LETTER[file.status]}
         </span>
+        {/* GitKraken 배치: 파일명 먼저, 디렉토리는 뒤에 흐리게. 좁아지면 경로만 말줄임 */}
         <span className="file-path">
-          {nameOnly === true ? (
-            <span className="path-base">{base}</span>
-          ) : (
-            <>
-              <span className="path-dir">{dir}</span>
-              <span className="path-base">{base}</span>
-            </>
+          <span className="path-base">{base}</span>
+          {nameOnly !== true && dir !== "" && (
+            <span className="path-dir suffix">{dir.replace(/\/$/, "")}</span>
           )}
         </span>
         <span className="file-stat">

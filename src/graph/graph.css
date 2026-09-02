@@ -37,16 +37,6 @@
   white-space: nowrap;
 }
 
-/* DATE 헤더 라벨. 토글 콜백이 있을 때만 클릭 가능하게 보인다 */
-.gl-date-toggle {
-  cursor: pointer;
-}
-
-.gl-date-toggle:hover {
-  color: var(--fg-1);
-  text-decoration: underline;
-}
-
 /* ── 본문 ───────────────────────────────────────── */
 
 .gl-body {

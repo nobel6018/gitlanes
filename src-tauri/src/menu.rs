@@ -52,6 +52,10 @@ const HELP_EVENTS: [(&str, &str); 1] = [("help:shortcuts", "menu:shortcuts")];
 /// 어느 쪽이든 id와 이벤트는 같다. payload와 accelerator는 없다.
 const CHECK_UPDATES: (&str, &str) = ("app:check-updates", "menu:check-updates");
 
+/// 설정 창 열기. macOS는 App 메뉴의 "Preferences…", 나머지 플랫폼은 Edit 끝의 "Settings"다.
+/// 라벨만 다르고 id와 이벤트는 같다. `,`에는 Shift가 섞이지 않아 accelerator가 성립한다.
+const PREFERENCES: (&str, &str) = ("app:preferences", "menu:preferences");
+
 /// `set_recent_repos`가 다시 찾아야 하는 두 메뉴의 id.
 const FILE_MENU_ID: &str = "file";
 const RECENT_MENU_ID: &str = "file:open-recent";
@@ -170,21 +174,41 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         )?
     };
 
-    // 웹뷰 입력창의 복사/붙여넣기가 죽지 않도록 표준 항목을 그대로 둔다
-    let edit = Submenu::with_items(
+    // macOS는 App 메뉴에, 나머지 플랫폼은 Edit 끝에 두는 것이 관례라 라벨이 갈린다
+    #[cfg(target_os = "macos")]
+    let preferences = MenuItem::with_id(
         app,
-        "Edit",
+        PREFERENCES.0,
+        "Preferences…",
         true,
-        &[
-            &PredefinedMenuItem::undo(app, None)?,
-            &PredefinedMenuItem::redo(app, None)?,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::cut(app, None)?,
-            &PredefinedMenuItem::copy(app, None)?,
-            &PredefinedMenuItem::paste(app, None)?,
-            &PredefinedMenuItem::select_all(app, None)?,
-        ],
+        Some("CmdOrCtrl+,"),
     )?;
+    #[cfg(not(target_os = "macos"))]
+    let preferences = MenuItem::with_id(app, PREFERENCES.0, "Settings", true, Some("CmdOrCtrl+,"))?;
+
+    // 웹뷰 입력창의 복사/붙여넣기가 죽지 않도록 표준 항목을 그대로 둔다
+    let undo = PredefinedMenuItem::undo(app, None)?;
+    let redo = PredefinedMenuItem::redo(app, None)?;
+    let after_redo = PredefinedMenuItem::separator(app)?;
+    let cut = PredefinedMenuItem::cut(app, None)?;
+    let copy = PredefinedMenuItem::copy(app, None)?;
+    let paste = PredefinedMenuItem::paste(app, None)?;
+    let select_all = PredefinedMenuItem::select_all(app, None)?;
+
+    // macOS에서는 아래 push가 없어서 mut가 필요 없다
+    #[allow(unused_mut)]
+    let mut edit_items: Vec<&dyn IsMenuItem<R>> =
+        vec![&undo, &redo, &after_redo, &cut, &copy, &paste, &select_all];
+
+    #[cfg(not(target_os = "macos"))]
+    let before_settings = PredefinedMenuItem::separator(app)?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        edit_items.push(&before_settings);
+        edit_items.push(&preferences);
+    }
+
+    let edit = Submenu::with_items(app, "Edit", true, &edit_items)?;
 
     // 전부 Shift 없는 조합이다. `=`/`-`/`/`는 muda가 Code::Equal/Minus/Slash로 파싱해
     // macOS keyEquivalent를 각각 "=", "-", "/"로 등록한다(NSMenu 덤프로 확인).
@@ -338,6 +362,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 &PredefinedMenuItem::separator(app)?,
                 &check_updates,
                 &PredefinedMenuItem::separator(app)?,
+                &preferences,
+                &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::services(app, None)?,
                 &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::hide(app, None)?,
@@ -386,6 +412,7 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
         .chain(VIEW_EVENTS.iter())
         .chain(HELP_EVENTS.iter())
         .chain(std::iter::once(&CHECK_UPDATES))
+        .chain(std::iter::once(&PREFERENCES))
         .find(|(item, _)| *item == id);
 
     if let Some((_, name)) = payloadless {
