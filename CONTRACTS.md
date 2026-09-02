@@ -459,3 +459,50 @@ ui-shell:
 - ui-graph: hoverHighlight가 true이고 selectedSha가 null이면, 마우스가 올라간 커밋 행 기준으로 기존 강조 집합(buildHighlight, 조상+자손)을 계산해 dim 적용. selectedSha가 있으면 그게 우선(hover 무시). 성능: hover 행이 바뀔 때만 재계산(sha→row Map + 이미 있는 자식 맵 재사용), 캔버스는 기존 강조 렌더 경로 그대로. WIP/스태시 의사 행 hover는 앵커 커밋 기준. 마우스가 그래프 밖으로 나가면 강조 해제. rAF/throttle로 마우스 이동당 과도한 재계산 방지(같은 행이면 skip)
 - ui-shell: 설정 상태 `hoverHighlight`(localStorage `gitlanes.hoverHighlight`, 기본 true). GraphView에 전달. View 메뉴에 "Highlight on Hover" 체크 항목(rust-core가 `menu:toggle-hover-highlight` 요청) + 툴바나 설정에서 토글 가능하면 좋으나 최소 메뉴 하나. 상태 변경 시 저장.
 - rust-core: View 메뉴에 "Highlight on Hover" 체크 가능 항목(CheckMenuItem, 단축키 없음) → emit `menu:toggle-hover-highlight`. 초기 체크 상태는 프론트가 관리하므로 rust는 토글 이벤트만 보냄(체크 표시는 프론트 상태와 별개로 rust가 자체 토글하거나, 단순 MenuItem으로 두고 체크는 안 해도 됨 — 판단은 rust-core)
+
+## v0.17 확장 (Preferences 창으로 설정 통합)
+
+사용자 결정: ⌘,로 여는 Preferences 모달을 만들고, 흩어진 설정을 성격별 탭으로 모은다. 기존 툴바/메뉴 토글은 **제거**하고 Preferences로 일원화.
+
+### 통합 대상 설정 (현재 위치 → Preferences)
+| 설정 | 현재 위치 | localStorage 키 | 탭 |
+|---|---|---|---|
+| Show tags in graph | 툴바 Tags 버튼 | gitlanes.showTags | Graph |
+| Date absolute/relative | DATE 헤더 클릭 | gitlanes.dateMode | Graph |
+| Highlight on hover | (신규, View 메뉴 예정) | gitlanes.hoverHighlight | Graph |
+| Restore last repos on start | (기존 자동) | gitlanes.tabs 유지 | General |
+| Check for updates on launch | (기존 자동) | gitlanes.autoUpdateCheck (신규, 기본 true) | General |
+| Zoom level | ⌘=/-/0 | gitlanes.zoom | Appearance |
+
+- 툴바에서 Tags 버튼 제거(showTags는 Preferences로). DATE 헤더 클릭 토글도 제거(dateMode는 Preferences로). ⌘=/-/0 줌 단축키는 유지(빠른 조작), Preferences의 Zoom은 슬라이더/숫자로 같은 값 조절. View 메뉴의 Highlight on Hover 항목은 넣지 않음(Preferences로 대체) — rust-core는 Highlight on Hover 메뉴 대신 아무것도 안 함, 대신 App 메뉴에 "Preferences… ⌘," 추가
+
+### rust-core
+- macOS App 메뉴(About 아래, Check for Updates 근처)에 "Preferences… " `CmdOrCtrl+,` → emit `menu:preferences`. Windows/Linux는 File 또는 Edit 메뉴에 Settings로. `,`는 Shift 없어 muda 문제 없음
+- v0.17 앞 절에서 요청한 "Highlight on Hover" View 메뉴 항목은 **취소**(Preferences로 이동). 그 대신 위 Preferences 항목만.
+
+### ui-panels: 신규 `Preferences.tsx`
+```ts
+export interface PreferencesProps {
+  open: boolean;
+  onClose: () => void;
+  values: PrefValues;                        // 현재 설정 값들
+  onChange: (patch: Partial<PrefValues>) => void;  // 변경 시 즉시 반영+저장은 셸이
+}
+export interface PrefValues {
+  showTags: boolean;
+  dateMode: "absolute" | "relative";
+  hoverHighlight: boolean;
+  autoUpdateCheck: boolean;
+  zoom: number;   // 0.8~1.6
+}
+export function Preferences(props: PreferencesProps): JSX.Element | null;
+```
+- 중앙 모달(`.ov-backdrop` 필수), 좌측 세로 탭(General / Appearance / Graph / Terminal), 우측 해당 설정. 탭은 아이콘+라벨. Esc/바깥클릭/× 닫힘(오버레이 규약)
+- General: "Restore repositories on launch"(정보성 표시 또는 체크), "Check for updates on launch"(체크박스 → autoUpdateCheck)
+- Appearance: Zoom 슬라이더(0.8~1.6, 0.05 단계) + 현재 % 표시 + Reset(1.0) 버튼
+- Graph: "Show tags"(체크), "Date format" 라디오(Absolute/Relative), "Highlight ancestors/descendants on hover"(체크, 설명 한 줄 "선택된 커밋이 없을 때 마우스 올린 커밋의 계보를 강조")
+- Terminal: 지금은 "설정 예정" placeholder 한 줄(향후 셸/폰트). 빈 탭이라도 구조는 만들어 둠
+- 각 컨트롤 변경 시 onChange 즉시 호출(적용은 실시간). 저장 버튼 없음(즉시 반영형)
+
+### ui-shell
+- 설정 상태를 한 곳(PrefValues)으로 모으고 각 localStorage 키에 저장. `menu:preferences` 이벤트 + ⌘, 웹뷰 keydown(code Comma + meta/ctrl)으로 Preferences 열기. autoUpdateCheck는 useUpdateChecker의 자동 확인을 이 값으로 게이트. showTags/dateMode/hoverHighlight/zoom을 각 소비처(GraphView, 줌 적용)에 연결. Tags 버튼/DATE 헤더 토글 제거에 맞춰 관련 prop 정리
