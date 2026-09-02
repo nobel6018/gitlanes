@@ -1,5 +1,6 @@
 // WIP(미커밋 변경) 상세 패널. GitKraken의 WIP 노드처럼 Staged/Unstaged/Untracked를
-// 세 섹션으로 보여주고, 파일 클릭 시 셸이 메인 영역 DiffPanel을 연다. 읽기 전용.
+// 세 섹션으로 보여주고, 파일 클릭 시 셸이 메인 영역 DiffPanel을 연다.
+// 이 패널에서는 보기만 한다 (스테이징/언스테이징 조작은 향후 작업).
 // 계약: CONTRACTS.md v0.14 "WipDetailPanelProps".
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";

@@ -28,17 +28,47 @@ impl TempRepo {
     ///
     /// 브랜치 이름, 서명, 사용자 정보를 명시해 호스트의 git 전역 설정에 흔들리지 않는다.
     pub fn init(prefix: &str) -> Self {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("{prefix}-{}-{id}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("임시 디렉토리를 만들지 못했다");
-
-        let repo = Self { root };
+        let repo = Self::empty_dir(prefix);
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.name", "테스터"]);
         repo.git(&["config", "user.email", "tester@example.com"]);
         repo.git(&["config", "commit.gpgsign", "false"]);
         repo
+    }
+
+    /// bare 저장소를 만든다. 네트워크 없이 fetch/pull/push를 검증할 리모트로 쓴다.
+    pub fn init_bare(prefix: &str) -> Self {
+        let repo = Self::empty_dir(prefix);
+        repo.git(&["init", "--bare", "-q", "-b", "main"]);
+        repo
+    }
+
+    /// `source`를 클론한다. 같은 리모트를 공유하는 두 번째 작업 사본이 필요할 때 쓴다.
+    pub fn clone_of(prefix: &str, source: &str) -> Self {
+        let repo = Self::empty_dir(prefix);
+        let output = Command::new("git")
+            .args(["clone", "-q", source])
+            .arg(&repo.root)
+            .output()
+            .expect("git clone 실행 실패");
+        assert!(
+            output.status.success(),
+            "git clone 실패: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        repo.git(&["config", "user.name", "테스터"]);
+        repo.git(&["config", "user.email", "tester@example.com"]);
+        repo.git(&["config", "commit.gpgsign", "false"]);
+        repo
+    }
+
+    /// 겹치지 않는 빈 디렉토리. git init/clone 전 단계다.
+    fn empty_dir(prefix: &str) -> Self {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!("{prefix}-{}-{id}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("임시 디렉토리를 만들지 못했다");
+        Self { root }
     }
 
     /// 부모 하나짜리 커밋 `count`개가 일렬로 쌓인 저장소를 만든다.

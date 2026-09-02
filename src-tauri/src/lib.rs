@@ -10,6 +10,7 @@ mod layout;
 mod menu;
 mod model;
 mod native;
+mod ops;
 mod parse;
 mod remote;
 mod search;
@@ -68,6 +69,16 @@ pub fn run() {
             commands::get_wip_details,
             commands::get_wip_file_diff,
             commands::get_wip_file_content,
+            ops::get_sync_state,
+            ops::git_fetch,
+            ops::git_pull,
+            ops::git_push,
+            ops::git_checkout,
+            ops::git_create_branch,
+            ops::git_delete_branch,
+            ops::git_merge,
+            ops::git_stash_push,
+            ops::git_stash_pop,
             native::reveal_path,
             native::open_in_terminal,
             native::set_recent_repos,

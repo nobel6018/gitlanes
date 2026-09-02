@@ -1797,7 +1797,6 @@ mod integration_tests {
 
         for candidate in [
             "../gitlanes-outside.txt",
-            "keep.txt/../../gitlanes-outside.txt",
             outside.to_string_lossy().as_ref(),
         ] {
             let error = get_wip_file_content(repo.path(), candidate.to_string()).unwrap_err();
@@ -1808,6 +1807,15 @@ mod integration_tests {
                 "{candidate}: {error}"
             );
         }
+
+        // 파일 뒤에 ..가 붙은 경로는 거부 사유가 플랫폼마다 다르다. Linux는 canonicalize가
+        // ENOTDIR로 먼저 실패해 "파일을 찾을 수 없습니다"가 되고, macOS realpath는 통과시켜
+        // prefix 검사에서 걸린다. 둘 다 안전한 거부라서 메시지를 보지 않고 Err만 확인한다.
+        assert!(get_wip_file_content(
+            repo.path(),
+            "keep.txt/../../gitlanes-outside.txt".to_string()
+        )
+        .is_err());
 
         let _ = std::fs::remove_file(&outside);
     }

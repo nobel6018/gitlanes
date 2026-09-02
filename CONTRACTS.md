@@ -368,3 +368,46 @@ get_wip_file_content(path, file) -> string
 - 자동 새로고침 폴링에서 wip 요약이 바뀌면(이미 감지 중) WIP가 선택돼 있을 때 get_wip_details 재로드 + 열린 파일 diff 재요청 (파일이 사라졌으면 DiffPanel 닫기)
 - WIP_SHA는 검색/퀵스위처/scrollTarget 대상이 아님. 컨텍스트 메뉴(copy sha)는 WIP에서 비활성
 - Go to HEAD, Esc 선택 해제 등 기존 동작 유지. devApp mock에 3개 command 목(staged 2, unstaged 3, untracked 1)
+
+## v0.15 쓰기 작업 (GitKraken 툴바: Fetch·Pull·Push·Branch·Stash·Pop·Terminal)
+
+읽기 전용 원칙을 해제한다. 대신 안전장치가 계약이다: 확인 다이얼로그, 비대화식 실행, 충돌 안내, 작업 후 자동 새로고침. Undo/Redo(reflog 기반)는 다음 라운드.
+
+### rust-core
+모든 쓰기 command는 `Result<OpResult, String>`(Err는 인자 검증 실패 같은 호출 오류만). 공통 실행 규칙:
+- 환경변수 `GIT_TERMINAL_PROMPT=0`, `GIT_SSH_COMMAND=ssh -oBatchMode=yes`, `GIT_ASKPASS=` (빈 값) 로 **어떤 경우에도 프롬프트를 띄우지 않고** 실패시킨다. LANG=C로 메시지 고정
+- 타임아웃 120초(네트워크 작업), 60초(로컬 작업). 초과 시 kill + ok=false, stderr="timed out"
+- 작업 후 `git diff --name-only --diff-filter=U`로 충돌 파일 수집
+- 브랜치/리모트/ref 이름은 `git check-ref-format --branch`로 검증, `-` 시작 거부
+```
+get_sync_state(path) -> SyncState                         // rev-list --left-right --count @{u}...HEAD, stash list 개수
+git_fetch(path, remote: string | null, prune: bool) -> OpResult     // remote null이면 --all
+git_pull(path, mode: PullMode) -> OpResult                // ff-only | merge(--no-ff 아님, 기본) | rebase
+git_push(path, set_upstream: bool, force_with_lease: bool) -> OpResult   // 현재 브랜치. upstream 없고 set_upstream이면 -u origin <branch>. 일반 --force 금지
+git_checkout(path, target: string) -> OpResult             // 로컬 브랜치 이름 또는 원격 브랜치("origin/x" → 로컬 x 추적 생성 후 체크아웃)
+git_create_branch(path, name: string, start_point: string | null, checkout: bool) -> OpResult
+git_delete_branch(path, name: string, force: bool) -> OpResult       // 로컬만. 현재 브랜치 삭제는 Err
+git_merge(path, source: string) -> OpResult                // 현재 브랜치로 source 머지 (--no-edit)
+git_stash_push(path, message: string | null, include_untracked: bool) -> OpResult
+git_stash_pop(path) -> OpResult                            // stash@{0}
+```
+
+### ui-panels
+- `ConfirmDialog({ open, title, body, confirmLabel, danger?: boolean, onConfirm, onCancel })` — 모달, Enter=확인, Esc=취소, danger면 확인 버튼 var(--deleted)
+- `PromptDialog({ open, title, label, placeholder, defaultValue?, validate?: (v)=>string|null, confirmLabel, onSubmit(value), onCancel })` — 브랜치 이름/스태시 메시지 입력. validate가 문자열을 돌려주면 그 오류 표시 + 확인 비활성
+- `OpResultToast` 대신 기존 Toast 사용(ui-shell). 충돌은 `ConflictBanner({ files, onDismiss })` — 툴바 아래 배너: "N개 파일 충돌 — 편집기에서 해결 후 커밋하세요" + 파일 목록(클릭 시 WIP 패널 열기 콜백 `onOpenWip`)
+
+### ui-sidebar
+- 브랜치 항목 우클릭 메뉴 확장(콜백 옵션 props, undefined면 항목 숨김): `onCheckout(ref)`, `onCreateBranchFrom(ref)`, `onDeleteBranch(ref)`(로컬만, isHead면 비활성), `onMergeIntoCurrent(ref)`(isHead면 숨김), `onPushBranch(ref)`(로컬만)
+- 로컬 브랜치 **더블클릭 = checkout** (GitKraken 관례). 원격 브랜치 더블클릭도 checkout(추적 생성)
+- 현재 브랜치 옆 ↑N ↓M 배지: 새 prop `syncState?: SyncState`
+
+### ui-shell
+- **툴바(GitKraken 순서)**: `Fetch ▾` (드롭다운: Fetch / Fetch & Prune / Pull (fast-forward) / Pull (merge) / Pull (rebase)), `Push`, `Branch`(+ 새 브랜치: PromptDialog → git_create_branch(checkout=true)), `Stash`(PromptDialog 메시지 선택 입력, untracked 포함 체크), `Pop`(stashCount 0이면 비활성), `Terminal`(기존 open_in_terminal). 각 버튼은 실행 중 스피너 + 비활성, 툴팁에 단축키(withKbd)
+- Push/Fetch 버튼에 ↑ahead / ↓behind 배지(get_sync_state, 폴링 주기마다 갱신). upstream 없으면 Push 클릭 시 "origin에 upstream 설정하며 푸시" ConfirmDialog
+- 확인이 필요한 작업: Push(항상: "origin/main으로 N개 커밋 푸시"), 브랜치 삭제(danger), force-with-lease(danger), Pop(충돌 가능 안내). Fetch/Pull ff-only/Stash/Checkout은 확인 없이
+- 작업 결과: ok면 info 토스트 한 줄(git stdout 요약), 실패면 error 토스트에 stderr 그대로(여러 줄 허용, 12초 유지, 복사 버튼). conflicts 있으면 ConflictBanner
+- 작업 후 `reloadFromStart()` + list_refs + get_sync_state. 워킹 트리 dirty 상태에서 checkout 실패는 stderr가 그대로 안내됨
+- 그래프 행 컨텍스트 메뉴에 추가: "Create branch here…", "Checkout <branch>"(행에 로컬 브랜치 pill이 있을 때, 여러 개면 각각), "Cherry-pick"은 다음 라운드
+- 단축키: Fetch ⌘⇧L? → **없음**(GitKraken도 없음). Push/Stash도 단축키 없음. 실수 방지 우선
+- README/릴리스 노트의 "읽기 전용" 문구는 감독이 수정

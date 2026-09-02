@@ -190,3 +190,28 @@ export type WipArea = "staged" | "unstaged" | "untracked";
 //   untracked: git diff --no-index /dev/null file. rename은 file=새 경로.
 // get_wip_file_content(path, file) -> string
 //   워킹 트리의 현재 파일 내용. 바이너리 Err("binary"), 5MB 초과 Err("too large").
+
+// ── v0.15 쓰기 작업 (Fetch/Pull/Push/Branch/Stash) ──────────────────────
+/** 모든 쓰기 command의 공통 결과. 실패해도 Err가 아니라 ok=false로 돌려 stderr를 그대로 보여준다 */
+export interface OpResult {
+  ok: boolean;
+  /** git stdout (마지막 200줄) */
+  stdout: string;
+  /** git stderr (마지막 200줄) — 인증 실패, non-fast-forward 등 사용자에게 그대로 보여줄 메시지 */
+  stderr: string;
+  /** 머지/풀/팝 후 충돌 파일 경로 (git diff --name-only --diff-filter=U). 없으면 [] */
+  conflicts: string[];
+}
+
+export type PullMode = "ff-only" | "merge" | "rebase";
+
+/** Tauri command: get_sync_state(path) — 현재 브랜치의 upstream 대비 상태 (툴바 ↑↓ 배지) */
+export interface SyncState {
+  branch: string | null;
+  /** "origin/main" 형태. 없으면 null */
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  /** stash 개수 (Pop 버튼 활성 판정) */
+  stashCount: number;
+}

@@ -1529,3 +1529,108 @@ body.resizing * {
   font-weight: 600;
   letter-spacing: 0.01em;
 }
+
+/* ---------- 툴바 쓰기 작업 그룹 (Fetch/Push/Branch/Stash/Pop/Terminal) ---------- */
+
+.toolbar-ops {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding-left: 8px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border-1);
+}
+
+/* Fetch 본체 + ▾ 를 한 덩어리로 보이게 붙인다 */
+.op-split {
+  display: flex;
+  align-items: stretch;
+}
+
+.op-split .op-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.op-split .op-caret {
+  min-width: 18px;
+  padding: 0 4px;
+  margin-left: -1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  font-size: 10px;
+}
+
+.op-badge {
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+
+.toolbar-btn:disabled .op-badge {
+  background: var(--border-1);
+  color: var(--fg-2);
+}
+
+/* ---------- 컨텍스트 메뉴 구분선 ---------- */
+
+.context-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-1);
+}
+
+/* ---------- 토스트: 여러 줄 stderr + 복사 ---------- */
+
+.toast-message {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.toast-copy {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  padding: 2px 6px;
+  border: 1px solid var(--border-1);
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.toast-copy:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.toast-copy.copied {
+  border-color: var(--added);
+  color: var(--added);
+}
+
+/* 파괴적 메뉴 항목 (삭제 등). hover에서도 색을 유지한다 */
+.context-item.danger,
+.context-item.danger:hover:not(:disabled) {
+  color: var(--deleted);
+}
+
+.context-item.danger:disabled {
+  color: var(--fg-2);
+}
+
+/* 다이얼로그 추가 컨트롤 (스태시 untracked 체크박스) */
+.dlg-check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-1);
+  font-size: 12px;
+  cursor: pointer;
+}
