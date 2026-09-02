@@ -1801,7 +1801,12 @@ mod integration_tests {
             outside.to_string_lossy().as_ref(),
         ] {
             let error = get_wip_file_content(repo.path(), candidate.to_string()).unwrap_err();
-            assert!(error.contains("저장소 밖의 경로"), "{candidate}: {error}");
+            // Linux는 파일 뒤의 `..`(keep.txt/..)를 ENOTDIR로 먼저 실패시키고 macOS realpath는
+            // 통과시켜 prefix 검사에서 걸린다. 둘 다 안전한 거부이므로 어느 메시지든 허용한다
+            assert!(
+                error.contains("저장소 밖의 경로") || error.contains("찾을 수 없습니다"),
+                "{candidate}: {error}"
+            );
         }
 
         let _ = std::fs::remove_file(&outside);
