@@ -253,8 +253,14 @@ function WipRow({
     >
       <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
-      <div className="gl-cell gl-cell-message">
-        {`// WIP \u2014 ${wip.changedFiles} changed files (${wip.stagedFiles} staged)`}
+      <div className="gl-cell gl-cell-message gl-wip-message">
+        <span className="gl-wip-label">// WIP</span>
+        <span className="gl-wip-badge">
+          {`${wip.changedFiles} changed file${wip.changedFiles === 1 ? "" : "s"}`}
+        </span>
+        {wip.stagedFiles > 0 ? (
+          <span className="gl-wip-staged">{`${wip.stagedFiles} staged`}</span>
+        ) : null}
       </div>
       <div className="gl-cell gl-col-author" />
       <div className="gl-cell gl-col-sha" />

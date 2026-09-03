@@ -2,7 +2,7 @@
 // 계약(CONTRACTS.md): CommitRow.edges는 rust-core가 계산해 내려준다. 여기서는 좌표 변환만 한다.
 import { DOT_RADIUS, EDGE_WIDTH, ROW_HEIGHT } from "../constants";
 import type { CommitRow, Edge } from "../types";
-import { laneColor, laneX } from "./layout";
+import { authorColorIndex, authorInitials, laneColor, laneColorAlpha, laneX } from "./layout";
 import type { PseudoLayout, PseudoRow } from "./pseudo";
 
 export interface DrawParams {
@@ -44,6 +44,10 @@ const DIM_ALPHA = 0.35;
 const LANE_TINT_ALPHA = 0.06;
 /** GRAPH 컬럼 오른쪽 끝에 세우는 소속 표시 바 폭(px) */
 const LANE_BAR_WIDTH = 3;
+/** 커밋 노드를 작성자 이니셜 아바타로 그린다. 반지름(px) */
+const AVATAR_R = 8;
+/** 아바타 이니셜 폰트. AUTHOR 컬럼 .gl-avatar(9px/700)와 눈금을 맞춘다 */
+const AVATAR_FONT = '700 9px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 
 export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   const ctx = canvas.getContext("2d");
@@ -203,35 +207,43 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   // 의사 행 마크는 통과선 위에, 커밋 점은 그보다도 위에 얹는다
   drawPseudos();
 
-  // 곡선이 점 위를 지나지 않도록 점은 마지막에 그린다
+  // 커밋 노드를 작성자 이니셜 아바타로 그린다. 링 = 레인 색(브랜치 정체성),
+  // 안쪽 = 작성자 색 이니셜이라 그래프만 훑어도 누가 이 줄기를 밀었는지 읽힌다.
+  // 곡선이 아바타 위를 지나지 않도록 마지막에 얹는다.
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = AVATAR_FONT;
   for (let i = first; i <= last; i++) {
     const row = rows[i];
     const x = laneX(row.lane);
     const y = centerY(toDisplay(i));
-    const color = laneColor(row.color);
-    const r = row.isHead ? DOT_RADIUS + 1.5 : DOT_RADIUS;
+    const ring = laneColor(row.color);
     ctx.globalAlpha = isLit(i) ? 1 : DIM_ALPHA;
 
+    // 배경을 불투명하게 채워 레인 배경 띠를 덮어야 이니셜이 묻히지 않는다.
+    // merge는 레인 색 옅은 채움을 덧대 일반 커밋과 구분한다.
+    ctx.beginPath();
+    ctx.arc(x, y, AVATAR_R, 0, Math.PI * 2);
+    ctx.fillStyle = p.bgColor;
+    ctx.fill();
     if (row.isMerge) {
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = p.bgColor;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = color;
-      ctx.stroke();
-    } else {
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = color;
+      ctx.fillStyle = laneColorAlpha(row.color, 0.22);
       ctx.fill();
     }
 
+    ctx.lineWidth = row.isMerge ? 2.5 : 1.75;
+    ctx.strokeStyle = ring;
+    ctx.stroke();
+
+    ctx.fillStyle = laneColor(authorColorIndex(row.authorEmail));
+    ctx.fillText(authorInitials(row.author), x, y + 0.5);
+
+    // HEAD는 바깥에 얇은 링을 하나 더 둘러 현재 위치를 표시한다
     if (row.isHead) {
       ctx.beginPath();
-      ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+      ctx.arc(x, y, AVATAR_R + 3, 0, Math.PI * 2);
       ctx.lineWidth = 1.5;
-      ctx.strokeStyle = color;
+      ctx.strokeStyle = ring;
       ctx.stroke();
     }
   }
