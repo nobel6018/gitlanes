@@ -39,11 +39,11 @@ const CELL_PADDING = 16;
 function pillWidth(ref: RefInfo): number {
   const font = ref.isHead ? PILL_FONT_HEAD : PILL_FONT;
   let width = PILL_CHROME + measureText(ref.name, font);
-  if (ref.kind !== "localBranch") {
-    width += ICON_WIDTH + PILL_GAP;
-  }
+  // 모든 pill은 종류 아이콘(branch/cloud/tag)을 하나씩 앞에 단다
+  width += ICON_WIDTH + PILL_GAP;
   if (ref.isHead) {
-    width += CHECK_WIDTH + PILL_GAP;
+    // 현재 브랜치는 앞의 체크 + 뒤의 모니터(체크아웃) 아이콘까지
+    width += CHECK_WIDTH + PILL_GAP + ICON_WIDTH + PILL_GAP;
   }
   return width;
 }
@@ -69,6 +69,33 @@ export function refsTitle(refs: RefInfo[], showTags: boolean): string | undefine
     return undefined;
   }
   return visible.map((ref) => ref.name).join("\n");
+}
+
+function BranchIcon() {
+  return (
+    <svg className="gl-pill-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="4.5" cy="4" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="4.5" cy="12" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="11.5" cy="5.5" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M4.5 5.7v4.6M4.5 10.3c0-3 7-1.4 7-3.1"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/** 현재 브랜치가 이 워킹트리에 체크아웃돼 있음을 나타내는 모니터 아이콘 */
+function MonitorIcon() {
+  return (
+    <svg className="gl-pill-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="2" y="3" width="12" height="8" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M6 14h4M8 11v3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 function CloudIcon() {
@@ -146,18 +173,32 @@ export function RefPills({ refs, laneColor, showTags, branchWidth }: RefPillsPro
 
   return (
     <>
-      {shown.map((ref) => (
-        <span
-          key={`${ref.kind}:${ref.name}`}
-          className={`gl-pill gl-pill-${ref.kind}${ref.isHead ? " gl-pill-head" : ""}`}
-          style={ref.kind === "tag" ? undefined : { borderColor: laneColor }}
-        >
-          {ref.kind === "remoteBranch" ? <CloudIcon /> : null}
-          {ref.kind === "tag" ? <TagIcon /> : null}
-          <span className="gl-pill-name">{ref.name}</span>
-          {ref.isHead ? <CheckIcon /> : null}
-        </span>
-      ))}
+      {shown.map((ref) => {
+        // 현재 브랜치는 레인 색을 옅게 채워 다른 pill보다 도드라지게 한다
+        const style =
+          ref.kind === "tag"
+            ? undefined
+            : ref.isHead
+              ? {
+                  borderColor: laneColor,
+                  background: `color-mix(in srgb, ${laneColor} 20%, var(--bg-panel))`,
+                }
+              : { borderColor: laneColor };
+        return (
+          <span
+            key={`${ref.kind}:${ref.name}`}
+            className={`gl-pill gl-pill-${ref.kind}${ref.isHead ? " gl-pill-head" : ""}`}
+            style={style}
+          >
+            {ref.isHead ? <CheckIcon /> : null}
+            {!ref.isHead && ref.kind === "localBranch" ? <BranchIcon /> : null}
+            {ref.kind === "remoteBranch" ? <CloudIcon /> : null}
+            {ref.kind === "tag" ? <TagIcon /> : null}
+            <span className="gl-pill-name">{ref.name}</span>
+            {ref.isHead ? <MonitorIcon /> : null}
+          </span>
+        );
+      })}
       {hidden > 0 ? <span className="gl-pill gl-pill-more">{`+${hidden}`}</span> : null}
     </>
   );
