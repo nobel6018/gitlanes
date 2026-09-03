@@ -37,6 +37,13 @@ const BEND_MAX_FACTOR = 0.9;
 const PSEUDO_DASH = [3, 3];
 /** 경로 밖 요소의 불투명도 */
 const DIM_ALPHA = 0.35;
+/**
+ * 행 배경에 까는 레인 색 띠의 불투명도.
+ * 어두운 테마라 GitKraken보다 옅게 잡아야 커밋 점과 곡선이 묻히지 않는다
+ */
+const LANE_TINT_ALPHA = 0.1;
+/** GRAPH 컬럼 오른쪽 끝에 세우는 소속 표시 바 폭(px) */
+const LANE_BAR_WIDTH = 3;
 
 export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   const ctx = canvas.getContext("2d");
@@ -75,6 +82,38 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
     marked === null ||
     (inSet(edge.childRow) && (edge.parentRow === -1 ? inSet(edge.childRow) : inSet(edge.parentRow)));
 
+  /**
+   * 행이 속한 레인 색을 배경 띠 + 오른쪽 바로 깐다. 커밋 점 x에서 시작해
+   * 컬럼 오른쪽 끝까지 채우므로 그 행이 어느 줄기에 속하는지 한눈에 읽힌다.
+   * 곡선과 점보다 먼저 그려 배경 레이어가 된다.
+   */
+  const drawLaneTint = (lane: number, color: number, displayIndex: number, lit: boolean) => {
+    const top = displayIndex * ROW_HEIGHT - p.scrollTop;
+    const startX = laneX(lane);
+    ctx.fillStyle = laneColor(color);
+    // 레인이 컬럼 밖으로 밀린 행은 띠 없이 바만 남는다
+    if (startX < p.width) {
+      ctx.globalAlpha = lit ? LANE_TINT_ALPHA : LANE_TINT_ALPHA * DIM_ALPHA;
+      ctx.fillRect(startX, top, p.width - startX, ROW_HEIGHT);
+    }
+    ctx.globalAlpha = lit ? 1 : DIM_ALPHA;
+    ctx.fillRect(p.width - LANE_BAR_WIDTH, top, LANE_BAR_WIDTH, ROW_HEIGHT);
+  };
+
+  // 의사 행도 앵커 커밋의 레인/색을 그대로 쓴다(pseudo.lane/color가 앵커 값).
+  // 여기만 비우면 색 바가 한 행 끊겨 렌더 오류처럼 보인다
+  const drawPseudoTints = () => {
+    for (const pseudo of p.layout.pseudos) {
+      if (pseudo.displayIndex > lastDisplay) {
+        break;
+      }
+      if (pseudo.displayIndex >= firstDisplay) {
+        drawLaneTint(pseudo.lane, pseudo.color, pseudo.displayIndex, isLit(pseudo.anchorRow));
+      }
+    }
+    ctx.globalAlpha = 1;
+  };
+
   const drawPseudos = () => {
     for (const pseudo of p.layout.pseudos) {
       if (pseudo.displayIndex > lastDisplay) {
@@ -87,12 +126,21 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   };
 
   if (rows.length === 0) {
+    drawPseudoTints();
     drawPseudos();
     return;
   }
 
   const first = Math.max(0, toRowIndex(firstDisplay));
   const last = Math.min(rows.length - 1, toRowIndex(lastDisplay));
+
+  // 배경 레이어: 보이는 행마다 fillRect 2개. 30행 남짓이라 스크롤 비용은 무시할 수준이다
+  for (let i = first; i <= last; i++) {
+    const row = rows[i];
+    drawLaneTint(row.lane, row.color, toDisplay(i), isLit(i));
+  }
+  drawPseudoTints();
+  ctx.globalAlpha = 1;
 
   // 색상별로 Path2D를 모아 stroke 호출 수를 색 개수(<=10)로 줄인다.
   // 강조가 켜지면 밝은 벌과 어두운 벌로 나눠 담아 alpha를 두 번만 바꾼다
