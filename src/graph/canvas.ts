@@ -41,7 +41,7 @@ const DIM_ALPHA = 0.35;
  * 행 배경에 까는 레인 색 띠의 불투명도.
  * 어두운 테마라 GitKraken보다 옅게 잡아야 커밋 점과 곡선이 묻히지 않는다
  */
-const LANE_TINT_ALPHA = 0.1;
+const LANE_TINT_ALPHA = 0.06;
 /** GRAPH 컬럼 오른쪽 끝에 세우는 소속 표시 바 폭(px) */
 const LANE_BAR_WIDTH = 3;
 
