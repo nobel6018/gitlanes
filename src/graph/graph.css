@@ -363,6 +363,39 @@
   flex: none;
   color: var(--fg-2);
   font-size: 10px;
+  /* button 기본 chrome 제거하고 pill 모양은 .gl-pill에서 물려받는다 */
+  appearance: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.gl-pill-more:hover {
+  color: var(--fg-1);
+  border-color: var(--border-0);
+}
+
+/* "+N" 배지를 눌러 펼치는 ref 목록 팝오버. position: fixed라 셀 overflow에 안 잘린다 */
+.gl-refs-popover {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 340px;
+  max-height: 60vh;
+  padding: 6px;
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-1);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* 팝오버 안에서는 이름을 자르지 않고 전부 보여준다 */
+.gl-refs-popover .gl-pill {
+  max-width: 328px;
+  flex: none;
 }
 
 .gl-pill-icon {

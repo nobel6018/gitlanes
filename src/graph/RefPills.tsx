@@ -1,4 +1,6 @@
 // BRANCH / TAG 컬럼의 ref pill. GitKraken처럼 그래프 밖 왼쪽 컬럼에 놓는다.
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type { RefInfo } from "../types";
 import { measureText } from "./text";
 
@@ -142,7 +144,112 @@ function CheckIcon() {
   );
 }
 
+function pillClass(ref: RefInfo): string {
+  return `gl-pill gl-pill-${ref.kind}${ref.isHead ? " gl-pill-head" : ""}`;
+}
+
+/** 현재 브랜치는 레인 색을 옅게 채워 다른 pill보다 도드라지게 한다 */
+function pillStyle(ref: RefInfo, laneColor: string): CSSProperties | undefined {
+  if (ref.kind === "tag") {
+    return undefined;
+  }
+  if (ref.isHead) {
+    return {
+      borderColor: laneColor,
+      background: `color-mix(in srgb, ${laneColor} 20%, var(--bg-panel))`,
+    };
+  }
+  return { borderColor: laneColor };
+}
+
+/** ref 하나를 나타내는 pill. 인라인 목록과 "+N" 팝오버가 공유한다 */
+function Pill({ item, laneColor }: { item: RefInfo; laneColor: string }) {
+  return (
+    <span className={pillClass(item)} style={pillStyle(item, laneColor)} title={item.name}>
+      {item.isHead ? <CheckIcon /> : null}
+      {!item.isHead && item.kind === "localBranch" ? <BranchIcon /> : null}
+      {item.kind === "remoteBranch" ? <CloudIcon /> : null}
+      {item.kind === "tag" ? <TagIcon /> : null}
+      <span className="gl-pill-name">{item.name}</span>
+      {item.isHead ? <MonitorIcon /> : null}
+    </span>
+  );
+}
+
+/** 화면 밖으로 나가지 않게 두는 여백(px). ContextMenu와 같은 값 */
+const POPOVER_MARGIN = 6;
+
+/**
+ * "+N" 배지를 누르면 이 커밋의 ref 전체를 잘리지 않은 pill로 펼쳐 보여준다.
+ * position: fixed라 셀 overflow에 잘리지 않는다(그래프 스크롤 컨테이너에 transform이 없어 뷰포트 기준).
+ * 바깥 클릭/Esc/blur/스크롤에 닫힌다. Esc 규약(role="menu")을 따른다.
+ */
+function RefsPopover({
+  anchor,
+  refs,
+  laneColor,
+  onClose,
+}: {
+  anchor: DOMRect;
+  refs: RefInfo[];
+  laneColor: string;
+  onClose: () => void;
+}) {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState({ left: anchor.left, top: anchor.bottom + 4 });
+
+  useLayoutEffect(() => {
+    const el = boxRef.current;
+    if (el === null) {
+      return;
+    }
+    const { width, height } = el.getBoundingClientRect();
+    const maxLeft = window.innerWidth - width - POPOVER_MARGIN;
+    const maxTop = window.innerHeight - height - POPOVER_MARGIN;
+    setPos({
+      left: Math.max(POPOVER_MARGIN, Math.min(anchor.left, maxLeft)),
+      top: Math.max(POPOVER_MARGIN, Math.min(anchor.bottom + 4, maxTop)),
+    });
+  }, [anchor]);
+
+  useEffect(() => {
+    const onDown = (event: MouseEvent) => {
+      const el = boxRef.current;
+      if (el !== null && event.target instanceof Node && el.contains(event.target)) {
+        return;
+      }
+      onClose();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", onClose);
+    // fixed 팝오버는 스크롤을 따라가지 않으니 스크롤이 나면 닫는다
+    window.addEventListener("scroll", onClose, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", onClose);
+      window.removeEventListener("scroll", onClose, true);
+    };
+  }, [onClose]);
+
+  return (
+    <div ref={boxRef} className="gl-refs-popover" role="menu" style={{ left: pos.left, top: pos.top }}>
+      {refs.map((item) => (
+        <Pill key={`${item.kind}:${item.name}`} item={item} laneColor={laneColor} />
+      ))}
+    </div>
+  );
+}
+
 export function RefPills({ refs, laneColor, showTags, branchWidth }: RefPillsProps) {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const sorted = sortedVisibleRefs(refs, showTags);
   if (sorted.length === 0) {
     return null;
@@ -173,33 +280,31 @@ export function RefPills({ refs, laneColor, showTags, branchWidth }: RefPillsPro
 
   return (
     <>
-      {shown.map((ref) => {
-        // 현재 브랜치는 레인 색을 옅게 채워 다른 pill보다 도드라지게 한다
-        const style =
-          ref.kind === "tag"
-            ? undefined
-            : ref.isHead
-              ? {
-                  borderColor: laneColor,
-                  background: `color-mix(in srgb, ${laneColor} 20%, var(--bg-panel))`,
-                }
-              : { borderColor: laneColor };
-        return (
-          <span
-            key={`${ref.kind}:${ref.name}`}
-            className={`gl-pill gl-pill-${ref.kind}${ref.isHead ? " gl-pill-head" : ""}`}
-            style={style}
-          >
-            {ref.isHead ? <CheckIcon /> : null}
-            {!ref.isHead && ref.kind === "localBranch" ? <BranchIcon /> : null}
-            {ref.kind === "remoteBranch" ? <CloudIcon /> : null}
-            {ref.kind === "tag" ? <TagIcon /> : null}
-            <span className="gl-pill-name">{ref.name}</span>
-            {ref.isHead ? <MonitorIcon /> : null}
-          </span>
-        );
-      })}
-      {hidden > 0 ? <span className="gl-pill gl-pill-more">{`+${hidden}`}</span> : null}
+      {shown.map((ref) => (
+        <Pill key={`${ref.kind}:${ref.name}`} item={ref} laneColor={laneColor} />
+      ))}
+      {hidden > 0 ? (
+        <button
+          type="button"
+          className="gl-pill gl-pill-more"
+          title={`숨은 ref ${hidden}개 보기`}
+          // 배지 클릭이 행 선택으로 번지지 않게 막고, 배지 위치에 팝오버를 연다
+          onClick={(event) => {
+            event.stopPropagation();
+            setAnchor(anchor ? null : event.currentTarget.getBoundingClientRect());
+          }}
+        >
+          {`+${hidden}`}
+        </button>
+      ) : null}
+      {anchor ? (
+        <RefsPopover
+          anchor={anchor}
+          refs={sorted}
+          laneColor={laneColor}
+          onClose={() => setAnchor(null)}
+        />
+      ) : null}
     </>
   );
 }
