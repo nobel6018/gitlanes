@@ -614,7 +614,9 @@ kbd.sc-key.wide {
 /* ---------- DiffPanel ---------- */
 
 .dp-root {
-  flex: 1 1 auto;
+  /* 부모 .graph-area가 display:block이라 flex가 안 먹는다. GraphView의 .gl-root처럼
+     height:100%로 pane을 채워야 아래 .dp-body의 내부 스크롤이 성립한다 */
+  height: 100%;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -748,10 +750,12 @@ kbd.sc-key.wide {
 
 .dp-body {
   flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   outline: none;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  /* 12.5 → 13: GitKraken 대비 코드 가독성. LINE_HEIGHT(20px)에 여전히 여유 */
+  font-size: 13px;
 }
 
 .dp-body:focus-visible {
@@ -783,6 +787,9 @@ kbd.sc-key.wide {
 .dp-window {
   position: absolute;
   left: 0;
+  /* auto 폭이면 absolute라 shrink-to-fit가 뷰포트로 클램프돼 긴 줄이 잘린다.
+     max-content로 콘텐츠 폭까지 펴야 가로 스크롤 시 줄 배경까지 온전히 보인다 */
+  width: max-content;
   min-width: 100%;
 }
 
@@ -808,12 +815,17 @@ kbd.sc-key.wide {
 .dp-code {
   flex: 1 1 auto;
   padding: 0 10px 0 2px;
+  /* 코드 본문은 --fg-1(#D0D3D9)보다 밝게. 하이라이트 안 된 텍스트의 기본색 */
+  color: #E4E7EC;
   user-select: text;
   -webkit-user-select: text;
 }
 
+/* add/del: 배경을 좀 더 진하게 + 좌측 2px 실선 강조바(레이아웃 안 밀도록 inset shadow).
+   GitKraken처럼 줄 종류가 한눈에 스캔된다 */
 .dp-line.dp-add {
-  background: var(--added-bg);
+  background: rgba(84, 192, 138, 0.2);
+  box-shadow: inset 2px 0 0 var(--added);
 }
 
 .dp-line.dp-add .dp-sign {
@@ -821,7 +833,8 @@ kbd.sc-key.wide {
 }
 
 .dp-line.dp-del {
-  background: var(--deleted-bg);
+  background: rgba(222, 115, 115, 0.2);
+  box-shadow: inset 2px 0 0 var(--deleted);
 }
 
 .dp-line.dp-del .dp-sign {
@@ -855,11 +868,13 @@ kbd.sc-key.wide {
 }
 
 .dp-half.dp-add {
-  background: var(--added-bg);
+  background: rgba(84, 192, 138, 0.2);
+  box-shadow: inset 2px 0 0 var(--added);
 }
 
 .dp-half.dp-del {
-  background: var(--deleted-bg);
+  background: rgba(222, 115, 115, 0.2);
+  box-shadow: inset 2px 0 0 var(--deleted);
 }
 
 /* 대응하는 줄이 없는 쪽은 해칭으로 비운다 */
@@ -893,21 +908,23 @@ kbd.sc-key.wide {
 
 /* ---------- highlight.js 토큰 색 (우리 팔레트에 맞춘 다크) ---------- */
 
+/* 다크 배경 + add/del 틴트 위에서도 읽히도록 이전보다 채도/명도를 올린 팔레트 */
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-literal,
 .hljs-doctag,
 .hljs-meta .hljs-keyword {
-  color: #C09AE8;
+  color: #CBA6F7;
 }
 
+/* 문자열은 add 배경(초록)과 겹쳐 뭉개지지 않게 더 밝은 초록으로 분리한다 */
 .hljs-string,
 .hljs-regexp,
 .hljs-addition,
 .hljs-attribute,
 .hljs-meta .hljs-string,
 .hljs-quote {
-  color: var(--added);
+  color: #8BDBA4;
 }
 
 .hljs-number,
@@ -916,13 +933,14 @@ kbd.sc-key.wide {
 .hljs-link,
 .hljs-selector-attr,
 .hljs-selector-pseudo {
-  color: #E88A5C;
+  color: #F0A177;
 }
 
+/* 주석: fg-2(#93979F)는 너무 흐리다. 읽히되 튀지 않는 밝기로 */
 .hljs-comment,
 .hljs-meta,
 .hljs-deletion {
-  color: var(--fg-2);
+  color: #9DA8B8;
   font-style: italic;
 }
 
@@ -931,7 +949,7 @@ kbd.sc-key.wide {
 .hljs-title.class_,
 .hljs-built_in,
 .hljs-builtin-name {
-  color: #52C4AE;
+  color: #5FD3BD;
 }
 
 .hljs-title,
@@ -941,7 +959,7 @@ kbd.sc-key.wide {
 .hljs-name,
 .hljs-selector-id,
 .hljs-selector-class {
-  color: #7B99E3;
+  color: #8FACF5;
 }
 
 .hljs-variable,
@@ -949,11 +967,12 @@ kbd.sc-key.wide {
 .hljs-attr,
 .hljs-params,
 .hljs-property {
-  color: var(--fg-1);
+  color: #E4E7EC;
 }
 
+/* JSX/HTML 태그 괄호: fg-2는 TSX에서 너무 묻힌다. 밝은 중립색으로 */
 .hljs-tag {
-  color: var(--fg-2);
+  color: #C6CCD6;
 }
 
 .hljs-strong {
