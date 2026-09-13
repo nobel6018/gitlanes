@@ -1,7 +1,7 @@
 // 탭 하나의 작업 공간. 레포/그래프/선택/검색/사이드바 상태를 전부 여기서 들고 있다.
 // App은 이 컴포넌트를 탭마다 하나씩 마운트해두고 활성 탭만 보여준다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ComponentProps, CSSProperties, ReactElement, ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraphView } from "../graph";
@@ -80,17 +80,16 @@ import { APP_VERSION } from "./version";
 import { basename, formatCount, shortSha } from "./format";
 
 /**
- * Toast에 액션 버튼 prop을 얹는 다리.
- * needsAuth일 때의 "Run in terminal" 버튼은 계약상 Toast(ui-actions 소유)가 그린다.
- * 아직 그 prop이 없어 여기서 타입만 넓혀 넘긴다. 모르는 prop은 React가 그냥 버리므로
- * 지금은 표시만 안 되고, ui-actions가 actionLabel/onAction을 추가하는 순간 살아난다.
+ * ConfirmDialog는 항상 마운트된 채 open으로만 여닫는다. 닫혀 있을 때도 spec이 필요해서
+ * 두는 자리표시자다. 렌더마다 새 객체를 만들면 그만큼 다시 그려지므로 모듈 상수로 둔다.
  */
-const ToastWithAction = Toast as (
-  props: ComponentProps<typeof Toast> & {
-    actionLabel?: string;
-    onAction?: () => void;
-  },
-) => ReactElement;
+const IDLE_CONFIRM: ConfirmSpec = {
+  title: "",
+  body: "",
+  undo: "",
+  confirmLabel: "OK",
+};
+
 
 const SIDEBAR_KEY = "gitlanes.sidebar";
 
@@ -195,8 +194,11 @@ interface ToastState {
   tone: "error" | "info";
   durationMs?: number;
   copyable?: boolean;
-  /** needsAuth일 때의 "Run in terminal" 버튼 */
-  action?: { label: string; run: () => void };
+  /** git stderr 원문. 토스트가 접히는 영역에 등폭으로 보여준다 */
+  stderr?: string;
+  /** 실행한 git 인자. needsAuth일 때 터미널 핸드오프에 쓴다 */
+  command?: string[];
+  needsAuth?: boolean;
 }
 
 /** 확인 다이얼로그 한 건. resolve로 사용자의 선택을 액션 계층에 돌려준다 */
@@ -1870,22 +1872,19 @@ export function RepoWorkspace({
 
   const toastNode =
     toast === null ? null : (
-      <ToastWithAction
+      <Toast
         key={toast.id}
         message={toast.message}
         tone={toast.tone}
         durationMs={toast.durationMs}
         copyable={toast.copyable}
-        actionLabel={toast.action?.label}
-        onAction={
-          toast.action === undefined
-            ? undefined
-            : () => {
-                const run = toast.action?.run;
-                dismissToast();
-                run?.();
-              }
-        }
+        stderr={toast.stderr}
+        command={toast.command}
+        needsAuth={toast.needsAuth}
+        onRunInTerminal={(command) => {
+          dismissToast();
+          runInTerminal(command);
+        }}
         onClose={dismissToast}
       />
     );
@@ -2141,7 +2140,14 @@ export function RepoWorkspace({
         )}
         {/* 헤더(레포 경로 + ×)는 Terminal이 직접 그린다. 여기서 또 두지 않는다.
             탭이 살아있는 동안 언마운트하지 않는다 (PTY 세션 유지) — visible로만 토글 */}
-        <Terminal repoPath={repo.path} visible={terminalOpen} onClose={closeTerminal} />
+        <Terminal
+          repoPath={repo.path}
+          visible={terminalOpen}
+          onClose={closeTerminal}
+          onSession={(id) => {
+            termSessionRef.current = id;
+          }}
+        />
       </div>
 
       <footer className="statusbar">
@@ -2190,15 +2196,7 @@ export function RepoWorkspace({
       {/* 파괴적 작업 확인. body 아래 한 줄이 되돌리는 방법이다 (안전 계약 6번) */}
       <ConfirmDialog
         open={pendingConfirm !== null}
-        title={pendingConfirm?.spec.title ?? ""}
-        body={
-          <>
-            <p>{pendingConfirm?.spec.body}</p>
-            <p className="cf-undo">{pendingConfirm?.spec.undo}</p>
-          </>
-        }
-        confirmLabel={pendingConfirm?.spec.confirmLabel ?? "OK"}
-        danger={pendingConfirm?.spec.danger}
+        spec={pendingConfirm?.spec ?? IDLE_CONFIRM}
         onConfirm={() => settleConfirm(true)}
         onCancel={() => settleConfirm(false)}
       />

@@ -101,7 +101,11 @@ function currentWip(): WipInfo | null {
   if (paths.size === 0) {
     return null;
   }
-  return { changedFiles: paths.size, stagedFiles: wipStore.staged.length };
+  return {
+    changedFiles: paths.size,
+    stagedFiles: wipStore.staged.length,
+    untrackedFiles: wipStore.untracked.length,
+  };
 }
 
 function mockWipDetails(): WipDetails {

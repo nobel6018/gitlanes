@@ -16,16 +16,10 @@ import type {
 import * as api from "./api";
 
 /** 파괴적 작업 확인 다이얼로그의 내용. undo는 "되돌리는 방법" 한 줄이다 */
-export interface ConfirmSpec {
-  title: string;
-  /** 무슨 일이 일어나는지 한 문장 */
-  body: string;
-  /** 되돌리는 방법. 되돌릴 수 없으면 그렇다고 적는다 */
-  undo: string;
-  confirmLabel: string;
-  /** 되돌릴 수 없는 작업. 확인 버튼이 빨개진다 */
-  danger?: boolean;
-}
+// ConfirmSpec의 단일 출처는 Dialogs.tsx다. 여기서 또 정의하면 ui-actions가 필드를
+// 늘렸을 때 두 정의가 조용히 갈라진다. 기존 import 경로를 지키려고 재수출만 한다.
+export type { ConfirmSpec } from "./Dialogs";
+import type { ConfirmSpec } from "./Dialogs";
 
 /** 쓰기 결과 알림. needsAuth일 때만 action이 붙는다 */
 export interface ToastSpec {
@@ -34,8 +28,12 @@ export interface ToastSpec {
   durationMs?: number;
   /** git stderr처럼 원문을 복사하고 싶은 경우 */
   copyable?: boolean;
-  /** "Run in terminal" 같은 단일 액션 버튼 */
-  action?: { label: string; run: () => void };
+  /** git stderr 원문. 토스트가 접히는 영역에 등폭으로 보여준다 */
+  stderr?: string;
+  /** 실행한 git 인자. needsAuth일 때 터미널 핸드오프에 그대로 쓴다 */
+  command?: string[];
+  /** 인증 실패로 보이면 토스트가 "Run in terminal" 버튼을 띄운다 */
+  needsAuth?: boolean;
 }
 
 /**
@@ -203,17 +201,16 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
         if (!result.ok) {
           const detail = (result.stderr.trim() || result.stdout.trim() || "").slice(0, 2000);
+          // stderr는 message에 이어붙이지 않고 따로 넘긴다. 토스트가 접히는 영역에
+          // 등폭으로 원문을 보존해야 사용자가 git 메시지를 그대로 읽고 복사한다
           o.toast({
-            message: detail === "" ? spec.failure : `${spec.failure}\n${detail}`,
+            message: spec.failure,
             tone: "error",
             durationMs: ERROR_TOAST_MS,
             copyable: true,
-            action: result.needsAuth
-              ? {
-                  label: "Run in terminal",
-                  run: () => o.runInTerminal(result.command),
-                }
-              : undefined,
+            stderr: detail === "" ? undefined : detail,
+            command: result.command,
+            needsAuth: result.needsAuth,
           });
           // 성공이든 실패든 새로고침한다. 실패해도 인덱스는 움직였을 수 있다
           await o.refreshAll();
@@ -229,10 +226,11 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         if (!(err instanceof Error)) {
           const message = api.errorMessage(err);
           o.toast({
-            message: `${spec.failure}\n${message}`,
+            message: spec.failure,
             tone: "error",
             durationMs: ERROR_TOAST_MS,
             copyable: true,
+            stderr: message,
           });
           await o.refreshAll();
           throw new Error(message);

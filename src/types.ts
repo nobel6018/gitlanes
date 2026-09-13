@@ -187,6 +187,13 @@ export interface WipDetails {
 
 export type WipArea = "staged" | "unstaged" | "untracked";
 
+/**
+ * git_discard의 범위. 레퍼런스 앱(GitKraken/SourceGit)은 "all"만 있지만, 우리 WIP 패널은
+ * Unstaged와 Staged를 시각적으로 나눠 그리므로 Unstaged 행의 discard가 staged 변경까지
+ * 날리면 사용자의 기대를 배신한다. 커밋 안 한 변경은 reflog로도 복구가 안 된다.
+ */
+export type DiscardArea = "worktree" | "all";
+
 // get_wip_file_diff(path, file, area) -> string
 //   staged: git diff --cached -- file / unstaged: git diff -- file /
 //   untracked: git diff --no-index /dev/null file. rename은 file=새 경로.
@@ -313,7 +320,12 @@ export interface CommitOptions {
 // [스테이징]
 //   git_stage(path, files: string[])
 //   git_unstage(path, files: string[])
-//   git_discard(path, files: string[])        // 추적 파일은 restore, untracked는 삭제
+//   git_discard(path, files: string[], area: DiscardArea)
+//       // "worktree": 인덱스 기준으로 워킹트리만 되돌린다 (git restore -- <files>).
+//       //             staged 변경은 보존된다. WIP 패널의 Unstaged 행이 이걸 쓴다
+//       // "all":      마지막 커밋 상태로 전부 되돌린다 (restore --source=HEAD --staged --worktree).
+//       //             Staged 영역과 파일 단위 전체 discard가 이걸 쓴다
+//       // 두 모드 모두 untracked는 clean -fd로 삭제한다
 //   git_stage_all(path)  /  git_unstage_all(path)
 //   git_apply_patch(path, patch: string, cached: boolean, reverse: boolean)
 //       // hunk/line 단위 스테이징의 유일한 원시 연산.
