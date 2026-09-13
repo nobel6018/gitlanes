@@ -117,6 +117,51 @@ const POLL_INTERVAL_MS = 5000;
 /** search_commits가 돌려줄 최대 매치 수 (계약 상한) */
 const GLOBAL_SEARCH_LIMIT = 500;
 
+/**
+ * 5초 폴링이 매번 새 객체를 돌려주므로, 내용이 같으면 상태를 갈지 않는다.
+ * 안 그러면 아무 일이 없어도 워크스페이스 전체가 5초마다 다시 그려진다.
+ */
+function sameSync(a: SyncState | null, b: SyncState | null): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  if (
+    a.branch !== b.branch ||
+    a.upstream !== b.upstream ||
+    a.ahead !== b.ahead ||
+    a.behind !== b.behind ||
+    a.stashCount !== b.stashCount
+  ) {
+    return false;
+  }
+  const p = a.pending;
+  const q = b.pending;
+  if (p === null || q === null) {
+    return p === q;
+  }
+  return (
+    p.kind === q.kind &&
+    p.progress === q.progress &&
+    p.conflictCount === q.conflictCount &&
+    p.detail === q.detail
+  );
+}
+
+/** 충돌 목록도 같은 이유로 내용 비교를 한다 */
+function sameConflicts(a: ConflictFile[], b: ConflictFile[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  return a.every((file, i) => {
+    const other = b[i];
+    return (
+      file.path === other.path &&
+      file.kind === other.kind &&
+      file.hasMarkers === other.hasMarkers
+    );
+  });
+}
+
 function sameWip(a: WipInfo | null, b: WipInfo | null): boolean {
   if (a === null || b === null) {
     return a === b;
@@ -441,15 +486,15 @@ export function RepoWorkspace({
       if (syncReq.current !== reqId) {
         return;
       }
-      setSyncState(state);
+      setSyncState((prev) => (sameSync(prev, state) ? prev : state));
       if (state.pending === null) {
-        setConflicts([]);
+        setConflicts((prev) => (prev.length === 0 ? prev : []));
         setConflictDismissed(false);
         return;
       }
       const files = await getConflicts(path);
       if (syncReq.current === reqId) {
-        setConflicts(files);
+        setConflicts((prev) => (sameConflicts(prev, files) ? prev : files));
       }
     } catch {
       // rust가 아직 이 command를 안 들고 있거나(하네스) 일시적 실패다.

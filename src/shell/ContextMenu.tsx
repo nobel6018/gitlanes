@@ -29,11 +29,16 @@ export interface ContextMenuProps {
 /** 화면 밖으로 나가지 않게 보정하는 여백(px) */
 const EDGE_MARGIN = 6;
 
+/** 서브메뉴가 차지할 것으로 보는 폭(px). 뒤집을지 정하는 데만 쓴다 */
+const SUBMENU_WIDTH = 220;
+
 export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ left: x, top: y });
   /** 펼쳐 둔 서브메뉴의 라벨. 한 번에 하나만 열린다 */
   const [openSub, setOpenSub] = useState<string | null>(null);
+  /** 오른쪽 공간이 모자라면 서브메뉴를 왼쪽으로 편다 */
+  const [flipSub, setFlipSub] = useState(false);
 
   // 실제 크기를 잰 뒤 뷰포트 안으로 밀어넣는다
   useLayoutEffect(() => {
@@ -44,10 +49,13 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     const { width, height } = el.getBoundingClientRect();
     const maxLeft = window.innerWidth - width - EDGE_MARGIN;
     const maxTop = window.innerHeight - height - EDGE_MARGIN;
+    const left = Math.max(EDGE_MARGIN, Math.min(x, maxLeft));
     setPos({
-      left: Math.max(EDGE_MARGIN, Math.min(x, maxLeft)),
+      left,
       top: Math.max(EDGE_MARGIN, Math.min(y, maxTop)),
     });
+    // 서브메뉴는 부모 오른쪽에 붙는다. 그만한 폭이 남지 않으면 왼쪽으로 뒤집는다
+    setFlipSub(left + width + SUBMENU_WIDTH + EDGE_MARGIN > window.innerWidth);
   }, [x, y, items.length]);
 
   useEffect(() => {
@@ -121,7 +129,12 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                 </span>
               </button>
               {openSub === item.label && (
-                <div className="context-menu context-submenu" role="menu">
+                <div
+                  className={
+                    flipSub ? "context-menu context-submenu flip" : "context-menu context-submenu"
+                  }
+                  role="menu"
+                >
                   {item.children.map((child) => (
                     <button
                       key={child.label}

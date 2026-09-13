@@ -1543,13 +1543,11 @@ kbd.sc-key.wide {
   margin-left: 2px;
 }
 
-@media (max-width: 640px) {
-  .context-submenu {
-    left: auto;
-    right: 100%;
-    margin-left: 0;
-    margin-right: 2px;
-  }
+.context-submenu.flip {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 2px;
 }
 
 /* 확인 다이얼로그의 "되돌리는 방법" 한 줄. 본문보다 한 톤 낮춘다 */
