@@ -191,27 +191,196 @@ export type WipArea = "staged" | "unstaged" | "untracked";
 // get_wip_file_content(path, file) -> string
 //   워킹 트리의 현재 파일 내용. 바이너리 Err("binary"), 5MB 초과 Err("too large").
 
-// ── v0.15 쓰기 작업 (Fetch/Pull/Push/Branch/Stash) ──────────────────────
-/** 모든 쓰기 command의 공통 결과. 실패해도 Err가 아니라 ok=false로 돌려 stderr를 그대로 보여준다 */
+
+// ════════════════════════════════════════════════════════════
+// v0.18 쓰기 작업 (git client 전환)
+//
+// 안전 계약 (rust-core가 지킨다):
+//  1. 모든 git 실행은 비대화식. stdin=null, GIT_TERMINAL_PROMPT=0,
+//     GIT_SSH_COMMAND="ssh -oBatchMode=yes", GIT_ASKPASS/SSH_ASKPASS="".
+//     자격증명이 없으면 멈추지 않고 실패한다.
+//  2. 실패는 Err가 아니라 ok=false다. Err(String)는 인자 검증 실패에만.
+//  3. `--force`는 쓰지 않는다. push는 `--force-with-lease`만.
+//  4. 타임아웃: 네트워크 120초, 로컬 60초.
+//  5. 모든 OpResult는 실행한 argv를 command로 돌려준다. needsAuth면
+//     ui-shell이 내장 터미널로 핸드오프한다 (term_write로 그대로 실행).
+// ════════════════════════════════════════════════════════════
+
+/** 모든 쓰기 command의 공통 결과 */
 export interface OpResult {
   ok: boolean;
   /** git stdout (마지막 200줄) */
   stdout: string;
-  /** git stderr (마지막 200줄) — 인증 실패, non-fast-forward 등 사용자에게 그대로 보여줄 메시지 */
+  /** git stderr (마지막 200줄) — non-fast-forward, 인증 실패 등을 그대로 보여준다 */
   stderr: string;
-  /** 머지/풀/팝 후 충돌 파일 경로 (git diff --name-only --diff-filter=U). 없으면 [] */
+  /** 충돌 파일 경로 (git diff --name-only --diff-filter=U). 없으면 [] */
   conflicts: string[];
+  /** 실제로 실행한 git 인자 (프로그램명 "git" 제외). 터미널 핸드오프에 쓴다 */
+  command: string[];
+  /** stderr가 인증/권한 실패로 보이면 true. ui-shell이 "터미널에서 실행"을 권한다 */
+  needsAuth: boolean;
 }
 
 export type PullMode = "ff-only" | "merge" | "rebase";
 
-/** Tauri command: get_sync_state(path) — 현재 브랜치의 upstream 대비 상태 (툴바 ↑↓ 배지) */
+/** Tauri command: get_sync_state(path) — 툴바 ↑ahead ↓behind 배지 */
 export interface SyncState {
+  /** detached HEAD면 null */
   branch: string | null;
   /** "origin/main" 형태. 없으면 null */
   upstream: string | null;
   ahead: number;
   behind: number;
-  /** stash 개수 (Pop 버튼 활성 판정) */
+  /** stash 개수 */
   stashCount: number;
+  /** 진행 중인 머지/리베이스/체리픽/리버트 상태. 없으면 null */
+  pending: PendingOp | null;
 }
+
+export type PendingKind = "merge" | "rebase" | "cherryPick" | "revert";
+
+/** 진행 중이라 continue/abort가 필요한 작업. .git의 MERGE_HEAD 등으로 판정 */
+export interface PendingOp {
+  kind: PendingKind;
+  /** 리베이스 진행도 "3/12". 알 수 없으면 null */
+  progress: string | null;
+  /** 충돌 파일 수 */
+  conflictCount: number;
+  /** 리베이스 중인 브랜치 이름 등 부가 설명. 없으면 null */
+  detail: string | null;
+}
+
+/** Tauri command: get_conflicts(path) */
+export interface ConflictFile {
+  path: string;
+  /** 양쪽이 수정 / 한쪽 삭제 등 */
+  kind: "bothModified" | "bothAdded" | "deletedByUs" | "deletedByThem" | "bothDeleted";
+  /** 충돌 마커가 남아 있으면 true. 사용자가 손으로 해결하면 false가 된다 */
+  hasMarkers: boolean;
+}
+
+/** Tauri command: list_remotes(path) */
+export interface RemoteInfo {
+  name: string;
+  fetchUrl: string;
+  pushUrl: string;
+}
+
+/** Tauri command: list_worktrees(path) */
+export interface WorktreeInfo {
+  path: string;
+  /** 체크아웃된 브랜치. detached면 null */
+  branch: string | null;
+  head: string;
+  /** 이 앱이 연 레포 자신이면 true */
+  isMain: boolean;
+  /** 경로가 사라졌으면 true (prune 대상) */
+  isPrunable: boolean;
+}
+
+export type RebaseAction = "pick" | "reword" | "edit" | "squash" | "fixup" | "drop";
+
+/** git_rebase_interactive의 todo 한 줄 */
+export interface RebaseStep {
+  sha: string;
+  action: RebaseAction;
+  /** 화면 표시용 원본 subject */
+  subject: string;
+  /** action이 "reword"일 때 쓸 새 메시지. 그 외엔 null */
+  message: string | null;
+}
+
+/** git_commit 인자 묶음 */
+export interface CommitOptions {
+  message: string;
+  /** 마지막 커밋을 고쳐 쓴다 (--amend) */
+  amend: boolean;
+  /** Signed-off-by 추가 */
+  signoff: boolean;
+  /** GPG 서명 (--gpg-sign). 서명 키가 없으면 ok=false로 실패한다 */
+  gpgSign: boolean;
+  /** staged가 비어도 커밋 (--allow-empty) */
+  allowEmpty: boolean;
+  /** 추적 중인 파일의 변경을 전부 스테이지하고 커밋 (-a) */
+  stageAll: boolean;
+}
+
+// ── 쓰기 command 목록 (rust-core 구현, ui-* 호출) ────────────────
+// 반환 타입이 안 적힌 것은 전부 OpResult.
+//
+// [스테이징]
+//   git_stage(path, files: string[])
+//   git_unstage(path, files: string[])
+//   git_discard(path, files: string[])        // 추적 파일은 restore, untracked는 삭제
+//   git_stage_all(path)  /  git_unstage_all(path)
+//   git_apply_patch(path, patch: string, cached: boolean, reverse: boolean)
+//       // hunk/line 단위 스테이징의 유일한 원시 연산.
+//       // 스테이지: cached=true, reverse=false / 언스테이지: cached=true, reverse=true
+//       // 워킹트리에서 되돌리기: cached=false, reverse=true
+//       // git apply --unidiff-zero --whitespace=nowarn, patch는 stdin으로 전달
+//   git_clean(path, paths: string[])          // untracked 삭제 (-fd, 경로 지정 필수)
+//
+// [커밋]
+//   git_commit(path, options: CommitOptions)
+//   get_last_commit_message(path) -> string   // amend 초기값
+//   get_commit_template(path) -> string | null // commit.template 설정이 있으면 그 내용
+//   git_undo_commit(path)                     // reset --soft HEAD~1 (머지 커밋도 안전)
+//
+// [브랜치]
+//   git_checkout(path, target: string, createLocal: boolean)
+//       // createLocal=true면 origin/foo → foo 추적 브랜치 생성 후 체크아웃
+//   git_create_branch(path, name, startPoint: string | null, checkout: boolean)
+//   git_delete_branch(path, name, force: boolean, remote: boolean)
+//       // remote=true면 "origin/foo"를 받아 `git push origin --delete foo`
+//   git_rename_branch(path, from: string, to: string)
+//   git_set_upstream(path, branch: string, upstream: string | null)  // null이면 --unset-upstream
+//
+// [네트워크]
+//   git_fetch(path, remote: string | null, prune: boolean, allRemotes: boolean, tags: boolean)
+//   git_pull(path, mode: PullMode, remote: string | null, branch: string | null)
+//   git_push(path, remote, branch, setUpstream, forceWithLease, tags: boolean)
+//
+// [히스토리]
+//   git_merge(path, source: string, noFf: boolean, squash: boolean, noCommit: boolean)
+//   git_rebase(path, upstream: string, onto: string | null, autostash: boolean)
+//   git_cherry_pick(path, shas: string[], noCommit: boolean, mainline: number | null)
+//   git_revert(path, shas: string[], noCommit: boolean, mainline: number | null)
+//   git_reset(path, target: string, mode: "soft" | "mixed" | "hard")
+//   git_pending_action(path, kind: PendingKind, action: "continue" | "abort" | "skip")
+//       // 진행 중 작업 제어. kind는 get_sync_state().pending.kind를 그대로
+//   git_rebase_interactive(path, base: string, steps: RebaseStep[])
+//       // GIT_SEQUENCE_EDITOR로 todo를 주입한다. steps 순서가 곧 적용 순서(위→아래=과거→현재).
+//       // reword는 GIT_EDITOR 주입으로 메시지를 넣는다. Windows는 Err("unsupported")로 둬도 된다
+//
+// [태그]
+//   git_create_tag(path, name, target: string, message: string | null)  // message 있으면 annotated
+//   git_delete_tag(path, name)
+//   git_push_tag(path, remote, name, delete: boolean)
+//
+// [스태시]
+//   git_stash_push(path, message: string | null, includeUntracked, keepIndex, files: string[] | null)
+//       // files가 있으면 `git stash push -- <files>` (부분 스태시)
+//   git_stash_apply(path, ref: string, drop: boolean)   // drop=true가 pop
+//   git_stash_drop(path, ref: string)
+//   git_stash_branch(path, ref: string, name: string)
+//
+// [remote]
+//   list_remotes(path) -> RemoteInfo[]
+//   git_add_remote(path, name, url)  /  git_remove_remote(path, name)
+//   git_rename_remote(path, from, to)  /  git_set_remote_url(path, name, url)
+//
+// [충돌]
+//   get_conflicts(path) -> ConflictFile[]
+//   git_resolve_with(path, file: string, side: "ours" | "theirs")  // checkout --ours/--theirs + add
+//   git_mark_resolved(path, files: string[])                        // git add
+//   get_conflict_side(path, file: string, side: "base"|"ours"|"theirs") -> string
+//       // 3-way 비교용 원문. 해당 stage가 없으면 "" (삭제된 쪽)
+//
+// [워크트리]
+//   list_worktrees(path) -> WorktreeInfo[]
+//   git_add_worktree(path, dir: string, branch: string, createBranch: boolean)
+//   git_remove_worktree(path, dir: string, force: boolean)
+//
+// [패치]
+//   git_create_patch(path, shas: string[], outDir: string) -> OpResult  // format-patch
+//   git_apply_patch_file(path, file: string, threeWay: boolean)
