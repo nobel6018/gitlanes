@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import type { FileChange, FileStatus } from "../types";
 import { splitPath, statusLabel } from "./format";
 
@@ -14,6 +15,19 @@ export const STATUS_LETTER: Record<FileStatus, string> = {
   T: "T",
 };
 
+/** hover 시 행 오른쪽에 뜨는 버튼 하나 */
+export interface FileRowAction {
+  key: string;
+  /** 버튼에 찍는 글리프 (+, −, ↺) */
+  glyph: string;
+  /** 툴팁과 스크린리더 레이블 */
+  label: string;
+  onRun: () => void;
+  disabled?: boolean;
+  /** 되돌릴 수 없는 동작이면 빨갛게 */
+  danger?: boolean;
+}
+
 export interface FileRowProps {
   file: FileChange;
   /** Tree 모드에서는 경로 대신 파일명만 보여주고 깊이만큼 들여쓴다 */
@@ -25,6 +39,14 @@ export interface FileRowProps {
   focused?: boolean;
   /** 메인 영역 diff 뷰어에 열려 있는 파일 */
   active?: boolean;
+  /** 추적되지 않는 새 파일. status가 'A'로 오므로 뱃지만 U로 바꿔 구분한다 */
+  untracked?: boolean;
+  /** 체크박스를 그리려면 준다. 없으면 체크박스 자체가 없다 */
+  checked?: boolean;
+  /** range=true면 Shift 범위 선택 */
+  onToggleCheck?: (range: boolean) => void;
+  /** hover 시 우측에 뜨는 액션들. 비어 있으면 안 그린다 */
+  actions?: FileRowAction[];
   onOpen: () => void;
 }
 
@@ -36,29 +58,60 @@ export function FileRow({
   navIndex,
   focused,
   active,
+  untracked,
+  checked,
+  onToggleCheck,
+  actions,
   onOpen,
 }: FileRowProps) {
   const { dir, base } = splitPath(file.path);
-  const title =
-    file.oldPath === null
-      ? `${statusLabel(file.status)}: ${file.path}`
-      : `${statusLabel(file.status)}: ${file.oldPath} → ${file.path}`;
-  const className =
-    "file-row" + (focused === true ? " kb-focus" : "") + (active === true ? " active" : "");
+  const kind = untracked === true ? "새 파일(untracked)" : statusLabel(file.status);
+  const title = file.oldPath === null ? `${kind}: ${file.path}` : `${kind}: ${file.oldPath} → ${file.path}`;
+  const hasCheck = checked !== undefined && onToggleCheck !== undefined;
+  const hasActs = actions !== undefined && actions.length > 0;
+  const rowClass =
+    "file-row" +
+    (focused === true ? " kb-focus" : "") +
+    (active === true ? " active" : "") +
+    (hasCheck ? " has-check" : "");
+  // 체크박스와 액션 버튼은 행 버튼 안에 넣을 수 없다 (버튼 중첩은 클릭이 깨진다).
+  // li를 기준 컨테이너로 삼아 좌우에 겹쳐 놓는다
+  const basePad = 4 + (depth === undefined ? 0 : depth * 14);
+
+  function handleCheck(event: MouseEvent<HTMLInputElement>) {
+    event.stopPropagation();
+    onToggleCheck?.(event.shiftKey);
+  }
 
   return (
-    <li>
+    // 커밋 상세 패널도 같은 행을 쓰므로, 액션이 있을 때만 hover 규칙을 켠다
+    <li className={hasActs ? "file-row-shell has-acts" : "file-row-shell"}>
+      {hasCheck && (
+        <input
+          type="checkbox"
+          className="file-check"
+          style={{ left: basePad + 2 }}
+          checked={checked}
+          onClick={handleCheck}
+          onChange={() => undefined}
+          tabIndex={-1}
+          aria-label={`Select ${file.path}`}
+        />
+      )}
       <button
-        className={className}
+        className={rowClass}
         onClick={onOpen}
         title={title}
         data-nav-index={navIndex}
         tabIndex={navIndex === undefined ? undefined : -1}
         aria-current={active === true ? "true" : undefined}
-        style={depth === undefined ? undefined : { paddingLeft: 4 + depth * 14 }}
+        style={{ paddingLeft: hasCheck ? basePad + 20 : basePad }}
       >
-        <span className={`file-icon st-${file.status}`} aria-hidden="true">
-          {STATUS_LETTER[file.status]}
+        <span
+          className={untracked === true ? "file-icon st-U" : `file-icon st-${file.status}`}
+          aria-hidden="true"
+        >
+          {untracked === true ? "U" : STATUS_LETTER[file.status]}
         </span>
         {/* GitKraken 배치: 파일명 먼저, 디렉토리는 뒤에 흐리게. 좁아지면 경로만 말줄임 */}
         <span className="file-path">
@@ -72,6 +125,23 @@ export function FileRow({
           {file.deletions > 0 && <span className="stat-del">-{file.deletions}</span>}
         </span>
       </button>
+      {hasActs && (
+        <span className="file-acts">
+          {actions.map((action) => (
+            <button
+              key={action.key}
+              className={action.danger === true ? "file-act danger" : "file-act"}
+              onClick={action.onRun}
+              disabled={action.disabled}
+              title={action.label}
+              aria-label={action.label}
+              tabIndex={-1}
+            >
+              {action.glyph}
+            </button>
+          ))}
+        </span>
+      )}
     </li>
   );
 }
