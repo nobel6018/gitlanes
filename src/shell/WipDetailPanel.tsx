@@ -4,7 +4,7 @@
 // 계약: CONTRACTS.md v0.18 "ui-wip".
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
-import type { CommitOptions, FileChange, WipArea, WipDetails } from "../types";
+import type { CommitOptions, DiscardArea, FileChange, WipArea, WipDetails } from "../types";
 import { FileRow } from "./FileRow";
 import type { FileRowAction } from "./FileRow";
 import { FileTree, buildFileNavRows, readFileView, writeFileView } from "./FileTree";
@@ -20,7 +20,11 @@ import "./wip.css";
 export interface WipActions {
   stage(files: string[]): Promise<void>;
   unstage(files: string[]): Promise<void>;
-  discard(files: string[]): Promise<void>;
+  /**
+   * area="worktree"면 인덱스 기준으로 워킹 트리만 되돌린다 (staged 변경 보존).
+   * area="all"이면 마지막 커밋 상태로 전부 되돌린다 (staged까지 버린다).
+   */
+  discard(files: string[], area: DiscardArea): Promise<void>;
   stageAll(): Promise<void>;
   unstageAll(): Promise<void>;
   applyPatch(patch: string, cached: boolean, reverse: boolean): Promise<void>;
@@ -444,6 +448,8 @@ export function WipDetailPanel({
       return { untracked: entry.area === "untracked" };
     }
     const path = entry.file.path;
+    // 영역이 눈에 보이게 나뉘어 있으므로, 그 영역에서 누른 만큼만 날아가야 한다.
+    // Unstaged의 되돌리기는 워킹 트리만, Staged의 되돌리기는 staged까지 버린다
     const rowActions: FileRowAction[] =
       group.id === "unstaged"
         ? [
@@ -457,10 +463,10 @@ export function WipDetailPanel({
             {
               key: "discard",
               glyph: "↺",
-              label: `Discard ${path}`,
+              label: `Discard working tree changes in ${path}`,
               danger: true,
               disabled: busy,
-              onRun: () => run(actions.discard([path])),
+              onRun: () => run(actions.discard([path], "worktree")),
             },
           ]
         : [
@@ -470,6 +476,14 @@ export function WipDetailPanel({
               label: `Unstage ${path}`,
               disabled: busy,
               onRun: () => run(actions.unstage([path])),
+            },
+            {
+              key: "discard",
+              glyph: "↺",
+              label: `Discard staged and unstaged changes in ${path}`,
+              danger: true,
+              disabled: busy,
+              onRun: () => run(actions.discard([path], "all")),
             },
           ];
     return {
@@ -550,16 +564,18 @@ export function WipDetailPanel({
                 >
                   {isUnstaged ? "Stage" : "Unstage"} {picked.length} selected
                 </button>
-                {isUnstaged && (
-                  <button
-                    className="wip-btn danger"
-                    disabled={busy}
-                    onClick={() => run(actions.discard(picked))}
-                    title={`Discard ${picked.length} selected`}
-                  >
-                    ↺
-                  </button>
-                )}
+                <button
+                  className="wip-btn danger"
+                  disabled={busy}
+                  onClick={() => run(actions.discard(picked, isUnstaged ? "worktree" : "all"))}
+                  title={
+                    isUnstaged
+                      ? `Discard working tree changes in ${picked.length} selected`
+                      : `Discard staged and unstaged changes in ${picked.length} selected`
+                  }
+                >
+                  ↺
+                </button>
               </>
             ) : (
               <button
