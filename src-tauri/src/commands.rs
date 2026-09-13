@@ -1428,6 +1428,9 @@ mod integration_tests {
             "m.txt, untracked.txt, staged.txt, f.txt"
         );
         assert_eq!(wip.staged_files, 2, "staged.txt(A), f.txt(D)");
+        // f.txt는 index에서 지워졌지만 작업 트리에 남아 untracked로도 잡힌다.
+        // 그래서 2 + 2 != 4다. 세 수는 겹칠 수 있는 부분집합이다(WipInfo 주석 참고).
+        assert_eq!(wip.untracked_files, 2, "untracked.txt, f.txt");
 
         // 되돌리면 다시 깨끗해진다
         repo.git(&["reset", "-q", "--hard", "HEAD"]);
@@ -1442,6 +1445,7 @@ mod integration_tests {
         let wip = load_graph(repo.path(), 100, 0).unwrap().wip.unwrap();
         assert_eq!(wip.changed_files, 1);
         assert_eq!(wip.staged_files, 1);
+        assert_eq!(wip.untracked_files, 0);
     }
 
     #[test]
