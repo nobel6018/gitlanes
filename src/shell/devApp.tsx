@@ -785,9 +785,11 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
     case "git_discard": {
       // area="worktree"는 staged 변경을 살린다. "all"은 인덱스까지 되돌린다
       const area = strArg(payload, "area") === "worktree" ? "worktree" : "all";
+      // argv는 rust ops/stage.rs와 같은 모양으로 둔다. 토스트와 터미널 핸드오프에
+      // 그대로 보이는 값이라 어긋나면 QA가 잘못된 명령을 읽는다
       const command =
         area === "worktree"
-          ? ["restore", "--", ...files]
+          ? ["restore", "--worktree", "--", ...files]
           : ["restore", "--source=HEAD", "--staged", "--worktree", "--", ...files];
       if (shouldFail(cmd)) {
         return fail(command, "error: unable to discard");
