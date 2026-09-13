@@ -1,7 +1,7 @@
 // 탭 하나의 작업 공간. 레포/그래프/선택/검색/사이드바 상태를 전부 여기서 들고 있다.
 // App은 이 컴포넌트를 탭마다 하나씩 마운트해두고 활성 탭만 보여준다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ComponentProps, CSSProperties, ReactElement, ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraphView } from "../graph";
@@ -9,6 +9,7 @@ import { COMMITS_PER_PAGE, WIP_SHA } from "../constants";
 import type {
   ConflictFile,
   FileChange,
+  RebaseStep,
   GraphData,
   RefEntry,
   RemoteInfo,
@@ -24,6 +25,7 @@ import {
   errorMessage,
   getConflicts,
   getFileContent,
+  getLastCommitMessage,
   getFileDiff,
   getRemoteUrl,
   getSyncState,
@@ -45,11 +47,28 @@ import type { ConfirmSpec, RepoActions, ToastSpec } from "./actions";
 import { copyText } from "./clipboard";
 import { BranchSidebar } from "./BranchSidebar";
 import { CommitDetailPanel } from "./CommitDetailPanel";
-import { ConflictBanner } from "./ConflictBanner";
+import {
+  AddWorktreeDialog,
+  CreateBranchDialog,
+  CreateTagDialog,
+  MergeOptionsDialog,
+  RebaseOptionsDialog,
+  RemoteDialog,
+  RenameBranchDialog,
+  ResetBranchDialog,
+  SetUpstreamDialog,
+  StashDialog,
+  refNameProblem,
+} from "./ActionDialogs";
+import { ConflictPanel } from "./ConflictPanel";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { DiffPanel } from "./DiffPanel";
+import { RebaseEditor } from "./RebaseEditor";
+import { parseRefDrag } from "./dnd";
+import type { RefDragPayload } from "./dnd";
+import type { SidebarDialogKind, SidebarDialogTarget } from "./SidebarContextMenu";
 import { Terminal } from "./Terminal";
 import { WipDetailPanel } from "./WipDetailPanel";
 import { FilterResults } from "./FilterResults";
@@ -72,25 +91,13 @@ import type { LayoutWidths } from "./layout";
 import type { PrefValues } from "./Preferences";
 import { SearchBox } from "./SearchBox";
 import { SplitHandle } from "./SplitHandle";
-import { Toast } from "./Toast";
+import { ToastStack } from "./Toast";
+import type { ToastItem } from "./Toast";
 import { Toolbar } from "./Toolbar";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { useRecentRepos } from "./useRecentRepos";
 import { APP_VERSION } from "./version";
 import { basename, formatCount, shortSha } from "./format";
-
-/**
- * Toast에 액션 버튼 prop을 얹는 다리.
- * needsAuth일 때의 "Run in terminal" 버튼은 계약상 Toast(ui-actions 소유)가 그린다.
- * 아직 그 prop이 없어 여기서 타입만 넓혀 넘긴다. 모르는 prop은 React가 그냥 버리므로
- * 지금은 표시만 안 되고, ui-actions가 actionLabel/onAction을 추가하는 순간 살아난다.
- */
-const ToastWithAction = Toast as (
-  props: ComponentProps<typeof Toast> & {
-    actionLabel?: string;
-    onAction?: () => void;
-  },
-) => ReactElement;
 
 const SIDEBAR_KEY = "gitlanes.sidebar";
 
@@ -189,15 +196,15 @@ function writeFlag(key: string, value: boolean): void {
   }
 }
 
-interface ToastState {
-  id: number;
-  message: string;
-  tone: "error" | "info";
-  durationMs?: number;
-  copyable?: boolean;
-  /** needsAuth일 때의 "Run in terminal" 버튼 */
-  action?: { label: string; run: () => void };
-}
+/** 한 번에 쌓아 둘 토스트 수. 넘치면 오래된 것부터 밀어낸다 */
+const MAX_TOASTS = 4;
+
+/**
+ * 예전 showError 호출부(그래프 로드 실패, 클립보드 실패 등)가 쓰는 수명.
+ * v0.18 Toast는 durationMs를 생략하면 error를 자동으로 지우지 않는데, 이런 짧은
+ * 안내까지 수동으로 닫게 하면 성가시다. git stderr를 실은 쓰기 실패만 남긴다
+ */
+const NOTICE_ERROR_MS = 8000;
 
 /** 확인 다이얼로그 한 건. resolve로 사용자의 선택을 액션 계층에 돌려준다 */
 interface PendingConfirm {
@@ -205,11 +212,28 @@ interface PendingConfirm {
   resolve: (ok: boolean) => void;
 }
 
-/** 이름 하나만 받으면 되는 쓰기 작업의 프롬프트 */
-type PromptState =
+/**
+ * 열려 있는 입력 다이얼로그. 실제 폼은 전부 ui-actions의 ActionDialogs가 그리고,
+ * 셸은 어떤 걸 어떤 대상으로 열지만 정한다.
+ */
+type DialogState =
   | { kind: "createBranch"; startPoint: string | null }
-  | { kind: "createTag"; target: string }
-  | { kind: "stash" };
+  | { kind: "renameBranch"; branch: string }
+  | { kind: "createTag"; target: string | null }
+  | { kind: "reset"; target: string }
+  | { kind: "merge"; source: string }
+  | { kind: "rebase"; upstream: string }
+  | { kind: "setUpstream"; branch: string }
+  | { kind: "remote"; remote: { name: string; url: string } | null }
+  | { kind: "addWorktree" }
+  | { kind: "stash" }
+  | { kind: "stashBranch"; ref: string };
+
+/** 인터랙티브 리베이스 에디터의 입력. steps 참조가 바뀌면 에디터가 편집 상태를 버린다 */
+interface RebaseState {
+  base: string;
+  steps: RebaseStep[];
+}
 
 /**
  * Repository 메뉴와 웹뷰 단축키가 올리는 카운터.
@@ -360,7 +384,7 @@ export function RepoWorkspace({
   const [matchIndex, setMatchIndex] = useState(0);
   const [searching, setSearching] = useState(false);
   const [searchExhausted, setSearchExhausted] = useState(false);
-  const [toast, setToast] = useState<ToastState | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [remoteUrl, setRemoteUrl] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [layout, setLayout] = useState<LayoutWidths>(readLayout);
@@ -389,12 +413,17 @@ export function RepoWorkspace({
   const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
-  /** 충돌 배너/패널을 접었는가. 새 충돌이 생기면 다시 펴진다 */
-  const [conflictDismissed, setConflictDismissed] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
-  const [prompt, setPrompt] = useState<PromptState | null>(null);
-  /** 프롬프트의 체크박스 상태 (브랜치 생성 후 체크아웃 / 스태시에 untracked 포함) */
-  const [promptFlag, setPromptFlag] = useState(true);
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+  /**
+   * 리베이스 에디터 입력. useState에 담아 두면 참조가 렌더마다 바뀌지 않아
+   * 사용자가 드래그로 맞춰 놓은 순서가 리렌더에 날아가지 않는다
+   */
+  const [rebase, setRebase] = useState<RebaseState | null>(null);
+  /** 사이드바에서 ref 드래그가 진행 중인가. 그래프 드롭 타깃을 켜는 조건 */
+  const [refDrag, setRefDrag] = useState<RefDragPayload | null>(null);
+  /** 드래그가 올라와 있는 커밋 행. 그래프가 노란 테두리로 그린다 */
+  const [dropTargetSha, setDropTargetSha] = useState<string | null>(null);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
@@ -449,29 +478,44 @@ export function RepoWorkspace({
   loadingRef.current = graphLoading;
   wipRef.current = data.wip;
 
+  /**
+   * 인증 핸드오프 핸들러를 토스트마다 붙여 준다.
+   * runInTerminal은 아래에서 정의되지만 콜백 안에서만 쓰이므로 ref로 지연 참조한다
+   */
+  const runInTerminalRef = useRef<(command: string[]) => void>(() => undefined);
+
+  /** 액션 계층이 주는 ToastSpec을 스택에 쌓는다 */
+  const pushToast = useCallback((spec: ToastSpec) => {
+    toastSeq.current += 1;
+    const id = toastSeq.current;
+    const item: ToastItem = {
+      id,
+      ...spec,
+      onRunInTerminal: (command) => runInTerminalRef.current(command),
+    };
+    setToasts((prev) => [...prev.slice(-(MAX_TOASTS - 1)), item]);
+  }, []);
+
   const showToast = useCallback(
     (
       message: string,
-      tone: "error" | "info",
+      tone: "error" | "info" | "success",
       options?: { durationMs?: number; copyable?: boolean },
     ) => {
-      toastSeq.current += 1;
-      setToast({ id: toastSeq.current, message, tone, ...options });
+      pushToast({ message, tone, ...options });
     },
-    [],
+    [pushToast],
   );
 
   const showError = useCallback(
-    (message: string) => showToast(message, "error"),
-    [showToast],
+    (message: string) => {
+      pushToast({ message, tone: "error", durationMs: NOTICE_ERROR_MS, copyable: true });
+    },
+    [pushToast],
   );
 
-  const dismissToast = useCallback(() => setToast(null), []);
-
-  /** 액션 계층이 주는 ToastSpec을 화면 토스트로 바꾼다 */
-  const pushToast = useCallback((spec: ToastSpec) => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, ...spec });
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
   /**
@@ -489,7 +533,6 @@ export function RepoWorkspace({
       setSyncState((prev) => (sameSync(prev, state) ? prev : state));
       if (state.pending === null) {
         setConflicts((prev) => (prev.length === 0 ? prev : []));
-        setConflictDismissed(false);
         return;
       }
       const files = await getConflicts(path);
@@ -657,15 +700,6 @@ export function RepoWorkspace({
     void loadSyncData(path);
   }, [repo, reloadKey, loadSyncData]);
 
-  // 진행 중인 머지/리베이스가 새로 생기면 충돌 배너를 다시 편다
-  const pendingKindRef = useRef<string | null>(null);
-  useEffect(() => {
-    const kind = syncState?.pending?.kind ?? null;
-    if (kind !== null && kind !== pendingKindRef.current) {
-      setConflictDismissed(false);
-    }
-    pendingKindRef.current = kind;
-  }, [syncState]);
 
   /** 선택 + 해당 행을 뷰포트 중앙으로 스크롤 */
   const jumpTo = useCallback((sha: string) => {
@@ -929,12 +963,13 @@ export function RepoWorkspace({
     [showToast, showError],
   );
 
+  runInTerminalRef.current = runInTerminal;
+
   /** 충돌이 생기면 WIP 패널을 열고 배너를 다시 펴준다 */
   const handleConflicts = useCallback((files: string[]) => {
     if (files.length === 0) {
       return;
     }
-    setConflictDismissed(false);
     setSelectedSha(WIP_SHA);
     setOpenFile(null);
   }, []);
@@ -948,8 +983,17 @@ export function RepoWorkspace({
     onConflicts: handleConflicts,
   });
 
-  /** 충돌 배너에 보여줄 경로. 진행 중인 작업이 없으면 빈 배열 */
-  const conflictPaths = useMemo(() => conflicts.map((entry) => entry.path), [conflicts]);
+  /**
+   * 충돌 패널에서 파일을 클릭했을 때. 충돌 중인 파일은 인덱스에 unmerged로 남아
+   * unstaged diff로 보면 양쪽 변경과 마커가 그대로 보인다
+   */
+  const openConflictFile = useCallback((path: string) => {
+    setSelectedSha(WIP_SHA);
+    setOpenFile({
+      file: { path, oldPath: null, status: "M", additions: 0, deletions: 0 },
+      area: "unstaged",
+    });
+  }, []);
 
   /** 실패는 액션 계층이 이미 토스트로 알렸다. 여기서는 unhandled rejection만 막는다 */
   const fire = useCallback((pending: Promise<void>) => {
@@ -974,56 +1018,217 @@ export function RepoWorkspace({
     setSelectedSha(WIP_SHA);
   }, []);
 
+  const closeDialog = useCallback(() => setDialog(null), []);
+
   const openNewBranchPrompt = useCallback((startPoint: string | null) => {
-    setPromptFlag(true);
-    setPrompt({ kind: "createBranch", startPoint });
+    setDialog({ kind: "createBranch", startPoint });
   }, []);
 
-  const openNewTagPrompt = useCallback((target: string) => {
-    setPromptFlag(false);
-    setPrompt({ kind: "createTag", target });
+  const openNewTagPrompt = useCallback((target: string | null) => {
+    setDialog({ kind: "createTag", target });
   }, []);
 
-  const openStashPrompt = useCallback(() => {
-    setPromptFlag(false);
-    setPrompt({ kind: "stash" });
-  }, []);
+  const openStashPrompt = useCallback(() => setDialog({ kind: "stash" }), []);
 
-  const closePrompt = useCallback(() => setPrompt(null), []);
-
-  /** ref 이름이 git 규칙에 맞는지는 rust가 check-ref-format으로 본다. 여기서는 빈 값만 막는다 */
-  const validateName = useCallback((value: string): string | null => {
-    if (value.trim() === "") {
-      return "Enter a name.";
-    }
-    return null;
-  }, []);
-
-  const submitPrompt = useCallback(
-    (value: string) => {
-      const current = prompt;
-      setPrompt(null);
-      if (current === null) {
-        return;
-      }
-      const text = value.trim();
-      if (current.kind === "createBranch") {
-        fire(actions.createBranch(text, current.startPoint, promptFlag));
-        return;
-      }
-      if (current.kind === "createTag") {
-        fire(actions.createTag(text, current.target, null));
-        return;
-      }
-      fire(
-        actions.stashPush({
-          message: text === "" ? undefined : text,
-          includeUntracked: promptFlag,
-        }),
-      );
+  /**
+   * 확인을 먼저 받고 액션을 부른다.
+   * 액션 계층이 자체 확인을 가진 작업(force delete, stash drop 등)에는 쓰지 않는다.
+   * 두 번 묻게 된다.
+   */
+  const confirmThen = useCallback(
+    (spec: ConfirmSpec, action: () => Promise<void>) => {
+      void confirmAction(spec).then((okToRun) => {
+        if (okToRun) {
+          fire(action());
+        }
+      });
     },
-    [prompt, promptFlag, actions, fire],
+    [confirmAction, fire],
   );
+
+  /** 태그 원격 작업의 기본 remote. 없으면 origin으로 둔다 */
+  const defaultRemote = remotes[0]?.name ?? "origin";
+
+  /**
+   * 사이드바가 넘기는 입력/확인 요청. 파괴적인 것도 전부 여기로 와서
+   * 확인 다이얼로그를 한 군데서만 띄운다 (ui-sidebar는 직접 띄우지 않는다).
+   */
+  const handleSidebarDialog = useCallback(
+    (kind: SidebarDialogKind, target: SidebarDialogTarget) => {
+      switch (kind) {
+        case "createBranch":
+          setDialog({ kind: "createBranch", startPoint: target });
+          return;
+        case "createTag":
+          setDialog({ kind: "createTag", target });
+          return;
+        case "renameBranch":
+          if (target !== null) {
+            setDialog({ kind: "renameBranch", branch: target });
+          }
+          return;
+        case "setUpstream":
+          if (target !== null) {
+            setDialog({ kind: "setUpstream", branch: target });
+          }
+          return;
+        case "deleteBranch":
+          // 병합되지 않은 커밋이 있으면 git이 스스로 거부하므로 force는 쓰지 않는다.
+          // 그래도 되돌리는 방법은 보여준다
+          if (target !== null) {
+            confirmThen(
+              {
+                title: "Delete branch?",
+                body: "The branch label is removed. Git refuses if it still holds commits that are not merged anywhere else.",
+                undo: "Recreate it with git branch <name> <sha>. The tip stays in git reflog for about 90 days.",
+                scope: target,
+                confirmLabel: "Delete",
+                danger: false,
+              },
+              () => actions.deleteBranch(target, false, false),
+            );
+          }
+          return;
+        case "deleteRemoteBranch":
+          // 액션 계층이 확인을 가지고 있다
+          if (target !== null) {
+            fire(actions.deleteBranch(target, false, true));
+          }
+          return;
+        case "deleteTag":
+          if (target !== null) {
+            fire(actions.deleteTag(target));
+          }
+          return;
+        case "deleteTagOnRemote":
+          if (target !== null) {
+            fire(actions.pushTag(defaultRemote, target, true));
+          }
+          return;
+        case "stashPush":
+          setDialog({ kind: "stash" });
+          return;
+        case "stashDrop":
+          if (target !== null) {
+            fire(actions.stashDrop(target));
+          }
+          return;
+        case "stashBranch":
+          if (target !== null) {
+            setDialog({ kind: "stashBranch", ref: target });
+          }
+          return;
+        case "addRemote":
+          setDialog({ kind: "remote", remote: null });
+          return;
+        case "editRemoteUrl":
+        case "renameRemote": {
+          const remote = remotes.find((entry) => entry.name === target);
+          if (remote !== undefined) {
+            setDialog({ kind: "remote", remote: { name: remote.name, url: remote.fetchUrl } });
+          }
+          return;
+        }
+        case "removeRemote":
+          if (target !== null) {
+            confirmThen(
+              {
+                title: "Remove remote?",
+                body: "The remote and its tracking branches are removed from this repository. Nothing is deleted on the server.",
+                undo: `Add it back with git remote add ${target} <url>, then fetch.`,
+                scope: target,
+                confirmLabel: "Remove",
+                danger: false,
+              },
+              () => actions.removeRemote(target),
+            );
+          }
+          return;
+        case "addWorktree":
+          setDialog({ kind: "addWorktree" });
+          return;
+        case "removeWorktree":
+          if (target !== null) {
+            fire(actions.removeWorktree(target, false));
+          }
+          return;
+        default:
+      }
+    },
+    [actions, fire, confirmThen, remotes, defaultRemote],
+  );
+
+  /** 네이티브 폴더 선택. AddWorktreeDialog가 콜백으로만 받는다 */
+  const pickDirectory = useCallback(async (): Promise<string | null> => {
+    try {
+      const picked = await openDialog({ directory: true, multiple: false });
+      return typeof picked === "string" ? picked : null;
+    } catch (err) {
+      showError(errorMessage(err));
+      return null;
+    }
+  }, [showError]);
+
+  /**
+   * "Interactive rebase from here". 클릭한 커밋이 base로 남고 그 위의 커밋들이 편집 대상이다.
+   * 그래프는 최신이 위지만 todo는 과거가 위라서 여기서 한 번만 뒤집는다.
+   * (onSubmit으로 돌아오는 배열은 이미 todo 순서라 다시 뒤집지 않는다)
+   */
+  const openRebaseEditor = useCallback(
+    (sha: string) => {
+      const index = data.rows.findIndex((row) => row.sha === sha);
+      if (index < 0) {
+        return;
+      }
+      if (index === 0) {
+        showError("There are no commits above this one to rebase.");
+        return;
+      }
+      const steps: RebaseStep[] = data.rows
+        .slice(0, index)
+        .reverse()
+        .map((row) => ({ sha: row.sha, action: "pick", subject: row.subject, message: null }));
+      setRebase({ base: sha, steps });
+    },
+    [data.rows, showError],
+  );
+
+  const closeRebaseEditor = useCallback(() => setRebase(null), []);
+
+  /**
+   * 사이드바에서 끌던 ref를 커밋 행에 놓았을 때.
+   * 체크아웃된 브랜치를 놓으면 그 커밋으로 리셋(모드는 다이얼로그에서 고른다),
+   * 그 밖의 ref를 놓으면 그 커밋을 start point로 새 브랜치를 만든다.
+   * git이 체크아웃되지 않은 브랜치를 옮기려면 branch -f가 필요한데 계약에 없다.
+   */
+  const handleRowDrop = useCallback(
+    (sha: string, raw: string) => {
+      setRefDrag(null);
+      setDropTargetSha(null);
+      const payload = parseRefDrag(raw);
+      if (payload === null || repo === null) {
+        return;
+      }
+      if (payload.kind === "localBranch" && payload.name === repo.headBranch) {
+        setDialog({ kind: "reset", target: sha });
+        return;
+      }
+      setDialog({ kind: "createBranch", startPoint: sha });
+    },
+    [repo],
+  );
+
+  /** 드래그가 그래프 밖으로 나가면 강조를 끈다 */
+  const handleRowDragOver = useCallback((sha: string | null) => {
+    setDropTargetSha(sha);
+  }, []);
+
+  const handleRefDragStateChange = useCallback((payload: RefDragPayload | null) => {
+    setRefDrag(payload);
+    if (payload === null) {
+      setDropTargetSha(null);
+    }
+  }, []);
 
   // Repository 메뉴(menu:fetch 등). App이 활성 탭의 카운터만 올린다
   useEffect(() => {
@@ -1366,11 +1571,17 @@ export function RepoWorkspace({
         },
         {
           label: "Interactive rebase from here\u2026",
-          // TODO(통합): ui-actions의 RebaseEditor가 붙으면 모달을 띄운다.
-          // 그때까지는 계약대로 sha를 base로 넘겨 에디터 없이 실행하지 않는다
-          disabled: true,
-          title: "Coming with the rebase editor",
-          onSelect: () => undefined,
+          title: "Reorder, squash or drop the commits above this one",
+          onSelect: () => openRebaseEditor(sha),
+        },
+        {
+          label: "Merge into current branch\u2026",
+          separatorBefore: true,
+          onSelect: () => setDialog({ kind: "merge", source: sha }),
+        },
+        {
+          label: `Rebase ${branch} onto here\u2026`,
+          onSelect: () => setDialog({ kind: "rebase", upstream: sha }),
         },
       );
     }
@@ -1416,6 +1627,7 @@ export function RepoWorkspace({
     fire,
     openNewBranchPrompt,
     openNewTagPrompt,
+    openRebaseEditor,
   ]);
 
   const previewWidth = useCallback((name: "sidebar" | "detail", width: number) => {
@@ -1736,6 +1948,27 @@ export function RepoWorkspace({
 
   const closeFile = useCallback(() => setOpenFile(null), []);
 
+  /** CommitBox의 Amend 체크가 마지막 커밋 메시지를 채울 때 쓴다 */
+  const requestLastMessage = useCallback(async (): Promise<string> => {
+    if (repo === null) {
+      return "";
+    }
+    return getLastCommitMessage(repo.path);
+  }, [repo]);
+
+  /**
+   * hunk 단위 스테이징은 워킹 트리 diff에서만 된다.
+   * 커밋 diff에 주면 과거 커밋에 Stage hunk 버튼이 뜨고, untracked는
+   * git diff --no-index 산물이라 a/dev/null 접두 때문에 git apply가 먹지 않는다
+   */
+  const hunkActions = useMemo(() => {
+    const area = openFile?.area ?? null;
+    if (area === null || area === "untracked") {
+      return null;
+    }
+    return { area, applyPatch: actions.applyPatch, busy: actions.busy };
+  }, [openFile, actions]);
+
   /** WIP 의사 행 클릭. 센티널을 선택으로 넣으면 오른쪽이 WIP 패널로 바뀐다 */
   const selectWip = useCallback(() => setSelectedSha(WIP_SHA), []);
 
@@ -1868,62 +2101,22 @@ export function RepoWorkspace({
     searchCache.current.get(query.trim())?.length ?? 0,
   );
 
-  const toastNode =
-    toast === null ? null : (
-      <ToastWithAction
-        key={toast.id}
-        message={toast.message}
-        tone={toast.tone}
-        durationMs={toast.durationMs}
-        copyable={toast.copyable}
-        actionLabel={toast.action?.label}
-        onAction={
-          toast.action === undefined
-            ? undefined
-            : () => {
-                const run = toast.action?.run;
-                dismissToast();
-                run?.();
-              }
-        }
-        onClose={dismissToast}
-      />
-    );
+  const toastNode = <ToastStack items={toasts} onClose={dismissToast} />;
 
-  /** 프롬프트 다이얼로그의 kind별 문구. 열려 있지 않으면 null */
-  const promptConfig = useMemo(() => {
-    if (prompt === null) {
-      return null;
-    }
-    if (prompt.kind === "createBranch") {
-      return {
-        title: "Create branch",
-        label:
-          prompt.startPoint === null
-            ? "Branch name"
-            : `Branch name (starting at ${shortSha(prompt.startPoint)})`,
-        placeholder: "feature/my-change",
-        confirmLabel: "Create",
-        checkbox: "Check out after creating",
-      };
-    }
-    if (prompt.kind === "createTag") {
-      return {
-        title: "Create tag",
-        label: `Tag name (at ${shortSha(prompt.target)})`,
-        placeholder: "v1.2.0",
-        confirmLabel: "Create",
-        checkbox: null,
-      };
-    }
-    return {
-      title: "Stash changes",
-      label: "Message (optional)",
-      placeholder: "work in progress",
-      confirmLabel: "Stash",
-      checkbox: "Include untracked files",
-    };
-  }, [prompt]);
+  /** 다이얼로그 콤보박스에 채울 ref 이름 목록 */
+  const refNames = useMemo(() => refs.map((entry) => entry.name), [refs]);
+  const localBranchNames = useMemo(
+    () => refs.filter((entry) => entry.kind === "localBranch").map((entry) => entry.name),
+    [refs],
+  );
+  const remoteBranchNames = useMemo(
+    () => refs.filter((entry) => entry.kind === "remoteBranch").map((entry) => entry.name),
+    [refs],
+  );
+  const tagNames = useMemo(
+    () => refs.filter((entry) => entry.kind === "tag").map((entry) => entry.name),
+    [refs],
+  );
 
   if (repo === null) {
     return (
@@ -1943,11 +2136,12 @@ export function RepoWorkspace({
 
   return (
     <div className="workspace">
-      {/* TODO(통합) ui-actions Toolbar: actions={actions} sync={syncState} 를 받아
-          Fetch▾ / Pull▾ / Push▾ / Branch / Stash▾ 그룹과 ahead-behind 배지를 그린다.
-          Branch 버튼은 openNewBranchPrompt(null)을 부르면 된다 */}
       <Toolbar
         repo={repo}
+        actions={actions}
+        sync={syncState}
+        onCreateBranch={() => openNewBranchPrompt(null)}
+        onOpenStashDialog={openStashPrompt}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={handleToggleSidebar}
         onGoToHead={goToHead}
@@ -1981,18 +2175,15 @@ export function RepoWorkspace({
         onCheckUpdates={update.onCheck}
       />
       {banner}
-      {/* TODO(통합): ui-actions의 ConflictPanel이 오면 이 배너 대신 그쪽을 연다.
-          배너는 pending이 있는 동안만 뜨고, 사용자가 접으면 다음 작업까지 조용하다 */}
-      {!conflictDismissed && syncState?.pending != null && (
-        <ConflictBanner
-          files={conflictPaths}
-          onOpenWip={() => {
-            setOpenFile(null);
-            setSelectedSha(WIP_SHA);
-          }}
-          onDismiss={() => setConflictDismissed(true)}
-        />
-      )}
+      {/* 진행 중인 머지/리베이스가 있으면 툴바 바로 아래에 붙는다.
+          Continue 활성 조건이 files.length === 0 이라 해결 직후 get_conflicts를
+          다시 읽어야 한다. refreshAll이 loadSyncData로 그걸 보장한다 */}
+      <ConflictPanel
+        pending={syncState?.pending ?? null}
+        files={conflicts}
+        actions={actions}
+        onOpenFile={openConflictFile}
+      />
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
       <div
@@ -2007,12 +2198,16 @@ export function RepoWorkspace({
       >
         {sidebarOpen && (
           <>
-            {/* TODO(통합) ui-sidebar BranchSidebar: actions={actions} remotes={remotes}
-                worktrees={worktrees} stashes={data.stashes} sync={syncState}
-                onOpenWorktree={openPath} 를 받아 Remotes/Tags/Stashes/Worktrees 섹션과
-                우클릭 메뉴, DnD 머지/리베이스를 그린다 */}
             <BranchSidebar
               refs={refs}
+              stashes={data.stashes}
+              remotes={remotes}
+              worktrees={worktrees}
+              syncState={syncState}
+              actions={actions}
+              onRequestDialog={handleSidebarDialog}
+              onOpenWorktree={openPath}
+              onRefDragStateChange={handleRefDragStateChange}
               loading={refsLoading}
               selectedSha={selectedSha}
               onSelectRef={handleSelectRef}
@@ -2036,6 +2231,7 @@ export function RepoWorkspace({
             <DiffPanel
               file={openFile.file}
               badge={openFile.area ?? undefined}
+              hunkActions={hunkActions}
               diffText={diffText}
               fileText={fileText}
               onRequestFileText={handleRequestFileText}
@@ -2054,11 +2250,12 @@ export function RepoWorkspace({
               onLoadMore={handleLoadMore}
             />
           ) : (
-            /* TODO(통합) ui-graph GraphView: pendingSha, onRowDragOver, onRowDrop,
-               dropTargetSha 를 붙여 "브랜치를 커밋 위에 놓아 reset / 브랜치 생성"을 만든다.
-               pendingSha는 syncState?.pending이 있을 때 repo.headSha를 넘기면 된다 */
             <GraphView
               data={data}
+              onRowDragOver={handleRowDragOver}
+              onRowDrop={handleRowDrop}
+              dropTargetSha={refDrag === null ? null : dropTargetSha}
+              pendingSha={syncState?.pending == null ? null : repo.headSha}
               selectedSha={selectedSha}
               onSelect={setSelectedSha}
               onLoadMore={handleLoadMore}
@@ -2086,13 +2283,11 @@ export function RepoWorkspace({
             onReset={() => resetWidth("detail")}
           />
         )}
-        {/* TODO(통합) ui-wip WipDetailPanel: actions={actions} repoPath={repo.path}
-            conflicts={conflicts} 를 받아 stage/unstage/discard 버튼과 CommitBox를 그린다.
-            CommitBox는 amend 초기값을 get_last_commit_message로 채운다 (api.getLastCommitMessage).
-            ⌘Enter는 셸이 WIP 행을 선택하는 데까지만 하므로, 커밋 상자에 포커스를 주려면
-            focusCommitNonce prop이 필요하다 */}
         {isWipSelected && (
           <WipDetailPanel
+            actions={actions}
+            repoPath={repo.path}
+            onRequestLastMessage={requestLastMessage}
             details={wipDetails}
             loading={wipLoading}
             onOpenFile={openWipFile}
@@ -2187,44 +2382,173 @@ export function RepoWorkspace({
         onClose={closeQuickSwitcher}
       />
 
-      {/* 파괴적 작업 확인. body 아래 한 줄이 되돌리는 방법이다 (안전 계약 6번) */}
-      <ConfirmDialog
-        open={pendingConfirm !== null}
-        title={pendingConfirm?.spec.title ?? ""}
-        body={
-          <>
-            <p>{pendingConfirm?.spec.body}</p>
-            <p className="cf-undo">{pendingConfirm?.spec.undo}</p>
-          </>
+      {/* 파괴적 작업 확인. 액션 계층이 넘긴 ConfirmSpec을 그대로 그린다 (안전 계약 6번) */}
+      {pendingConfirm !== null && (
+        <ConfirmDialog
+          open
+          spec={pendingConfirm.spec}
+          onConfirm={() => settleConfirm(true)}
+          onCancel={() => settleConfirm(false)}
+        />
+      )}
+
+      <CreateBranchDialog
+        open={dialog?.kind === "createBranch"}
+        onClose={closeDialog}
+        refs={refNames}
+        defaultStartPoint={
+          dialog?.kind === "createBranch" && dialog.startPoint !== null ? dialog.startPoint : "HEAD"
         }
-        confirmLabel={pendingConfirm?.spec.confirmLabel ?? "OK"}
-        danger={pendingConfirm?.spec.danger}
-        onConfirm={() => settleConfirm(true)}
-        onCancel={() => settleConfirm(false)}
+        existingNames={localBranchNames}
+        onSubmit={(name, startPoint, checkout) => {
+          closeDialog();
+          fire(actions.createBranch(name, startPoint, checkout));
+        }}
       />
 
-      {promptConfig !== null && (
+      <RenameBranchDialog
+        open={dialog?.kind === "renameBranch"}
+        onClose={closeDialog}
+        branch={dialog?.kind === "renameBranch" ? dialog.branch : ""}
+        existingNames={localBranchNames}
+        onSubmit={(from, to) => {
+          closeDialog();
+          fire(actions.renameBranch(from, to));
+        }}
+      />
+
+      <CreateTagDialog
+        open={dialog?.kind === "createTag"}
+        onClose={closeDialog}
+        refs={refNames}
+        defaultTarget={
+          dialog?.kind === "createTag" && dialog.target !== null ? dialog.target : "HEAD"
+        }
+        existingNames={tagNames}
+        onSubmit={(name, target, message) => {
+          closeDialog();
+          fire(actions.createTag(name, target, message));
+        }}
+      />
+
+      <ResetBranchDialog
+        open={dialog?.kind === "reset"}
+        onClose={closeDialog}
+        target={dialog?.kind === "reset" ? dialog.target : "HEAD"}
+        branch={repo.headBranch}
+        onSubmit={(target, mode) => {
+          closeDialog();
+          fire(actions.reset(target, mode));
+        }}
+      />
+
+      <MergeOptionsDialog
+        open={dialog?.kind === "merge"}
+        onClose={closeDialog}
+        source={dialog?.kind === "merge" ? dialog.source : ""}
+        target={repo.headBranch}
+        onSubmit={(source, opts) => {
+          closeDialog();
+          fire(actions.merge(source, opts));
+        }}
+      />
+
+      <RebaseOptionsDialog
+        open={dialog?.kind === "rebase"}
+        onClose={closeDialog}
+        upstream={dialog?.kind === "rebase" ? dialog.upstream : ""}
+        refs={refNames}
+        branch={repo.headBranch}
+        onSubmit={(upstream, onto) => {
+          closeDialog();
+          // autostash는 액션 계층이 항상 켠다. 다이얼로그의 체크는 표시용이다
+          fire(actions.rebase(upstream, onto));
+        }}
+      />
+
+      <SetUpstreamDialog
+        open={dialog?.kind === "setUpstream"}
+        onClose={closeDialog}
+        branch={dialog?.kind === "setUpstream" ? dialog.branch : repo.headBranch}
+        remoteBranches={remoteBranchNames}
+        currentUpstream={syncState?.upstream ?? null}
+        onSubmit={(branch, upstream) => {
+          closeDialog();
+          fire(actions.setUpstream(branch, upstream));
+        }}
+      />
+
+      <RemoteDialog
+        open={dialog?.kind === "remote"}
+        onClose={closeDialog}
+        remote={dialog?.kind === "remote" ? dialog.remote : null}
+        existingNames={remotes.map((entry) => entry.name)}
+        onSubmit={(name, url, originalName) => {
+          closeDialog();
+          if (originalName === null) {
+            fire(actions.addRemote(name, url));
+            return;
+          }
+          // 이름과 URL이 같이 바뀔 수 있다. 이름을 먼저 바꾸고 URL을 새 이름에 건다
+          // (쓰기는 직렬 큐라 이 순서가 보장된다)
+          if (originalName !== name) {
+            fire(actions.renameRemote(originalName, name));
+          }
+          fire(actions.setRemoteUrl(name, url));
+        }}
+      />
+
+      <AddWorktreeDialog
+        open={dialog?.kind === "addWorktree"}
+        onClose={closeDialog}
+        onPickDirectory={pickDirectory}
+        refs={refNames}
+        existingBranches={localBranchNames}
+        onSubmit={(dir, branch, createBranch) => {
+          closeDialog();
+          fire(actions.addWorktree(dir, branch, createBranch));
+        }}
+      />
+
+      <StashDialog
+        open={dialog?.kind === "stash"}
+        onClose={closeDialog}
+        onSubmit={(opts) => {
+          closeDialog();
+          fire(actions.stashPush(opts));
+        }}
+      />
+
+      {dialog?.kind === "stashBranch" && (
         <PromptDialog
           open
-          title={promptConfig.title}
-          label={promptConfig.label}
-          placeholder={promptConfig.placeholder}
-          confirmLabel={promptConfig.confirmLabel}
-          validate={prompt?.kind === "stash" ? undefined : validateName}
-          extra={
-            promptConfig.checkbox === null ? undefined : (
-              <label className="pd-check">
-                <input
-                  type="checkbox"
-                  checked={promptFlag}
-                  onChange={(event) => setPromptFlag(event.target.checked)}
-                />
-                {promptConfig.checkbox}
-              </label>
-            )
-          }
-          onSubmit={submitPrompt}
-          onCancel={closePrompt}
+          title="Create branch from stash"
+          label="Branch name"
+          placeholder="fix/from-stash"
+          confirmLabel="Create"
+          validate={(value) => (value.trim() === "" ? "Enter a name." : refNameProblem(value))}
+          onSubmit={(name) => {
+            const stashRef = dialog.ref;
+            closeDialog();
+            fire(actions.stashBranch(stashRef, name.trim()));
+          }}
+          onCancel={closeDialog}
+        />
+      )}
+
+      {rebase !== null && (
+        <RebaseEditor
+          open
+          onClose={closeRebaseEditor}
+          base={rebase.base}
+          steps={rebase.steps}
+          busy={actions.busy}
+          onSubmit={(steps) => {
+            const base = rebase.base;
+            closeRebaseEditor();
+            // steps는 이미 todo 순서(위가 과거)로 돌아온다. 다시 뒤집지 않는다
+            fire(actions.rebaseInteractive(base, steps));
+          }}
         />
       )}
 

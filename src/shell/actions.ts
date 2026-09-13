@@ -14,29 +14,17 @@ import type {
   RebaseStep,
 } from "../types";
 import * as api from "./api";
+// 다이얼로그와 토스트의 모양은 ui-actions 소유다. 여기서 새로 정의하지 않고 그대로 쓴다
+import type { ConfirmSpec } from "./Dialogs";
+import type { ToastProps } from "./Toast";
 
-/** 파괴적 작업 확인 다이얼로그의 내용. undo는 "되돌리는 방법" 한 줄이다 */
-export interface ConfirmSpec {
-  title: string;
-  /** 무슨 일이 일어나는지 한 문장 */
-  body: string;
-  /** 되돌리는 방법. 되돌릴 수 없으면 그렇다고 적는다 */
-  undo: string;
-  confirmLabel: string;
-  /** 되돌릴 수 없는 작업. 확인 버튼이 빨개진다 */
-  danger?: boolean;
-}
+export type { ConfirmSpec };
 
-/** 쓰기 결과 알림. needsAuth일 때만 action이 붙는다 */
-export interface ToastSpec {
-  message: string;
-  tone: "error" | "info";
-  durationMs?: number;
-  /** git stderr처럼 원문을 복사하고 싶은 경우 */
-  copyable?: boolean;
-  /** "Run in terminal" 같은 단일 액션 버튼 */
-  action?: { label: string; run: () => void };
-}
+/**
+ * 쓰기 결과 알림. Toast가 그리는 데 필요한 것에서 셸이 채우는 두 가지를 뺀 것이다.
+ * onClose는 토스트 스택이, onRunInTerminal은 RepoWorkspace가 붙인다.
+ */
+export type ToastSpec = Omit<ToastProps, "onClose" | "onRunInTerminal">;
 
 /**
  * 쓰기 액션 묶음. 시그니처는 CONTRACTS.md v0.18에서 동결됐다.
@@ -115,12 +103,22 @@ export interface UseRepoActionsOptions {
   refreshAll: () => Promise<void>;
   confirm: (spec: ConfirmSpec) => Promise<boolean>;
   toast: (t: ToastSpec) => void;
+  /**
+   * 인증 실패 시 내장 터미널로 명령을 넘긴다.
+   * 실제 버튼은 Toast가 그리므로(command/needsAuth를 토스트에 실어 보낸다) 여기서는
+   * 셸이 토스트에 붙일 핸들러를 받아 두기만 한다. 계약 시그니처라 이름은 그대로 둔다
+   */
   runInTerminal: (command: string[]) => void;
   onConflicts: (files: string[]) => void;
 }
 
-/** 실패 토스트는 stderr를 읽어야 해서 길게 띄운다 */
-const ERROR_TOAST_MS = 12_000;
+/** 확인 문구에 쓰는 진행 중 작업 이름 */
+const KIND_LABEL: Record<PendingKind, string> = {
+  merge: "merge",
+  rebase: "rebase",
+  cherryPick: "cherry-pick",
+  revert: "revert",
+};
 
 function fileWord(n: number): string {
   return n === 1 ? "1 file" : `${n} files`;
@@ -202,18 +200,16 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }
 
         if (!result.ok) {
-          const detail = (result.stderr.trim() || result.stdout.trim() || "").slice(0, 2000);
+          const detail = (result.stderr.trim() || result.stdout.trim() || "").slice(0, 4000);
+          // 실패 토스트는 durationMs를 주지 않는다. git stderr는 사용자가 읽고
+          // 판단해야 하는 유일한 단서라 자동으로 사라지면 안 된다
           o.toast({
-            message: detail === "" ? spec.failure : `${spec.failure}\n${detail}`,
+            message: spec.failure,
             tone: "error",
-            durationMs: ERROR_TOAST_MS,
             copyable: true,
-            action: result.needsAuth
-              ? {
-                  label: "Run in terminal",
-                  run: () => o.runInTerminal(result.command),
-                }
-              : undefined,
+            stderr: detail,
+            command: result.command,
+            needsAuth: result.needsAuth,
           });
           // 성공이든 실패든 새로고침한다. 실패해도 인덱스는 움직였을 수 있다
           await o.refreshAll();
@@ -221,7 +217,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }
 
         if (spec.success !== null) {
-          o.toast({ message: spec.success, tone: "info" });
+          o.toast({ message: spec.success, tone: "success" });
         }
         await o.refreshAll();
       } catch (err) {
@@ -229,10 +225,10 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         if (!(err instanceof Error)) {
           const message = api.errorMessage(err);
           o.toast({
-            message: `${spec.failure}\n${message}`,
+            message: spec.failure,
             tone: "error",
-            durationMs: ERROR_TOAST_MS,
             copyable: true,
+            stderr: message,
           });
           await o.refreshAll();
           throw new Error(message);
@@ -270,8 +266,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           failure: "Discard failed",
           confirm: {
             title: "Discard changes?",
-            body: `Local changes in ${fileWord(files.length)} will be thrown away. Untracked files among them are deleted from disk.`,
+            body: "Local changes will be thrown away. Untracked files among them are deleted from disk.",
             undo: "This cannot be undone. Uncommitted changes are not stored anywhere, not even in the reflog.",
+            scope: fileWord(files.length),
             confirmLabel: "Discard",
             danger: true,
           },
@@ -305,8 +302,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           failure: "Clean failed",
           confirm: {
             title: "Delete untracked files?",
-            body: `${fileWord(paths.length)} that git does not track will be deleted from disk.`,
+            body: "Files that git does not track will be deleted from disk.",
             undo: "This cannot be undone. Untracked files were never stored in git.",
+            scope: fileWord(paths.length),
             confirmLabel: "Delete",
             danger: true,
           },
@@ -350,16 +348,18 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           confirm: remote
             ? {
                 title: "Delete remote branch?",
-                body: `${name} will be deleted on the remote. Everyone who fetches this remote loses the branch.`,
-                undo: `Push it back from a local copy that still has the commits: git push <remote> <sha>:refs/heads/<branch>.`,
+                body: "The branch will be deleted on the remote. Everyone who fetches this remote loses it.",
+                undo: "Push it back from a local copy that still has the commits: git push <remote> <sha>:refs/heads/<branch>.",
+                scope: name,
                 confirmLabel: "Delete on remote",
                 danger: true,
               }
             : force
               ? {
                   title: "Force delete branch?",
-                  body: `${name} is not fully merged. Commits only on this branch stop being reachable by any ref.`,
+                  body: "The branch is not fully merged. Commits that live only on it stop being reachable by any ref.",
                   undo: "Find the tip with git reflog and recreate it: git branch <name> <sha>. Unreachable commits are pruned after about 30 days.",
+                  scope: name,
                   confirmLabel: "Force delete",
                   danger: true,
                 }
@@ -414,8 +414,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
             o?.forceWithLease === true
               ? {
                   title: "Force push with lease?",
-                  body: `The remote branch will be overwritten with your local history. Commits only on the remote stop being reachable there.`,
+                  body: "The remote branch will be overwritten with your local history. Commits that live only on the remote stop being reachable there.",
                   undo: "Anyone who still has the old commits can push them back. --force-with-lease refuses the push if the remote moved since your last fetch, so this is not a blind overwrite.",
+                  scope: `${o?.remote ?? "origin"}/${o?.branch ?? "current branch"}`,
                   confirmLabel: "Force push",
                   danger: true,
                 }
@@ -478,8 +479,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
             mode === "hard"
               ? {
                   title: "Reset --hard?",
-                  body: `The current branch moves to ${target} and every file in the working tree is overwritten to match it.`,
+                  body: "The current branch moves and every file in the working tree is overwritten to match it.",
                   undo: "You can find the previous position with git reflog and reset back to it, but uncommitted file changes cannot be recovered.",
+                  scope: target,
                   confirmLabel: "Reset hard",
                   danger: true,
                 }
@@ -496,24 +498,50 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           return;
         }
         const kind: PendingKind = pending.kind;
+        const label = KIND_LABEL[kind];
+        // 진행도와 남은 충돌 수를 확인 문구에 넣는다. "3/12에서 멈춘다"를 알아야
+        // abort가 얼마나 되돌리는 일인지 판단할 수 있다
+        const scope = [
+          pending.progress === null ? null : `at ${pending.progress}`,
+          pending.conflictCount > 0 ? `${pending.conflictCount} conflicted` : null,
+          pending.detail,
+        ]
+          .filter((part): part is string => part !== null && part !== "")
+          .join(", ");
+
         await run({
           success:
             action === "abort"
-              ? `Aborted the ${kind}`
+              ? `Aborted the ${label}`
               : action === "skip"
                 ? "Skipped this commit"
-                : `Continued the ${kind}`,
-          failure: `${action} failed`,
+                : `Continued the ${label}`,
+          failure:
+            action === "abort"
+              ? `Aborting the ${label} failed`
+              : action === "skip"
+                ? "Skipping this commit failed"
+                : `Continuing the ${label} failed`,
           confirm:
             action === "abort"
               ? {
-                  title: `Abort the ${kind}?`,
-                  body: `The ${kind} in progress stops and the repository returns to the state it had before the ${kind} started.`,
-                  undo: "Committed history is not lost, but conflict resolutions you made in the working tree are discarded.",
+                  title: `Abort the ${label}?`,
+                  body: `The ${label} in progress stops and the repository returns to the state it had before it started.`,
+                  undo: "Committed history is not lost, but the conflict resolutions you made in the working tree are discarded.",
+                  scope: scope === "" ? null : scope,
                   confirmLabel: "Abort",
                   danger: true,
                 }
-              : undefined,
+              : action === "skip"
+                ? {
+                    title: "Skip this commit?",
+                    body: `The commit being applied is dropped from the ${label} and never lands on the branch.`,
+                    undo: "The original commit still exists, so you can cherry-pick it back afterwards with git cherry-pick <sha> once you know its sha.",
+                    scope: scope === "" ? null : scope,
+                    confirmLabel: "Skip",
+                    danger: true,
+                  }
+                : undefined,
           call: () => api.gitPendingAction(path, kind, action),
         });
       },
@@ -532,8 +560,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           failure: `Deleting tag ${name} failed`,
           confirm: {
             title: "Delete tag?",
-            body: `The local tag ${name} will be removed. The remote keeps its copy.`,
+            body: "The local tag will be removed. The remote keeps its copy.",
             undo: `Recreate it with git tag ${name} <sha> if you know the commit, or fetch it back from the remote.`,
+            scope: name,
             confirmLabel: "Delete tag",
             danger: true,
           },
@@ -547,8 +576,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           confirm: del
             ? {
                 title: "Delete tag on remote?",
-                body: `${name} will be deleted on ${remote}. Anyone who already fetched it keeps a local copy.`,
+                body: "The tag will be deleted on the remote. Anyone who already fetched it keeps a local copy.",
                 undo: `Push it again with git push ${remote} ${name} while you still have the tag locally.`,
+                scope: `${remote} ${name}`,
                 confirmLabel: "Delete on remote",
                 danger: true,
               }
@@ -584,8 +614,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           failure: `Dropping ${stashRef} failed`,
           confirm: {
             title: "Drop stash?",
-            body: `${stashRef} and the changes it holds will be removed from the stash list.`,
+            body: "The stash entry and the changes it holds are removed from the stash list.",
             undo: "The stash commit stays unreachable in the object database for a while: find it with git fsck --unreachable and restore it with git stash apply <sha>.",
+            scope: stashRef,
             confirmLabel: "Drop",
             danger: true,
           },
@@ -642,8 +673,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           failure: `Removing the worktree at ${dir} failed`,
           confirm: {
             title: "Remove worktree?",
-            body: `The worktree at ${dir} will be unregistered and its directory deleted.${force ? " Uncommitted changes inside it are thrown away." : ""}`,
+            body: `The worktree will be unregistered and its directory deleted.${force ? " Uncommitted changes inside it are thrown away." : ""}`,
             undo: `Recreate it with git worktree add ${quoteArg(dir)} <branch>. Committed work is safe because it lives in the shared repository, but uncommitted changes are not recoverable.`,
+            scope: dir,
             confirmLabel: "Remove",
             danger: true,
           },

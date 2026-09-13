@@ -1549,28 +1549,3 @@ kbd.sc-key.wide {
   margin-left: 0;
   margin-right: 2px;
 }
-
-/* 확인 다이얼로그의 "되돌리는 방법" 한 줄. 본문보다 한 톤 낮춘다 */
-.cf-undo {
-  margin: 8px 0 0;
-  color: var(--fg-2);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-/* 프롬프트의 추가 체크박스 (Check out after creating / Include untracked files) */
-.pd-check {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--fg-1);
-  font-size: 12px;
-  cursor: pointer;
-  /* 라벨 전체가 탭 타깃이 되도록 세로 여백을 준다 */
-  padding-block: 3px;
-}
-
-.pd-check input {
-  margin: 0;
-  cursor: pointer;
-}

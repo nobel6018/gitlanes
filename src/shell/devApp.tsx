@@ -101,7 +101,14 @@ function currentWip(): WipInfo | null {
   if (paths.size === 0) {
     return null;
   }
-  return { changedFiles: paths.size, stagedFiles: wipStore.staged.length };
+  // changedFiles가 총계고 staged/untracked는 그 부분집합이다.
+  // unstaged = changedFiles - stagedFiles - untrackedFiles로 유도되므로
+  // 이 관계가 깨지면 그래프 WIP 배지가 음수로 나온다
+  return {
+    changedFiles: paths.size,
+    stagedFiles: wipStore.staged.length,
+    untrackedFiles: wipStore.untracked.length,
+  };
 }
 
 function mockWipDetails(): WipDetails {
