@@ -1898,6 +1898,9 @@ export function RepoWorkspace({
 
   return (
     <div className="workspace">
+      {/* TODO(통합) ui-actions Toolbar: actions={actions} sync={syncState} 를 받아
+          Fetch▾ / Pull▾ / Push▾ / Branch / Stash▾ 그룹과 ahead-behind 배지를 그린다.
+          Branch 버튼은 openNewBranchPrompt(null)을 부르면 된다 */}
       <Toolbar
         repo={repo}
         sidebarOpen={sidebarOpen}
@@ -1959,6 +1962,10 @@ export function RepoWorkspace({
       >
         {sidebarOpen && (
           <>
+            {/* TODO(통합) ui-sidebar BranchSidebar: actions={actions} remotes={remotes}
+                worktrees={worktrees} stashes={data.stashes} sync={syncState}
+                onOpenWorktree={openPath} 를 받아 Remotes/Tags/Stashes/Worktrees 섹션과
+                우클릭 메뉴, DnD 머지/리베이스를 그린다 */}
             <BranchSidebar
               refs={refs}
               loading={refsLoading}
@@ -2002,6 +2009,9 @@ export function RepoWorkspace({
               onLoadMore={handleLoadMore}
             />
           ) : (
+            /* TODO(통합) ui-graph GraphView: pendingSha, onRowDragOver, onRowDrop,
+               dropTargetSha 를 붙여 "브랜치를 커밋 위에 놓아 reset / 브랜치 생성"을 만든다.
+               pendingSha는 syncState?.pending이 있을 때 repo.headSha를 넘기면 된다 */
             <GraphView
               data={data}
               selectedSha={selectedSha}
@@ -2031,6 +2041,11 @@ export function RepoWorkspace({
             onReset={() => resetWidth("detail")}
           />
         )}
+        {/* TODO(통합) ui-wip WipDetailPanel: actions={actions} repoPath={repo.path}
+            conflicts={conflicts} 를 받아 stage/unstage/discard 버튼과 CommitBox를 그린다.
+            CommitBox는 amend 초기값을 get_last_commit_message로 채운다 (api.getLastCommitMessage).
+            ⌘Enter는 셸이 WIP 행을 선택하는 데까지만 하므로, 커밋 상자에 포커스를 주려면
+            focusCommitNonce prop이 필요하다 */}
         {isWipSelected && (
           <WipDetailPanel
             details={wipDetails}
