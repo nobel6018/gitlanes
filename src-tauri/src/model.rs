@@ -2,7 +2,7 @@
 //!
 //! @see CONTRACTS.md
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// `open_repo` 응답.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -209,6 +209,11 @@ pub struct OpResult {
     pub stderr: String,
     /// `git diff --name-only --diff-filter=U` 결과. 충돌이 없으면 빈 배열
     pub conflicts: Vec<String>,
+    /// 실제로 실행한 git 인자. 프로그램명 "git"과 실행기가 붙이는 `-C <repo>`는 뺀다.
+    /// 프론트가 이걸 그대로 내장 터미널에 흘려보내 사용자의 셸에서 다시 실행한다.
+    pub command: Vec<String>,
+    /// stderr가 인증/권한 실패로 보이면 true. 프론트가 "터미널에서 실행"을 권한다.
+    pub needs_auth: bool,
 }
 
 /// `get_sync_state` 응답. 툴바의 ↑ahead ↓behind 배지와 Pop 버튼 활성 판정에 쓴다.
@@ -222,6 +227,105 @@ pub struct SyncState {
     pub ahead: u32,
     pub behind: u32,
     pub stash_count: u32,
+    /// continue/abort가 필요한 진행 중 작업. 없으면 None
+    pub pending: Option<PendingOp>,
+}
+
+/// 진행 중인 작업의 종류. `.git` 안의 표식 파일로 판정한다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PendingKind {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
+/// 진행 중이라 continue/abort가 필요한 작업.
+///
+/// git은 이 상태를 별도 API로 알려주지 않는다. `.git/MERGE_HEAD`처럼 작업 중에만
+/// 존재하는 파일이 유일한 신호다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingOp {
+    pub kind: PendingKind,
+    /// 리베이스 진행도 "3/12". 알 수 없으면 None
+    pub progress: Option<String>,
+    pub conflict_count: u32,
+    /// 리베이스 중인 브랜치 이름 등 부가 설명. 없으면 None
+    pub detail: Option<String>,
+}
+
+/// 충돌 파일 하나. 어느 쪽이 지웠는지까지 구분해야 UI가 "Use ours"를 올바로 그린다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictKind {
+    BothModified,
+    BothAdded,
+    DeletedByUs,
+    DeletedByThem,
+    BothDeleted,
+}
+
+/// `get_conflicts` 응답 항목.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictFile {
+    pub path: String,
+    pub kind: ConflictKind,
+    /// 충돌 마커가 파일에 남아 있으면 true. 손으로 고치면 false가 된다
+    pub has_markers: bool,
+}
+
+/// `list_remotes` 응답 항목. fetch와 push URL이 다를 수 있어 둘 다 싣는다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteInfo {
+    pub name: String,
+    pub fetch_url: String,
+    pub push_url: String,
+}
+
+/// `list_worktrees` 응답 항목.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInfo {
+    pub path: String,
+    /// 체크아웃된 브랜치. detached면 None
+    pub branch: Option<String>,
+    pub head: String,
+    /// 지금 앱이 열어 둔 워크트리 자신이면 true. UI가 이걸 지우지 못하게 막는다
+    pub is_main: bool,
+    /// 디렉토리가 사라져 prune 대상이면 true
+    pub is_prunable: bool,
+}
+
+/// `git_rebase_interactive`의 todo 한 줄.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebaseStep {
+    pub sha: String,
+    /// "pick" | "reword" | "edit" | "squash" | "fixup" | "drop"
+    pub action: String,
+    /// 화면 표시용 원본 subject. todo 주석으로만 쓴다
+    #[serde(default)]
+    pub subject: String,
+    /// action이 "reword"일 때 쓸 새 메시지
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// `git_commit` 인자 묶음. 인자가 여섯 개라 구조체로 받는다.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitOptions {
+    pub message: String,
+    pub amend: bool,
+    pub signoff: bool,
+    pub gpg_sign: bool,
+    pub allow_empty: bool,
+    /// 추적 중인 파일의 변경을 전부 스테이지하고 커밋 (-a)
+    pub stage_all: bool,
 }
 
 /// `get_wip_details` 응답. 세 영역은 서로 겹칠 수 있다(같은 파일이 staged와 unstaged 양쪽에).

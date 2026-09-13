@@ -59,53 +59,90 @@ pub fn run() {
     // PTY 세션 맵. 창이 여러 개여도 하나를 공유한다.
     let builder = builder.manage(term::Terminals::default());
 
-    // 읽기 command와 터미널만 등록한다. ops.rs의 쓰기 command는 `write-ops` 기능이
-    // 꺼져 있으면 `#[tauri::command]`가 붙지 않아 여기에 쓸 수조차 없다.
-    // 목록을 두 번 적지 않으려고 매크로로 공통부를 묶었다.
-    macro_rules! app_handlers {
-        ($($extra:tt)*) => {
-            tauri::generate_handler![
-                commands::open_repo,
-                commands::load_graph,
-                commands::get_commit_details,
-                commands::get_file_diff,
-                commands::get_file_content,
-                commands::get_startup_repo,
-                commands::list_refs,
-                commands::search_commits,
-                commands::get_repo_state,
-                commands::get_remote_url,
-                commands::get_wip_details,
-                commands::get_wip_file_diff,
-                commands::get_wip_file_content,
-                native::reveal_path,
-                native::open_in_terminal,
-                native::set_recent_repos,
-                term::term_open,
-                term::term_write,
-                term::term_resize,
-                term::term_close,
-                $($extra)*
-            ]
-        };
-    }
-
-    #[cfg(not(feature = "write-ops"))]
-    let builder = builder.invoke_handler(app_handlers!());
-
-    #[cfg(feature = "write-ops")]
-    let builder = builder.invoke_handler(app_handlers!(
-        ops::get_sync_state,
-        ops::git_fetch,
-        ops::git_pull,
-        ops::git_push,
-        ops::git_checkout,
-        ops::git_create_branch,
-        ops::git_delete_branch,
-        ops::git_merge,
-        ops::git_stash_push,
-        ops::git_stash_pop,
-    ));
+    // v0.18에서 쓰기 command 봉인을 풀었다. 읽기, 터미널, 쓰기가 한 목록이다.
+    // 인증이 필요한 작업이 실패하면 OpResult.needsAuth가 켜지고, 프론트가 같은 명령을
+    // 하단 PTY로 넘겨 사용자의 셸에서 다시 실행한다(ops 모듈 주석 참고).
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        commands::open_repo,
+        commands::load_graph,
+        commands::get_commit_details,
+        commands::get_file_diff,
+        commands::get_file_content,
+        commands::get_startup_repo,
+        commands::list_refs,
+        commands::search_commits,
+        commands::get_repo_state,
+        commands::get_remote_url,
+        commands::get_wip_details,
+        commands::get_wip_file_diff,
+        commands::get_wip_file_content,
+        native::reveal_path,
+        native::open_in_terminal,
+        native::set_recent_repos,
+        term::term_open,
+        term::term_write,
+        term::term_resize,
+        term::term_close,
+        // 스테이징
+        ops::stage::git_stage,
+        ops::stage::git_unstage,
+        ops::stage::git_discard,
+        ops::stage::git_stage_all,
+        ops::stage::git_unstage_all,
+        ops::stage::git_apply_patch,
+        ops::stage::git_clean,
+        // 커밋
+        ops::commit::git_commit,
+        ops::commit::get_last_commit_message,
+        ops::commit::get_commit_template,
+        ops::commit::git_undo_commit,
+        // 브랜치
+        ops::branch::git_checkout,
+        ops::branch::git_create_branch,
+        ops::branch::git_delete_branch,
+        ops::branch::git_rename_branch,
+        ops::branch::git_set_upstream,
+        // 네트워크
+        ops::network::git_fetch,
+        ops::network::git_pull,
+        ops::network::git_push,
+        // 히스토리
+        ops::sync::get_sync_state,
+        ops::history::git_merge,
+        ops::history::git_rebase,
+        ops::history::git_cherry_pick,
+        ops::history::git_revert,
+        ops::history::git_reset,
+        ops::history::git_pending_action,
+        ops::interactive::git_rebase_interactive,
+        // 태그
+        ops::tag::git_create_tag,
+        ops::tag::git_delete_tag,
+        ops::tag::git_push_tag,
+        // 스태시
+        ops::stash::git_stash_push,
+        ops::stash::git_stash_apply,
+        ops::stash::git_stash_drop,
+        ops::stash::git_stash_branch,
+        // remote
+        ops::remote::list_remotes,
+        ops::remote::git_add_remote,
+        ops::remote::git_remove_remote,
+        ops::remote::git_rename_remote,
+        ops::remote::git_set_remote_url,
+        // 충돌
+        ops::conflict::get_conflicts,
+        ops::conflict::git_resolve_with,
+        ops::conflict::git_mark_resolved,
+        ops::conflict::get_conflict_side,
+        // 워크트리
+        ops::worktree::list_worktrees,
+        ops::worktree::git_add_worktree,
+        ops::worktree::git_remove_worktree,
+        // 패치
+        ops::stage::git_create_patch,
+        ops::stage::git_apply_patch_file,
+    ]);
 
     // RunEvent를 받으려면 build + run으로 나눠야 한다. 앱이 닫힐 때 남은 셸을 죽인다.
     let app = builder
