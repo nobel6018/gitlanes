@@ -63,3 +63,136 @@
   font-size: 12px;
   font-style: italic;
 }
+
+/* ---------- 섹션 헤더 + 액션 버튼 (v0.18) ----------
+ * .sb-head 는 shell.css에서 width:100%라 헤더 행을 flex로 감싸고 폭을 다시 잡는다.
+ */
+
+.sb-head-row {
+  display: flex;
+  align-items: center;
+}
+
+.sb-head-row > .sb-head {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sb-head-row.nested > .sb-head {
+  padding-left: 18px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.sb-head-action {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+}
+
+/* 헤더에 커서가 올라올 때만 드러낸다. 평소에는 목록이 조용해야 한다 */
+.sb-head-row:hover .sb-head-action,
+.sb-head-action:focus-visible {
+  opacity: 1;
+}
+
+.sb-head-action:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.sb-head-action:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.sb-subsection {
+  display: block;
+}
+
+/* ---------- 트리 폴더 행 ---------- */
+
+.sb-folder {
+  color: var(--fg-2);
+}
+
+.sb-folder .sb-label {
+  font-weight: 600;
+}
+
+.sb-folder .sb-caret {
+  flex: 0 0 8px;
+  margin-right: 1px;
+  font-size: 9px;
+}
+
+/* ---------- 행 부가 정보 ---------- */
+
+/* ahead/behind 배지. 현재 브랜치에만 붙는다 */
+.sb-sync {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bg-content);
+  color: var(--fg-2);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 스태시 시각, 워크트리 브랜치 등 우측 보조 텍스트 */
+.sb-meta {
+  flex: 0 0 auto;
+  max-width: 45%;
+  margin-left: 6px;
+  overflow: hidden;
+  color: var(--fg-2);
+  font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sb-stash .sb-label,
+.sb-worktree .sb-label {
+  font-size: 12px;
+}
+
+/* 디스크에서 사라진 워크트리 (prune 대상) */
+.sb-worktree.prunable .sb-label {
+  color: var(--deleted);
+  text-decoration: line-through;
+}
+
+/* ---------- 드래그 앤 드롭 ---------- */
+
+/* 드래그 중에는 놓을 수 없는 행을 흐리게 해서 가능한 타깃만 남긴다 */
+.sidebar.dragging .sb-item.dimmed,
+.sidebar.dragging .sb-folder,
+.sidebar.dragging .sb-head-row {
+  opacity: 0.35;
+}
+
+.sb-item.dragging-src {
+  opacity: 0.5;
+}
+
+.sidebar.dragging .sb-item.droppable {
+  opacity: 1;
+}
+
+.sb-item.drop-active {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* 드롭 타깃 위에서는 자식 요소가 dragleave를 만들지 않게 이벤트를 행이 대표로 받는다 */
+.sb-item.droppable > * {
+  pointer-events: none;
+}
