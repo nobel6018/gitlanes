@@ -69,7 +69,10 @@ pub fn run(request: &DumpRequest, out: &mut impl Write) -> Result<(), String> {
     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let wip = match data.wip {
-        Some(wip) => format!("{}changed/{}staged", wip.changed_files, wip.staged_files),
+        Some(wip) => format!(
+            "{}changed/{}staged/{}untracked",
+            wip.changed_files, wip.staged_files, wip.untracked_files
+        ),
         None => "none".to_string(),
     };
     writeln!(
