@@ -420,8 +420,6 @@ export function RepoWorkspace({
    * 사용자가 드래그로 맞춰 놓은 순서가 리렌더에 날아가지 않는다
    */
   const [rebase, setRebase] = useState<RebaseState | null>(null);
-  /** 사이드바에서 ref 드래그가 진행 중인가. 그래프 드롭 타깃을 켜는 조건 */
-  const [refDrag, setRefDrag] = useState<RefDragPayload | null>(null);
   /** 드래그가 올라와 있는 커밋 행. 그래프가 노란 테두리로 그린다 */
   const [dropTargetSha, setDropTargetSha] = useState<string | null>(null);
 
@@ -1203,7 +1201,6 @@ export function RepoWorkspace({
    */
   const handleRowDrop = useCallback(
     (sha: string, raw: string) => {
-      setRefDrag(null);
       setDropTargetSha(null);
       const payload = parseRefDrag(raw);
       if (payload === null || repo === null) {
@@ -1223,8 +1220,12 @@ export function RepoWorkspace({
     setDropTargetSha(sha);
   }, []);
 
+  /**
+   * 사이드바 드래그가 끝나면 강조를 끈다.
+   * 드롭 타깃 자체는 GraphView가 REF_DRAG_MIME을 확인한 뒤에만 onRowDragOver를
+   * 부르므로 여기서 따로 게이트를 두지 않는다
+   */
   const handleRefDragStateChange = useCallback((payload: RefDragPayload | null) => {
-    setRefDrag(payload);
     if (payload === null) {
       setDropTargetSha(null);
     }
@@ -2254,7 +2255,7 @@ export function RepoWorkspace({
               data={data}
               onRowDragOver={handleRowDragOver}
               onRowDrop={handleRowDrop}
-              dropTargetSha={refDrag === null ? null : dropTargetSha}
+              dropTargetSha={dropTargetSha}
               pendingSha={syncState?.pending == null ? null : repo.headSha}
               selectedSha={selectedSha}
               onSelect={setSelectedSha}
