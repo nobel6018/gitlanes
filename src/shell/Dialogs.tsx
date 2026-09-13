@@ -111,8 +111,10 @@ export interface DialogFrameProps {
   /** Enter로 확정. 비활성이면 아무 일도 안 한다 */
   onSubmit?: () => void;
   submitLabel?: string;
-  /** 확정을 막는 사유. null이면 확정 가능 */
+  /** 확정을 막는 사유. null이면 확정 가능. 이 문구는 폼 아래에 그대로 뜬다 */
   disabledReason?: string | null;
+  /** 사유를 보여주지 않고 확정만 막는다. 아직 아무것도 입력하지 않은 초기 상태용 */
+  blocked?: boolean;
   danger?: boolean;
   /** 액션 줄 왼쪽에 끼워 넣을 버튼 (Unset upstream 등) */
   aside?: ReactNode;
@@ -131,6 +133,7 @@ export function DialogFrame({
   onSubmit,
   submitLabel,
   disabledReason,
+  blocked,
   danger,
   aside,
   wide,
@@ -140,7 +143,8 @@ export function DialogFrame({
     return null;
   }
 
-  const blocked = disabledReason !== undefined && disabledReason !== null;
+  const shown = disabledReason !== undefined && disabledReason !== null;
+  const stop = shown || blocked === true;
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
@@ -170,7 +174,7 @@ export function DialogFrame({
         aria-label={title}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!blocked) {
+          if (!stop) {
             onSubmit?.();
           }
         }}
@@ -182,7 +186,7 @@ export function DialogFrame({
           </button>
         </div>
         {children}
-        {blocked && (
+        {shown && (
           <div className="dlg-error" role="alert">
             {disabledReason}
           </div>
@@ -197,7 +201,7 @@ export function DialogFrame({
             <button
               type="submit"
               className={danger === true ? "dlg-btn primary danger" : "dlg-btn primary"}
-              disabled={blocked}
+              disabled={stop}
             >
               {submitLabel ?? "OK"}
             </button>
