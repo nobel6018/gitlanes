@@ -2,6 +2,7 @@
 // 여기서는 평면화된 행 목록을 그대로 렌더한다. 평면 목록이 키보드 탐색의 단일 진실이다.
 import type { FileChange } from "../types";
 import { FileRow } from "./FileRow";
+import type { FileRowAction } from "./FileRow";
 
 interface TreeDir {
   kind: "dir";
@@ -161,6 +162,14 @@ export function writeFileView(view: FileView) {
   }
 }
 
+/** WIP 패널이 파일 행에 얹는 추가 UI. 커밋 상세 패널은 주지 않는다 */
+export interface FileRowExtras {
+  untracked?: boolean;
+  checked?: boolean;
+  onToggleCheck?: (range: boolean) => void;
+  actions?: FileRowAction[];
+}
+
 export interface FileTreeProps {
   /** buildFileNavRows 결과 (접힌 디렉토리 자식은 빠져 있다) */
   rows: FileNavRow[];
@@ -170,9 +179,11 @@ export interface FileTreeProps {
   activePath?: string | null;
   onOpen: (file: FileChange, index: number) => void;
   onToggle: (path: string, index: number) => void;
+  /** 파일마다 체크박스와 hover 액션을 붙인다. 없으면 읽기 전용 트리 */
+  rowExtras?: (file: FileChange) => FileRowExtras;
 }
 
-export function FileTree({ rows, focusIndex, activePath, onOpen, onToggle }: FileTreeProps) {
+export function FileTree({ rows, focusIndex, activePath, onOpen, onToggle, rowExtras }: FileTreeProps) {
   return (
     <ul className="file-list tree">
       {rows.map((row, index) =>
@@ -185,6 +196,7 @@ export function FileTree({ rows, focusIndex, activePath, onOpen, onToggle }: Fil
             navIndex={index}
             focused={index === focusIndex}
             active={row.file.path === activePath}
+            {...(rowExtras === undefined ? {} : rowExtras(row.file))}
             onOpen={() => onOpen(row.file, index)}
           />
         ) : (

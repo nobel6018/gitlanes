@@ -218,22 +218,21 @@ function buildHunk(
   }
 
   const raw: Emitted[] = [];
-  /** 직전 원본 줄이 패치에 남았는가. 빠진 줄에 마커만 남으면 패치가 깨진다 */
-  let previous: Emitted | null = null;
+  /** 직전 원본 줄이 패치에 남았으면 그 위치. 빠진 줄에 마커만 남으면 패치가 깨진다 */
+  let previousIndex = -1;
 
   const emit = (sign: " " | "+" | "-", text: string) => {
-    const entry: Emitted = { sign, text, noEol: false, marker: "" };
-    raw.push(entry);
-    previous = entry;
+    raw.push({ sign, text, noEol: false, marker: "" });
+    previousIndex = raw.length - 1;
   };
 
   for (let index = 0; index < hunk.lines.length; index++) {
     const line = hunk.lines[index];
 
     if (line.kind === "meta") {
-      if (previous !== null) {
-        previous.noEol = true;
-        previous.marker = line.text;
+      if (previousIndex >= 0) {
+        raw[previousIndex].noEol = true;
+        raw[previousIndex].marker = line.text;
       }
       continue;
     }
@@ -252,7 +251,7 @@ function buildHunk(
         // 되돌릴 대상 파일(new 쪽)에는 이 줄이 실제로 있으므로 context로 남겨 둔다
         emit(" ", line.text);
       } else {
-        previous = null;
+        previousIndex = -1;
       }
       continue;
     }
@@ -263,7 +262,7 @@ function buildHunk(
       // 적용 대상 파일(old 쪽)에는 이 줄이 실제로 있으므로 context로 남겨 둔다
       emit(" ", line.text);
     } else {
-      previous = null;
+      previousIndex = -1;
     }
   }
 

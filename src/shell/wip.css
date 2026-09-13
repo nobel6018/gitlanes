@@ -1,0 +1,345 @@
+/* ============================================================
+   ui-wip 전용 스타일. 스테이징 화면(파일 행 액션, 그룹 헤더, 커밋 박스)과
+   diff 뷰어의 hunk/줄 단위 스테이징 UI만 여기에 둔다.
+   색은 theme.css의 계약 변수만 쓴다 (하드코딩 금지).
+   ============================================================ */
+
+/* ---------- 파일 행: 체크박스 + hover 액션 ---------- */
+
+/* 버튼 안에 버튼을 넣을 수 없어 li를 기준 컨테이너로 쓴다 */
+.file-row-shell {
+  position: relative;
+  display: block;
+}
+
+.file-check {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.file-acts {
+  position: absolute;
+  right: 4px;
+  top: 0;
+  z-index: 2;
+  height: 28px;
+  display: none;
+  align-items: center;
+  gap: 3px;
+}
+
+.file-row-shell:hover .file-acts {
+  display: flex;
+}
+
+/* 액션 버튼이 덮는 자리라 hover 중에는 ± 숫자를 감춘다 */
+.file-row-shell:hover .file-stat {
+  visibility: hidden;
+}
+
+.file-act {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border-1);
+  border-radius: 3px;
+  background: var(--bg-panel);
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 17px;
+  text-align: center;
+}
+
+.file-act:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.file-act.danger:hover:not(:disabled) {
+  background: var(--deleted);
+  border-color: var(--deleted);
+  color: var(--bg-content);
+}
+
+.file-act:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* untracked는 status가 'A'로 오므로 뱃지 색만 바꿔 구분한다 */
+.st-U {
+  background: rgba(111, 168, 232, 0.22);
+  color: var(--link);
+}
+
+/* ---------- 그룹 헤더 ---------- */
+
+.wip-group-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wip-group-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wip-btn {
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  color: var(--fg-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 16px;
+  text-transform: none;
+}
+
+.wip-btn:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.wip-btn.danger:hover:not(:disabled) {
+  background: var(--deleted);
+  border-color: var(--deleted);
+  color: var(--bg-content);
+}
+
+.wip-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---------- 커밋 박스 ---------- */
+
+.cb-root {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border-1);
+  background: var(--bg-panel);
+}
+
+.cb-input-wrap {
+  position: relative;
+}
+
+.cb-input {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  background-color: var(--bg-content);
+  /* 본문 72자 눈금선. 폭은 컴포넌트가 background-size로 준다 (72ch) */
+  background-image: linear-gradient(
+    to right,
+    transparent calc(100% - 1px),
+    var(--border-1) calc(100% - 1px)
+  );
+  background-repeat: no-repeat;
+  background-origin: content-box;
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 18px;
+  resize: none;
+  outline: none;
+  overflow-y: auto;
+}
+
+.cb-input:focus {
+  border-color: var(--accent);
+}
+
+.cb-input::placeholder {
+  color: var(--fg-2);
+  opacity: 0.7;
+}
+
+/* subject가 권장 길이를 넘었을 때만 뜨는 옅은 경고 */
+.cb-over {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--bg-content);
+  color: var(--modified);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.cb-opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+}
+
+.cb-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.cb-opt:hover {
+  color: var(--fg-1);
+}
+
+.cb-opt input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.cb-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cb-hint {
+  flex: 1 1 auto;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.cb-commit {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cb-commit:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.cb-commit:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cb-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: cb-spin 0.7s linear infinite;
+}
+
+@keyframes cb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- diff 뷰어: hunk / 줄 단위 스테이징 ---------- */
+
+/* 가로 스크롤과 가상 스크롤 둘 다 살리려면 절대 배치 대신 인라인이 안전하다 */
+.dp-hunk-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  white-space: nowrap;
+}
+
+.dp-hunk-btn {
+  height: 15px;
+  padding: 0 6px;
+  border: 1px solid var(--border-1);
+  border-radius: 3px;
+  background: var(--bg-panel);
+  color: var(--fg-2);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 13px;
+}
+
+.dp-hunk-btn:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.dp-hunk-btn.danger:hover:not(:disabled) {
+  background: var(--deleted);
+  border-color: var(--deleted);
+  color: var(--bg-content);
+}
+
+.dp-hunk-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 줄 번호 칸을 끌어 범위를 고른다 */
+.dp-pick {
+  cursor: pointer;
+}
+
+.dp-pick:hover {
+  color: var(--link);
+}
+
+/* 고른 줄. add/del 배경을 덮지 않도록 그라데이션 레이어로 겹친다 */
+.dp-line.dp-picked {
+  background-image: linear-gradient(
+    rgba(111, 168, 232, 0.18),
+    rgba(111, 168, 232, 0.18)
+  );
+}
+
+.dp-line.dp-picked .dp-no {
+  color: var(--link);
+  font-weight: 700;
+}
+
+.dp-linebar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dp-linebar .dp-linecount {
+  color: var(--link);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-spinner {
+    animation: none;
+  }
+}
