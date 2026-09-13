@@ -60,10 +60,22 @@ const GROUPS: ShortcutGroup[] = [
     title: "Search",
     items: [
       { combos: ["Mod+F"], label: "Focus search" },
-      { combos: ["Mod+Shift+F"], label: "Toggle filter mode" },
+      { combos: ["Mod+Shift+L"], label: "Toggle filter mode" },
       { combos: ["Alt+Mod+F"], label: "Focus branch filter" },
       { combos: ["Enter"], label: "Next match" },
       { combos: ["Escape"], label: "Close overlay, clear search, clear selection" },
+    ],
+  },
+  {
+    title: "Repository",
+    items: [
+      { combos: ["Mod+Shift+F"], label: "Fetch" },
+      { combos: ["Mod+Shift+P"], label: "Pull" },
+      { combos: ["Mod+Shift+U"], label: "Push" },
+      { combos: ["Mod+Enter"], label: "Commit staged changes" },
+      { combos: ["Mod+Shift+N"], label: "New branch" },
+      { combos: ["Mod+Shift+S"], label: "Stash changes" },
+      { combos: ["Mod+Shift+O"], label: "Pop latest stash" },
     ],
   },
   {
