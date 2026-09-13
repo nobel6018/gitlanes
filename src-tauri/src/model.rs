@@ -2,7 +2,7 @@
 //!
 //! @see CONTRACTS.md
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// `open_repo` 응답.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -209,6 +209,11 @@ pub struct OpResult {
     pub stderr: String,
     /// `git diff --name-only --diff-filter=U` 결과. 충돌이 없으면 빈 배열
     pub conflicts: Vec<String>,
+    /// 실제로 실행한 git 인자. 프로그램명 "git"과 실행기가 붙이는 `-C <repo>`는 뺀다.
+    /// 프론트가 이걸 그대로 내장 터미널에 흘려보내 사용자의 셸에서 다시 실행한다.
+    pub command: Vec<String>,
+    /// stderr가 인증/권한 실패로 보이면 true. 프론트가 "터미널에서 실행"을 권한다.
+    pub needs_auth: bool,
 }
 
 /// `get_sync_state` 응답. 툴바의 ↑ahead ↓behind 배지와 Pop 버튼 활성 판정에 쓴다.
@@ -222,6 +227,105 @@ pub struct SyncState {
     pub ahead: u32,
     pub behind: u32,
     pub stash_count: u32,
+    /// continue/abort가 필요한 진행 중 작업. 없으면 None
+    pub pending: Option<PendingOp>,
+}
+
+/// 진행 중인 작업의 종류. `.git` 안의 표식 파일로 판정한다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PendingKind {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
+/// 진행 중이라 continue/abort가 필요한 작업.
+///
+/// git은 이 상태를 별도 API로 알려주지 않는다. `.git/MERGE_HEAD`처럼 작업 중에만
+/// 존재하는 파일이 유일한 신호다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingOp {
+    pub kind: PendingKind,
+    /// 리베이스 진행도 "3/12". 알 수 없으면 None
+    pub progress: Option<String>,
+    pub conflict_count: u32,
+    /// 리베이스 중인 브랜치 이름 등 부가 설명. 없으면 None
+    pub detail: Option<String>,
+}
+
+/// 충돌 파일 하나. 어느 쪽이 지웠는지까지 구분해야 UI가 "Use ours"를 올바로 그린다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictKind {
+    BothModified,
+    BothAdded,
+    DeletedByUs,
+    DeletedByThem,
+    BothDeleted,
+}
+
+/// `get_conflicts` 응답 항목.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictFile {
+    pub path: String,
+    pub kind: ConflictKind,
+    /// 충돌 마커가 파일에 남아 있으면 true. 손으로 고치면 false가 된다
+    pub has_markers: bool,
+}
+
+/// `list_remotes` 응답 항목. fetch와 push URL이 다를 수 있어 둘 다 싣는다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteInfo {
+    pub name: String,
+    pub fetch_url: String,
+    pub push_url: String,
+}
+
+/// `list_worktrees` 응답 항목.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInfo {
+    pub path: String,
+    /// 체크아웃된 브랜치. detached면 None
+    pub branch: Option<String>,
+    pub head: String,
+    /// 지금 앱이 열어 둔 워크트리 자신이면 true. UI가 이걸 지우지 못하게 막는다
+    pub is_main: bool,
+    /// 디렉토리가 사라져 prune 대상이면 true
+    pub is_prunable: bool,
+}
+
+/// `git_rebase_interactive`의 todo 한 줄.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebaseStep {
+    pub sha: String,
+    /// "pick" | "reword" | "edit" | "squash" | "fixup" | "drop"
+    pub action: String,
+    /// 화면 표시용 원본 subject. todo 주석으로만 쓴다
+    #[serde(default)]
+    pub subject: String,
+    /// action이 "reword"일 때 쓸 새 메시지
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// `git_commit` 인자 묶음. 인자가 여섯 개라 구조체로 받는다.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitOptions {
+    pub message: String,
+    pub amend: bool,
+    pub signoff: bool,
+    pub gpg_sign: bool,
+    pub allow_empty: bool,
+    /// 추적 중인 파일의 변경을 전부 스테이지하고 커밋 (-a)
+    pub stage_all: bool,
 }
 
 /// `get_wip_details` 응답. 세 영역은 서로 겹칠 수 있다(같은 파일이 staged와 unstaged 양쪽에).
@@ -436,5 +540,175 @@ mod tests {
             assert!(json.get(key).is_some(), "{key} 키가 없다");
         }
         assert!(json.get("wip").unwrap().is_null(), "깨끗하면 null이다");
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    /// 필드 이름 하나가 어긋나면 프론트에서 `undefined`가 되고, 그건 런타임에야 드러난다.
+    /// serde 속성은 컴파일러가 검사하지 않으므로 직렬화 결과를 직접 본다.
+    #[test]
+    fn op_result가_camel_case로_나간다() {
+        let json = serde_json::to_value(OpResult {
+            ok: false,
+            stdout: String::new(),
+            stderr: "Permission denied (publickey).".to_string(),
+            conflicts: vec!["a.txt".to_string()],
+            command: vec!["push".to_string(), "origin".to_string()],
+            needs_auth: true,
+        })
+        .unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["needsAuth"], true);
+        assert_eq!(json["command"][0], "push");
+        assert_eq!(json["conflicts"][0], "a.txt");
+        assert!(json.get("needs_auth").is_none(), "snake_case가 새어 나갔다");
+    }
+
+    #[test]
+    fn sync_state의_pending이_계약대로_직렬화된다() {
+        let json = serde_json::to_value(SyncState {
+            branch: None,
+            upstream: Some("origin/main".to_string()),
+            ahead: 3,
+            behind: 1,
+            stash_count: 2,
+            pending: Some(PendingOp {
+                kind: PendingKind::CherryPick,
+                progress: Some("3/12".to_string()),
+                conflict_count: 1,
+                detail: None,
+            }),
+        })
+        .unwrap();
+
+        assert_eq!(json["branch"], serde_json::Value::Null);
+        assert_eq!(json["stashCount"], 2);
+        // PendingKind는 프론트가 그대로 git_pending_action에 되돌려 보낸다
+        assert_eq!(json["pending"]["kind"], "cherryPick");
+        assert_eq!(json["pending"]["progress"], "3/12");
+        assert_eq!(json["pending"]["conflictCount"], 1);
+        assert_eq!(json["pending"]["detail"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn 모든_pending_kind_이름이_계약과_같다() {
+        let names: Vec<String> = [
+            PendingKind::Merge,
+            PendingKind::Rebase,
+            PendingKind::CherryPick,
+            PendingKind::Revert,
+        ]
+        .iter()
+        .map(|kind| {
+            serde_json::to_value(kind)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+        assert_eq!(names, ["merge", "rebase", "cherryPick", "revert"]);
+    }
+
+    #[test]
+    fn 모든_conflict_kind_이름이_계약과_같다() {
+        let names: Vec<String> = [
+            ConflictKind::BothModified,
+            ConflictKind::BothAdded,
+            ConflictKind::DeletedByUs,
+            ConflictKind::DeletedByThem,
+            ConflictKind::BothDeleted,
+        ]
+        .iter()
+        .map(|kind| {
+            serde_json::to_value(kind)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+        assert_eq!(
+            names,
+            [
+                "bothModified",
+                "bothAdded",
+                "deletedByUs",
+                "deletedByThem",
+                "bothDeleted"
+            ]
+        );
+    }
+
+    #[test]
+    fn remote와_worktree도_camel_case로_나간다() {
+        let json = serde_json::to_value(RemoteInfo {
+            name: "origin".to_string(),
+            fetch_url: "https://example.com/a.git".to_string(),
+            push_url: "https://example.com/a.git".to_string(),
+        })
+        .unwrap();
+        assert_eq!(json["fetchUrl"], "https://example.com/a.git");
+        assert_eq!(json["pushUrl"], "https://example.com/a.git");
+
+        let json = serde_json::to_value(WorktreeInfo {
+            path: "/repo".to_string(),
+            branch: Some("main".to_string()),
+            head: "abc".to_string(),
+            is_main: true,
+            is_prunable: false,
+        })
+        .unwrap();
+        assert_eq!(json["isMain"], true);
+        assert_eq!(json["isPrunable"], false);
+
+        let json = serde_json::to_value(ConflictFile {
+            path: "a.txt".to_string(),
+            kind: ConflictKind::BothModified,
+            has_markers: true,
+        })
+        .unwrap();
+        assert_eq!(json["hasMarkers"], true);
+    }
+
+    /// tauri가 command 인자를 camelCase로 받으므로 구조체 인자도 같은 표기로 들어온다.
+    #[test]
+    fn commit_options를_camel_case_json에서_읽는다() {
+        let options: CommitOptions = serde_json::from_str(
+            r#"{"message":"제목","amend":true,"signoff":false,
+                "gpgSign":true,"allowEmpty":false,"stageAll":true}"#,
+        )
+        .unwrap();
+
+        assert_eq!(options.message, "제목");
+        assert!(options.amend);
+        assert!(options.gpg_sign);
+        assert!(options.stage_all);
+        assert!(!options.allow_empty);
+
+        // snake_case로 오면 거부해야 한다. 조용히 기본값이 되면 GPG 서명이 사라진다.
+        assert!(serde_json::from_str::<CommitOptions>(
+            r#"{"message":"x","amend":false,"signoff":false,
+                "gpg_sign":true,"allow_empty":false,"stage_all":false}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rebase_step은_subject와_message가_없어도_읽힌다() {
+        let step: RebaseStep = serde_json::from_str(r#"{"sha":"abc","action":"pick"}"#).unwrap();
+        assert_eq!(step.sha, "abc");
+        assert_eq!(step.subject, "");
+        assert_eq!(step.message, None);
+
+        let step: RebaseStep = serde_json::from_str(
+            r#"{"sha":"abc","action":"reword","subject":"원래 제목","message":"새 제목"}"#,
+        )
+        .unwrap();
+        assert_eq!(step.message.as_deref(), Some("새 제목"));
     }
 }

@@ -780,12 +780,20 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
     }
 
     case "git_discard": {
-      const command = ["restore", "--", ...files];
+      // area="worktree"는 staged 변경을 살린다. "all"은 인덱스까지 되돌린다
+      const area = strArg(payload, "area") === "worktree" ? "worktree" : "all";
+      const command =
+        area === "worktree"
+          ? ["restore", "--", ...files]
+          : ["restore", "--source=HEAD", "--staged", "--worktree", "--", ...files];
       if (shouldFail(cmd)) {
         return fail(command, "error: unable to discard");
       }
       removeFiles(wipStore.unstaged, files);
       removeFiles(wipStore.untracked, files);
+      if (area === "all") {
+        removeFiles(wipStore.staged, files);
+      }
       return ok(command);
     }
 

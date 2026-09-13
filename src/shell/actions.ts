@@ -8,6 +8,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import type {
   CommitOptions,
+  DiscardArea,
   OpResult,
   PendingKind,
   PullMode,
@@ -18,11 +19,14 @@ import * as api from "./api";
 import type { ConfirmSpec } from "./Dialogs";
 import type { ToastProps } from "./Toast";
 
+// ConfirmSpec의 단일 출처는 Dialogs.tsx다. 여기서 또 정의하면 ui-actions가 필드를
+// 늘렸을 때 두 정의가 조용히 갈라진다. 기존 import 경로를 지키려고 재수출만 한다.
 export type { ConfirmSpec };
 
 /**
  * 쓰기 결과 알림. Toast가 그리는 데 필요한 것에서 셸이 채우는 두 가지를 뺀 것이다.
  * onClose는 토스트 스택이, onRunInTerminal은 RepoWorkspace가 붙인다.
+ * 같은 이유로 여기서 필드를 다시 나열하지 않는다.
  */
 export type ToastSpec = Omit<ToastProps, "onClose" | "onRunInTerminal">;
 
@@ -34,7 +38,12 @@ export interface RepoActions {
   // 스테이징
   stage(files: string[]): Promise<void>;
   unstage(files: string[]): Promise<void>;
-  discard(files: string[]): Promise<void>;
+  /**
+   * area를 생략하면 "all" (마지막 커밋 상태로 전부 되돌리기)이다.
+   * 계약이 area를 추가했지만 rust와 ui-wip이 아직 안 넘기고 있어 기본값을 지금 동작에 맞췄다.
+   * 선택 인자라 discard(files)만 부르는 WipActions도 구조적으로 그대로 만족한다.
+   */
+  discard(files: string[], area?: DiscardArea): Promise<void>;
   stageAll(): Promise<void>;
   unstageAll(): Promise<void>;
   applyPatch(patch: string, cached: boolean, reverse: boolean): Promise<void>;
@@ -200,14 +209,15 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }
 
         if (!result.ok) {
-          const detail = (result.stderr.trim() || result.stdout.trim() || "").slice(0, 4000);
-          // 실패 토스트는 durationMs를 주지 않는다. git stderr는 사용자가 읽고
-          // 판단해야 하는 유일한 단서라 자동으로 사라지면 안 된다
+          const detail = (result.stderr.trim() || result.stdout.trim() || "").slice(0, 2000);
+          // stderr는 message에 이어붙이지 않고 따로 넘긴다. 토스트가 접히는 영역에
+          // 등폭으로 원문을 보존해야 사용자가 git 메시지를 그대로 읽고 복사한다.
+          // durationMs를 주지 않으므로 실패 토스트는 사용자가 닫을 때까지 남는다
           o.toast({
             message: spec.failure,
             tone: "error",
             copyable: true,
-            stderr: detail,
+            stderr: detail === "" ? undefined : detail,
             command: result.command,
             needsAuth: result.needsAuth,
           });
@@ -260,19 +270,22 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           call: () => api.gitUnstage(path, files),
         }),
 
-      discard: (files) =>
+      discard: (files, area = "all") =>
         run({
           success: `Discarded ${fileWord(files.length)}`,
           failure: "Discard failed",
           confirm: {
             title: "Discard changes?",
-            body: "Local changes will be thrown away. Untracked files among them are deleted from disk.",
+            body:
+              area === "worktree"
+                ? "Unstaged changes will be thrown away. Anything already staged is kept. Untracked files among them are deleted from disk."
+                : "Local changes will be thrown away, staged and unstaged alike. Untracked files among them are deleted from disk.",
             undo: "This cannot be undone. Uncommitted changes are not stored anywhere, not even in the reflog.",
             scope: fileWord(files.length),
             confirmLabel: "Discard",
             danger: true,
           },
-          call: () => api.gitDiscard(path, files),
+          call: () => api.gitDiscard(path, files, area),
         }),
 
       stageAll: () =>

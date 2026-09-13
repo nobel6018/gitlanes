@@ -17,9 +17,10 @@ export interface ConfirmSpec {
   /** 되돌리는 방법 한 줄. 되돌릴 수 없으면 그렇게 적는다 */
   undo: string;
   /** 영향 범위. "12 files" 같은 것. 없으면 null */
-  scope: string | null;
+  scope?: string | null;
   confirmLabel: string;
-  danger: boolean;
+  /** 되돌릴 수 없는 작업. 확인 버튼이 빨개지고 포커스가 취소로 간다 */
+  danger?: boolean;
 }
 
 export interface ConfirmDialogProps {

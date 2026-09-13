@@ -199,6 +199,12 @@ function writeFlag(key: string, value: boolean): void {
 /** 한 번에 쌓아 둘 토스트 수. 넘치면 오래된 것부터 밀어낸다 */
 const MAX_TOASTS = 4;
 
+/** PTY 세션이 열리기를 기다리는 시간(ms). 넘으면 클립보드로 넘어간다 */
+const TERM_SESSION_WAIT_MS = 3000;
+
+/** 세션이 열린 직후 프롬프트가 그려질 틈(ms). 너무 이르면 첫 글자가 먹힌다 */
+const TERM_WRITE_DELAY_MS = 120;
+
 /**
  * 예전 showError 호출부(그래프 로드 실패, 클립보드 실패 등)가 쓰는 수명.
  * v0.18 Toast는 durationMs를 생략하면 error를 자동으로 지우지 않는데, 이런 짧은
@@ -458,12 +464,16 @@ export function RepoWorkspace({
   const wipRef = useRef<WipInfo | null>(null);
   /** 콜백 안에서 최신 레포를 읽는다 (refreshAll의 의존성을 레포에 묶지 않기 위함) */
   const repoRef = useRef<RepoInfo | null>(null);
-  /**
-   * 하단 터미널의 PTY 세션 id. Terminal.tsx가 자기 세션을 안에서만 들고 있어
-   * 아직 위로 올라오지 않는다. onSession prop이 생기면 여기에 채운다.
-   * 그때까지 인증 핸드오프는 클립보드 폴백으로 동작한다.
-   */
+  /** 하단 터미널의 PTY 세션 id (Terminal의 onSession). 없으면 null */
   const termSessionRef = useRef<string | null>(null);
+  /**
+   * 세션이 열리기 전에 눌린 "Run in terminal" 명령.
+   * 터미널을 한 번도 연 적이 없으면 term_open이 끝나기 전에 클릭이 들어오므로,
+   * 여기 담아 뒀다가 세션이 올라오는 순간 흘려보낸다
+   */
+  const pendingTermCommand = useRef<string | null>(null);
+  /** 세션을 기다리다 포기하고 클립보드로 넘어가는 타이머 */
+  const termWaitTimer = useRef<number | null>(null);
   /** 진행 중인 sync/conflict 요청 번호. 늦게 온 응답을 버린다 */
   const syncReq = useRef(0);
   /** Repository 메뉴 카운터의 직전 값 */
@@ -932,25 +942,25 @@ export function RepoWorkspace({
     [pendingConfirm],
   );
 
-  /**
-   * 인증 핸드오프. 비대화식 git은 패스프레이즈를 물을 수 없으므로
-   * 같은 명령을 내장 PTY에 그대로 넘겨 사용자가 직접 답하게 한다.
-   *
-   * Terminal.tsx가 세션 id를 위로 올려주지 않아(onSession prop 미구현)
-   * 지금은 클립보드 폴백으로 동작한다. termSessionRef가 채워지면 자동으로 직접 실행으로 바뀐다.
-   */
-  const runInTerminal = useCallback(
-    (command: string[]) => {
-      const line = formatCommand(command);
-      setTerminalOpen(true);
+  /** 세션이 살아 있으면 즉시 써 넣는다. 성공하면 true */
+  const writeToTerminal = useCallback(
+    (line: string): boolean => {
       const id = termSessionRef.current;
-      if (id !== null) {
-        termWrite(id, `${line}\n`).catch((err: unknown) => showError(errorMessage(err)));
-        return;
+      if (id === null) {
+        return false;
       }
-      void copyText(line).then((ok) => {
+      termWrite(id, `${line}\n`).catch((err: unknown) => showError(errorMessage(err)));
+      return true;
+    },
+    [showError],
+  );
+
+  /** PTY가 없는 환경(하네스 등)에서의 마지막 수단 */
+  const fallbackToClipboard = useCallback(
+    (line: string) => {
+      void copyText(line).then((copied) => {
         showToast(
-          ok
+          copied
             ? "Command copied. Paste it into the terminal below and answer the prompt."
             : `Run this in the terminal below: ${line}`,
           "info",
@@ -958,10 +968,73 @@ export function RepoWorkspace({
         );
       });
     },
-    [showToast, showError],
+    [showToast],
+  );
+
+  /**
+   * 인증 핸드오프. 비대화식 git은 패스프레이즈를 물을 수 없으므로
+   * 같은 명령을 내장 PTY에 그대로 넘겨 사용자가 자기 셸에서 답하게 한다.
+   *
+   * 터미널을 한 번도 연 적이 없으면 term_open이 아직 안 끝났다. 그 순간 클립보드로
+   * 떨어지면 "버튼을 눌렀는데 아무 일도 안 일어난 것처럼" 보이므로, 세션을 잠깐 기다린다.
+   */
+  const runInTerminal = useCallback(
+    (command: string[]) => {
+      const line = formatCommand(command);
+      setTerminalOpen(true);
+      if (writeToTerminal(line)) {
+        return;
+      }
+      pendingTermCommand.current = line;
+      if (termWaitTimer.current !== null) {
+        window.clearTimeout(termWaitTimer.current);
+      }
+      termWaitTimer.current = window.setTimeout(() => {
+        termWaitTimer.current = null;
+        const queued = pendingTermCommand.current;
+        if (queued === null) {
+          return;
+        }
+        pendingTermCommand.current = null;
+        fallbackToClipboard(queued);
+      }, TERM_SESSION_WAIT_MS);
+    },
+    [writeToTerminal, fallbackToClipboard],
   );
 
   runInTerminalRef.current = runInTerminal;
+
+  /** Terminal이 세션 id를 올려주면 대기 중인 명령을 흘려보낸다 */
+  const handleTermSession = useCallback(
+    (id: string | null) => {
+      termSessionRef.current = id;
+      if (id === null || pendingTermCommand.current === null) {
+        return;
+      }
+      const line = pendingTermCommand.current;
+      pendingTermCommand.current = null;
+      if (termWaitTimer.current !== null) {
+        window.clearTimeout(termWaitTimer.current);
+        termWaitTimer.current = null;
+      }
+      // 셸이 프롬프트를 그리기 전에 쓰면 첫 글자가 먹히는 경우가 있어 한 프레임 뒤에 보낸다
+      window.setTimeout(() => {
+        if (!writeToTerminal(line)) {
+          fallbackToClipboard(line);
+        }
+      }, TERM_WRITE_DELAY_MS);
+    },
+    [writeToTerminal, fallbackToClipboard],
+  );
+
+  // 탭이 사라질 때 대기 타이머를 정리한다
+  useEffect(() => {
+    return () => {
+      if (termWaitTimer.current !== null) {
+        window.clearTimeout(termWaitTimer.current);
+      }
+    };
+  }, []);
 
   /** 충돌이 생기면 WIP 패널을 열고 배너를 다시 펴준다 */
   const handleConflicts = useCallback((files: string[]) => {
@@ -2337,7 +2410,12 @@ export function RepoWorkspace({
         )}
         {/* 헤더(레포 경로 + ×)는 Terminal이 직접 그린다. 여기서 또 두지 않는다.
             탭이 살아있는 동안 언마운트하지 않는다 (PTY 세션 유지) — visible로만 토글 */}
-        <Terminal repoPath={repo.path} visible={terminalOpen} onClose={closeTerminal} />
+        <Terminal
+          repoPath={repo.path}
+          visible={terminalOpen}
+          onClose={closeTerminal}
+          onSession={handleTermSession}
+        />
       </div>
 
       <footer className="statusbar">

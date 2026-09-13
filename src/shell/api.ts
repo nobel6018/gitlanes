@@ -4,6 +4,7 @@ import type {
   CommitDetails,
   CommitOptions,
   ConflictFile,
+  DiscardArea,
   GraphData,
   OpResult,
   PendingKind,
@@ -172,9 +173,17 @@ export function gitUnstage(path: string, files: string[]): Promise<OpResult> {
   return invoke<OpResult>("git_unstage", { path, files });
 }
 
-/** 추적 파일은 restore, untracked는 삭제. 되돌릴 수 없다 */
-export function gitDiscard(path: string, files: string[]): Promise<OpResult> {
-  return invoke<OpResult>("git_discard", { path, files });
+/**
+ * 추적 파일은 restore, untracked는 삭제. 되돌릴 수 없다.
+ * area="worktree"는 인덱스 기준으로 워킹트리만 되돌려 staged 변경을 살린다.
+ * area="all"은 마지막 커밋 상태로 전부 되돌린다.
+ */
+export function gitDiscard(
+  path: string,
+  files: string[],
+  area: DiscardArea,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_discard", { path, files, area });
 }
 
 export function gitStageAll(path: string): Promise<OpResult> {
