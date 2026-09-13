@@ -2,6 +2,7 @@
 // 계약의 edges 의미("row i와 row i+1 사이 구간의 모든 선분")를 그대로 지킨다.
 import { LANE_COLORS } from "../constants";
 import type { CommitRow, Edge, GraphData, RefInfo, StashInfo } from "../types";
+import type { RefDragPayload } from "./refDrag";
 
 /** mulberry32. 렌더마다 같은 그래프가 나오도록 시드를 고정한다 */
 function makeRandom(seed: number): () => number {
@@ -357,7 +358,54 @@ export function makeMockGraph(rowCount: number): GraphData {
     // 결정적 규칙: 행 수가 홀수면 워킹 디렉토리가 더러운 상태로 본다
     wip:
       rowCount % 2 === 1
-        ? { changedFiles: 3 + (rowCount % 7), stagedFiles: rowCount % 4 }
+        ? {
+            changedFiles: 3 + (rowCount % 7),
+            stagedFiles: rowCount % 4,
+            untrackedFiles: rowCount % 3,
+          }
         : null,
+  };
+}
+
+/**
+ * 쓰기 작업 UI(드롭 타깃, 진행 중 표시, WIP 배지)를 눈으로 확인하기 위한 시나리오.
+ * makeMockGraph는 행 수의 홀짝으로 WIP 유무를 정하는데, 여기서는 그 규칙에 맡기지 않고
+ * staged와 unstaged가 둘 다 0이 아니게 못 박아 배지 3종이 항상 한 화면에 나오게 한다.
+ */
+export interface MockScenario {
+  data: GraphData;
+  /** 드롭 후보 강조를 확인할 커밋 sha. dropTargetSha prop에 그대로 넣는다 */
+  dropTargetSha: string;
+  /** 진행 중 이중 링을 확인할 커밋 sha. pendingSha prop에 그대로 넣는다 */
+  pendingSha: string;
+  /** ui-sidebar가 dataTransfer에 싣는 것과 같은 모양의 payload(JSON 문자열) */
+  dragPayload: string;
+}
+
+/** 강조 대상으로 고를 행. 스크롤 없이 한 화면에 같이 보이는 위치다 */
+const SCENARIO_DROP_ROW = 6;
+const SCENARIO_PENDING_ROW = 3;
+
+export function makeMockScenario(rowCount: number): MockScenario {
+  const data = makeMockGraph(rowCount);
+  // 배지 3종이 항상 한 화면에 나오도록 못 박는다. unstaged는 7 - 3 - 2 = 2로 떨어진다
+  data.wip = { changedFiles: 7, stagedFiles: 3, untrackedFiles: 2 };
+
+  const pick = (index: number): string => {
+    const row = data.rows[Math.min(index, data.rows.length - 1)];
+    return row ? row.sha : "";
+  };
+
+  const payload: RefDragPayload = {
+    kind: "localBranch",
+    name: "feature/lane-colors",
+    sha: pick(0),
+  };
+
+  return {
+    data,
+    dropTargetSha: pick(SCENARIO_DROP_ROW),
+    pendingSha: pick(SCENARIO_PENDING_ROW),
+    dragPayload: JSON.stringify(payload),
   };
 }

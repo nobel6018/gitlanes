@@ -1,5 +1,9 @@
-// 머지/풀/팝 이후 충돌 안내 배너. 툴바 아래 가로로 놓인다.
-// 계약: CONTRACTS.md v0.15 — ConflictBanner({ files, onOpenWip, onDismiss })
+// v0.18부터 충돌 UI의 본체는 ConflictPanel이다. 이 배너는 PendingOp를 아직 못 읽는
+// 경로(예: get_sync_state 폴링 전)에서 파일 목록만으로 알리는 얇은 래퍼로 남긴다.
+// 계약: CONTRACTS.md v0.18 ui-actions.
+import type { ConflictFile, PendingOp } from "../types";
+import { ConflictPanel } from "./ConflictPanel";
+import type { ConflictActions } from "./ConflictPanel";
 import "./panels.css";
 
 export interface ConflictBannerProps {
@@ -8,12 +12,30 @@ export interface ConflictBannerProps {
   /** 배너 클릭 시 WIP 패널 열기 */
   onOpenWip: () => void;
   onDismiss: () => void;
+  /** 있으면 ConflictPanel을 그대로 그린다 */
+  pending?: PendingOp | null;
+  actions?: ConflictActions;
 }
 
 /** 경로 칩으로 보여줄 최대 개수. 나머지는 "+N" */
 const MAX_CHIPS = 5;
 
-export function ConflictBanner({ files, onOpenWip, onDismiss }: ConflictBannerProps) {
+export function ConflictBanner({
+  files,
+  onOpenWip,
+  onDismiss,
+  pending,
+  actions,
+}: ConflictBannerProps) {
+  if (pending != null && actions !== undefined) {
+    const detailed: ConflictFile[] = files.map((path) => ({
+      path,
+      kind: "bothModified",
+      hasMarkers: true,
+    }));
+    return <ConflictPanel pending={pending} files={detailed} actions={actions} />;
+  }
+
   if (files.length === 0) {
     return null;
   }
@@ -28,7 +50,7 @@ export function ConflictBanner({ files, onOpenWip, onDismiss }: ConflictBannerPr
       </span>
       <button className="cfb-main" onClick={onOpenWip} title="Open the WIP panel">
         <span className="cfb-text">
-          {files.length}개 파일 충돌 - 편집기에서 해결한 뒤 커밋하세요
+          {files.length} conflicted files - resolve them, then continue
         </span>
         <span className="cfb-files">
           {shown.map((file) => (

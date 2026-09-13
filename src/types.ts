@@ -69,6 +69,8 @@ export interface WipInfo {
   changedFiles: number;
   /** 그중 staged 파일 수 */
   stagedFiles: number;
+  /** 그중 추적되지 않는 새 파일 수. v0.18에서 추가, 그래프 WIP 배지 3분할용 */
+  untrackedFiles: number;
 }
 
 /** 스태시 항목. 그래프에서 base 커밋 위에 의사 행으로 표시 */

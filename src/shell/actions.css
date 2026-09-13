@@ -1,0 +1,853 @@
+/* ============================================================
+   v0.18 ui-actions: 툴바 액션 그룹 / 폼 다이얼로그 / 충돌 패널 /
+   인터랙티브 리베이스 에디터 / 토스트 스택.
+   색은 theme.css 변수만 쓴다. 새 색을 하드코딩하지 않는다.
+   ============================================================ */
+
+/* ---------- 툴바 액션 그룹 ---------- */
+
+.act-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding-left: 6px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border-1);
+}
+
+.act-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* 본체 + ▾ 를 하나의 테두리처럼 붙여 보이게 한다 (GitKraken 분할 버튼) */
+.act-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px 0 0 4px;
+  border-right-width: 0;
+  color: var(--fg-1);
+  background: transparent;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+/* 드롭다운이 없는 단독 버튼은 양쪽 모서리를 다 둥글게 */
+.act-main.solo {
+  border-radius: 4px;
+  border-right-width: 1px;
+}
+
+.act-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-1);
+  border-radius: 0 4px 4px 0;
+  color: var(--fg-2);
+  background: transparent;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.act-main:hover:not(:disabled),
+.act-caret:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.act-caret.open {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.act-main:disabled,
+.act-caret:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.act-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 좁은 툴바에서는 글자를 접고 아이콘만 남긴다 */
+.act-group.compact .act-label {
+  display: none;
+}
+
+.act-group.compact .act-main {
+  padding: 0 6px;
+}
+
+/* ahead/behind 배지 */
+.act-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+}
+
+.act-badge.warn {
+  background: var(--modified);
+  color: var(--bg-content);
+}
+
+/* upstream이 없을 때의 힌트 */
+.act-hint {
+  color: var(--fg-2);
+  font-size: 10px;
+  font-style: italic;
+}
+
+/* ---------- 드롭다운 메뉴 ---------- */
+
+.act-menu {
+  position: absolute;
+  top: 29px;
+  right: 0;
+  z-index: 80;
+  min-width: 240px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-1);
+  border-radius: 6px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+}
+
+.act-menu-item {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-1);
+  text-align: left;
+  font-size: 12px;
+}
+
+.act-menu-item:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.act-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.act-menu-item.danger,
+.act-menu-item.danger:hover:not(:disabled) {
+  color: var(--deleted);
+}
+
+.act-menu-item.on .act-menu-label::after {
+  content: " \2713";
+  color: var(--accent);
+}
+
+.act-menu-label {
+  display: block;
+  font-weight: 600;
+}
+
+.act-menu-hint {
+  display: block;
+  margin-top: 1px;
+  color: var(--fg-2);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.act-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-1);
+}
+
+/* ---------- 폼 다이얼로그 공통 ---------- */
+
+.dlg.wide {
+  width: min(560px, calc(100vw - 48px));
+}
+
+.dlg-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.dlg-head .dlg-title {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+.dlg-x {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.dlg-x:hover {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.dlg-field {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.dlg-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.dlg-row > .dlg-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dlg-select {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  background: var(--bg-content);
+  color: var(--fg-1);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.dlg-textarea {
+  min-height: 72px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  background: var(--bg-content);
+  color: var(--fg-1);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  resize: vertical;
+  outline: none;
+}
+
+.dlg-textarea:focus,
+.dlg-select:focus {
+  border-color: var(--accent);
+}
+
+.dlg-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.dlg-check input {
+  margin: 2px 0 0;
+}
+
+.dlg-check-note {
+  display: block;
+  margin-top: 1px;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.dlg-note {
+  margin-top: 6px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.dlg-ok {
+  margin-top: 4px;
+  color: var(--added);
+  font-size: 11.5px;
+}
+
+.dlg-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* 접히는 고급 옵션 */
+.dlg-more {
+  margin-top: 8px;
+}
+
+.dlg-more > summary {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.dlg-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.dlg-more > summary::before {
+  content: "\25B8 ";
+}
+
+.dlg-more[open] > summary::before {
+  content: "\25BE ";
+}
+
+/* ---------- 라디오 목록 (reset mode 등) ---------- */
+
+.dlg-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 6px 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.dlg-radio:hover {
+  background: var(--hover-bg);
+}
+
+.dlg-radio.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dlg-radio.on.danger {
+  border-color: var(--deleted);
+  background: var(--deleted-bg);
+}
+
+.dlg-radio input {
+  margin: 3px 0 0;
+}
+
+.dlg-radio-title {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.dlg-radio-note {
+  display: block;
+  margin-top: 1px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.dlg-radio.on.danger .dlg-radio-note {
+  color: var(--fg-1);
+}
+
+/* ---------- 확인 다이얼로그 (파괴적 작업) ---------- */
+
+.cd-body {
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.cd-scope {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 1px 7px;
+  border: 1px solid var(--border-1);
+  border-radius: 9px;
+  color: var(--fg-1);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.cd-undo {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  background: var(--bg-content);
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.cd-undo.danger {
+  background: var(--deleted-bg);
+  color: var(--fg-1);
+}
+
+.cd-undo-key {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--fg-1);
+}
+
+/* ---------- 충돌 패널 ---------- */
+
+.cfp {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-1);
+}
+
+.cfp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--deleted-bg);
+  border-bottom: 1px solid var(--border-1);
+}
+
+.cfp-head.clean {
+  background: var(--added-bg);
+}
+
+.cfp-kind {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cfp-progress {
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--bg-content);
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cfp-summary {
+  flex: 1 1 auto;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cfp-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.cfp-btn {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-1);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.cfp-btn:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.cfp-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cfp-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.cfp-btn.danger {
+  color: var(--deleted);
+  border-color: var(--deleted);
+}
+
+.cfp-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.cfp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border-0);
+}
+
+.cfp-row:last-child {
+  border-bottom: 0;
+}
+
+.cfp-row.done {
+  opacity: 0.65;
+}
+
+.cfp-mark {
+  flex: 0 0 14px;
+  text-align: center;
+  color: var(--deleted);
+  font-weight: 700;
+}
+
+.cfp-row.done .cfp-mark {
+  color: var(--added);
+}
+
+.cfp-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  direction: rtl;
+  text-align: left;
+}
+
+.cfp-tag {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.cfp-row-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.cfp-mini {
+  height: 21px;
+  padding: 0 7px;
+  border: 1px solid var(--border-1);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.cfp-mini:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--fg-1);
+}
+
+.cfp-mini:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.cfp-empty {
+  padding: 10px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+/* ---------- 인터랙티브 리베이스 에디터 ---------- */
+
+.ov-backdrop.rbe-backdrop {
+  align-items: center;
+  justify-content: center;
+}
+
+.rbe {
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-1);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.rbe-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  margin-top: 8px;
+  border: 1px solid var(--border-1);
+  border-radius: 6px;
+  background: var(--bg-content);
+}
+
+.rbe-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-0);
+}
+
+.rbe-row:last-of-type {
+  border-bottom: 0;
+}
+
+.rbe-row.dragging {
+  opacity: 0.4;
+}
+
+.rbe-row.over {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+
+.rbe-row.dropped .rbe-subject {
+  text-decoration: line-through;
+  color: var(--fg-2);
+}
+
+.rbe-row.dropped {
+  opacity: 0.55;
+}
+
+/* squash/fixup은 위 커밋으로 접힌다는 걸 들여쓰기 + 연결선으로 보인다 */
+.rbe-row.folded {
+  padding-left: 26px;
+  position: relative;
+}
+
+.rbe-row.folded::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 0;
+  bottom: 50%;
+  border-left: 1px solid var(--accent);
+  border-bottom: 1px solid var(--accent);
+  width: 8px;
+}
+
+.rbe-grip {
+  flex: 0 0 auto;
+  width: 14px;
+  color: var(--fg-2);
+  cursor: grab;
+  text-align: center;
+  user-select: none;
+}
+
+.rbe-action {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--border-1);
+  border-radius: 3px;
+  background: var(--bg-panel);
+  color: var(--fg-1);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+}
+
+.rbe-sha {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.rbe-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.rbe-reword {
+  padding: 0 8px 8px 48px;
+  border-bottom: 1px solid var(--border-0);
+}
+
+.rbe-reword textarea {
+  width: 100%;
+  min-height: 56px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+  outline: none;
+}
+
+.rbe-reword textarea:focus {
+  border-color: var(--accent);
+}
+
+.rbe-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.rbe-why {
+  flex: 1 1 auto;
+  color: var(--deleted);
+  font-size: 11.5px;
+}
+
+/* ---------- 토스트 스택 (우하단) ---------- */
+
+.toast-stack {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(520px, calc(100vw - 28px));
+  pointer-events: none;
+}
+
+.toast-stack > * {
+  pointer-events: auto;
+}
+
+/* 스택 안에서는 중앙 상단 고정 규칙을 끈다 */
+.toast-stack .toast {
+  position: static;
+  left: auto;
+  top: auto;
+  transform: none;
+  width: 100%;
+  max-width: none;
+  animation: gl-toast-rise 160ms ease-out;
+}
+
+@keyframes gl-toast-rise {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.toast.success {
+  border-color: var(--added);
+}
+
+.toast.success .toast-icon {
+  background: var(--added);
+}
+
+.toast-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.toast-title {
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.toast-details {
+  margin-top: 5px;
+}
+
+.toast-details > summary {
+  color: var(--fg-2);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.toast-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.toast-details > summary::before {
+  content: "\25B8 ";
+}
+
+.toast-details[open] > summary::before {
+  content: "\25BE ";
+}
+
+.toast-stderr {
+  margin: 5px 0 0;
+  padding: 6px 7px;
+  max-height: 34vh;
+  overflow: auto;
+  border-radius: 4px;
+  background: var(--bg-content);
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.toast-cmd {
+  margin-top: 5px;
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  word-break: break-all;
+}
+
+.toast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.toast-run {
+  padding: 3px 8px;
+  border: 1px solid var(--modified);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--modified);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.toast-run:hover {
+  background: var(--hover-bg);
+}
