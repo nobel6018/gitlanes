@@ -218,6 +218,11 @@ mod tests {
         lines_of(&git::run(repo.path(), &["diff", "--cached", "--name-only"]).unwrap())
     }
 
+    /// 인덱스에 올라가지 않은 추적 파일 변경. `git diff`와 같다.
+    fn unstaged_files(repo: &TempRepo) -> Vec<String> {
+        lines_of(&git::run(repo.path(), &["diff", "--name-only"]).unwrap())
+    }
+
     fn exists(repo: &TempRepo, name: &str) -> bool {
         std::path::Path::new(&repo.path()).join(name).exists()
     }
@@ -336,6 +341,10 @@ mod tests {
         );
         repo.write("a.txt", "3\n");
 
+        // 시작 상태 확인: 같은 파일이 staged와 unstaged 양쪽에 있다
+        assert_eq!(staged_files(&repo), ["a.txt"]);
+        assert_eq!(unstaged_files(&repo), ["a.txt"]);
+
         let result = git_discard(
             repo.path(),
             vec!["a.txt".to_string()],
@@ -344,20 +353,37 @@ mod tests {
         .unwrap();
         assert!(result.ok, "{result:?}");
 
-        // 워킹 트리가 인덱스로 돌아갔다. HEAD의 "1"이 아니라 스테이지한 "2"다.
-        assert_eq!(read(&repo, "a.txt"), "2\n");
+        // 인덱스는 그대로다. 여기가 --source=HEAD를 붙이면 깨지는 지점이다.
         assert_eq!(
             staged_files(&repo),
             ["a.txt"],
-            "스테이지된 변경이 살아 있어야 한다"
+            "worktree 모드가 스테이지된 변경을 지웠다"
+        );
+        // 워킹 트리 쪽 변경만 사라졌다
+        assert!(
+            unstaged_files(&repo).is_empty(),
+            "unstaged 변경이 남았다: {:?}",
+            unstaged_files(&repo)
+        );
+        // 파일은 HEAD의 "1"이 아니라 스테이지한 "2"다
+        assert_eq!(read(&repo, "a.txt"), "2\n");
+
+        // 같은 상황에 all을 걸면 양쪽이 모두 사라진다
+        repo.write("a.txt", "3\n");
+        assert_eq!(
+            unstaged_files(&repo),
+            ["a.txt"],
+            "다시 양쪽에 변경을 만든다"
         );
 
-        // 같은 상황에 all을 걸면 스테이지된 변경까지 사라진다
-        repo.write("a.txt", "3\n");
         let all = git_discard(repo.path(), vec!["a.txt".to_string()], "all".to_string()).unwrap();
         assert!(all.ok, "{all:?}");
+        assert!(staged_files(&repo).is_empty(), "all인데 인덱스가 남았다");
+        assert!(
+            unstaged_files(&repo).is_empty(),
+            "all인데 워킹 트리가 남았다"
+        );
         assert_eq!(read(&repo, "a.txt"), "1\n");
-        assert!(staged_files(&repo).is_empty());
     }
 
     #[test]
