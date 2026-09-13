@@ -46,22 +46,22 @@ pub fn git_stash_push(
 
 /// `drop=true`가 pop이다. 충돌하면 `conflicts`가 채워지고 스태시는 남는다.
 #[tauri::command]
-pub fn git_stash_apply(path: String, reference: String, drop: bool) -> Result<OpResult, String> {
-    let reference = validate_stash_ref(&reference)?;
+pub fn git_stash_apply(path: String, r#ref: String, drop: bool) -> Result<OpResult, String> {
+    let reference = validate_stash_ref(&r#ref)?;
     let verb = if drop { "pop" } else { "apply" };
     run_op(&path, &["stash", verb, reference.as_str()], LOCAL_TIMEOUT)
 }
 
 #[tauri::command]
-pub fn git_stash_drop(path: String, reference: String) -> Result<OpResult, String> {
-    let reference = validate_stash_ref(&reference)?;
+pub fn git_stash_drop(path: String, r#ref: String) -> Result<OpResult, String> {
+    let reference = validate_stash_ref(&r#ref)?;
     run_op(&path, &["stash", "drop", reference.as_str()], LOCAL_TIMEOUT)
 }
 
 /// 스태시를 새 브랜치로 꺼낸다. 스태시를 만든 시점의 커밋에서 갈라져 나오므로 충돌이 없다.
 #[tauri::command]
-pub fn git_stash_branch(path: String, reference: String, name: String) -> Result<OpResult, String> {
-    let reference = validate_stash_ref(&reference)?;
+pub fn git_stash_branch(path: String, r#ref: String, name: String) -> Result<OpResult, String> {
+    let reference = validate_stash_ref(&r#ref)?;
     let name = validate_ref_name(&path, &name)?;
     run_op(
         &path,
@@ -71,6 +71,10 @@ pub fn git_stash_branch(path: String, reference: String, name: String) -> Result
 }
 
 /// `stash@{N}` 형태만 받는다.
+///
+/// 인자 이름이 `r#ref`인 이유는 계약(`types.ts`)이 `ref`로 못 박았기 때문이다. Rust
+/// 예약어라 raw 식별자를 쓰는데, tauri가 인자 이름에서 `r#`를 떼고 camelCase로 바꾸므로
+/// 프론트에는 그대로 `ref`로 보인다.
 ///
 /// 여기는 `check-ref-format`을 쓰지 않는다. `stash@{0}`은 브랜치 이름 규칙에서 `@{`가
 /// 금지라 무조건 거부당한다. 형태가 좁고 고정이라 직접 본다.

@@ -542,3 +542,173 @@ mod tests {
         assert!(json.get("wip").unwrap().is_null(), "깨끗하면 null이다");
     }
 }
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    /// 필드 이름 하나가 어긋나면 프론트에서 `undefined`가 되고, 그건 런타임에야 드러난다.
+    /// serde 속성은 컴파일러가 검사하지 않으므로 직렬화 결과를 직접 본다.
+    #[test]
+    fn op_result가_camel_case로_나간다() {
+        let json = serde_json::to_value(OpResult {
+            ok: false,
+            stdout: String::new(),
+            stderr: "Permission denied (publickey).".to_string(),
+            conflicts: vec!["a.txt".to_string()],
+            command: vec!["push".to_string(), "origin".to_string()],
+            needs_auth: true,
+        })
+        .unwrap();
+
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["needsAuth"], true);
+        assert_eq!(json["command"][0], "push");
+        assert_eq!(json["conflicts"][0], "a.txt");
+        assert!(json.get("needs_auth").is_none(), "snake_case가 새어 나갔다");
+    }
+
+    #[test]
+    fn sync_state의_pending이_계약대로_직렬화된다() {
+        let json = serde_json::to_value(SyncState {
+            branch: None,
+            upstream: Some("origin/main".to_string()),
+            ahead: 3,
+            behind: 1,
+            stash_count: 2,
+            pending: Some(PendingOp {
+                kind: PendingKind::CherryPick,
+                progress: Some("3/12".to_string()),
+                conflict_count: 1,
+                detail: None,
+            }),
+        })
+        .unwrap();
+
+        assert_eq!(json["branch"], serde_json::Value::Null);
+        assert_eq!(json["stashCount"], 2);
+        // PendingKind는 프론트가 그대로 git_pending_action에 되돌려 보낸다
+        assert_eq!(json["pending"]["kind"], "cherryPick");
+        assert_eq!(json["pending"]["progress"], "3/12");
+        assert_eq!(json["pending"]["conflictCount"], 1);
+        assert_eq!(json["pending"]["detail"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn 모든_pending_kind_이름이_계약과_같다() {
+        let names: Vec<String> = [
+            PendingKind::Merge,
+            PendingKind::Rebase,
+            PendingKind::CherryPick,
+            PendingKind::Revert,
+        ]
+        .iter()
+        .map(|kind| {
+            serde_json::to_value(kind)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+        assert_eq!(names, ["merge", "rebase", "cherryPick", "revert"]);
+    }
+
+    #[test]
+    fn 모든_conflict_kind_이름이_계약과_같다() {
+        let names: Vec<String> = [
+            ConflictKind::BothModified,
+            ConflictKind::BothAdded,
+            ConflictKind::DeletedByUs,
+            ConflictKind::DeletedByThem,
+            ConflictKind::BothDeleted,
+        ]
+        .iter()
+        .map(|kind| {
+            serde_json::to_value(kind)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+        assert_eq!(
+            names,
+            [
+                "bothModified",
+                "bothAdded",
+                "deletedByUs",
+                "deletedByThem",
+                "bothDeleted"
+            ]
+        );
+    }
+
+    #[test]
+    fn remote와_worktree도_camel_case로_나간다() {
+        let json = serde_json::to_value(RemoteInfo {
+            name: "origin".to_string(),
+            fetch_url: "https://example.com/a.git".to_string(),
+            push_url: "https://example.com/a.git".to_string(),
+        })
+        .unwrap();
+        assert_eq!(json["fetchUrl"], "https://example.com/a.git");
+        assert_eq!(json["pushUrl"], "https://example.com/a.git");
+
+        let json = serde_json::to_value(WorktreeInfo {
+            path: "/repo".to_string(),
+            branch: Some("main".to_string()),
+            head: "abc".to_string(),
+            is_main: true,
+            is_prunable: false,
+        })
+        .unwrap();
+        assert_eq!(json["isMain"], true);
+        assert_eq!(json["isPrunable"], false);
+
+        let json = serde_json::to_value(ConflictFile {
+            path: "a.txt".to_string(),
+            kind: ConflictKind::BothModified,
+            has_markers: true,
+        })
+        .unwrap();
+        assert_eq!(json["hasMarkers"], true);
+    }
+
+    /// tauri가 command 인자를 camelCase로 받으므로 구조체 인자도 같은 표기로 들어온다.
+    #[test]
+    fn commit_options를_camel_case_json에서_읽는다() {
+        let options: CommitOptions = serde_json::from_str(
+            r#"{"message":"제목","amend":true,"signoff":false,
+                "gpgSign":true,"allowEmpty":false,"stageAll":true}"#,
+        )
+        .unwrap();
+
+        assert_eq!(options.message, "제목");
+        assert!(options.amend);
+        assert!(options.gpg_sign);
+        assert!(options.stage_all);
+        assert!(!options.allow_empty);
+
+        // snake_case로 오면 거부해야 한다. 조용히 기본값이 되면 GPG 서명이 사라진다.
+        assert!(serde_json::from_str::<CommitOptions>(
+            r#"{"message":"x","amend":false,"signoff":false,
+                "gpg_sign":true,"allow_empty":false,"stage_all":false}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rebase_step은_subject와_message가_없어도_읽힌다() {
+        let step: RebaseStep = serde_json::from_str(r#"{"sha":"abc","action":"pick"}"#).unwrap();
+        assert_eq!(step.sha, "abc");
+        assert_eq!(step.subject, "");
+        assert_eq!(step.message, None);
+
+        let step: RebaseStep = serde_json::from_str(
+            r#"{"sha":"abc","action":"reword","subject":"원래 제목","message":"새 제목"}"#,
+        )
+        .unwrap();
+        assert_eq!(step.message.as_deref(), Some("새 제목"));
+    }
+}
