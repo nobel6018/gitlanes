@@ -1,9 +1,6 @@
 // 진행 중인 머지/리베이스/체리픽/리버트와 충돌 파일 해결 패널.
 // 계약: CONTRACTS.md v0.18 ui-actions. 워크스페이스 상단에 가로로 놓인다.
-import { useState } from "react";
 import type { ConflictFile, PendingKind, PendingOp } from "../types";
-import { ConfirmDialog } from "./Dialogs";
-import type { ConfirmSpec } from "./Dialogs";
 import "./actions.css";
 
 /** ui-hub RepoActions 중 충돌 패널이 쓰는 부분집합 */
@@ -64,8 +61,6 @@ export interface ConflictPanelProps {
 }
 
 export function ConflictPanel({ pending, files, actions, onOpenFile }: ConflictPanelProps) {
-  const [confirm, setConfirm] = useState<"abort" | "skip" | null>(null);
-
   if (pending === null) {
     return null;
   }
@@ -77,27 +72,13 @@ export function ConflictPanel({ pending, files, actions, onOpenFile }: ConflictP
   const allResolved = files.length === 0;
   const busy = actions.busy;
 
+  // abort/skip은 파괴적이지만 확인 다이얼로그를 여기서 띄우지 않는다.
+  // 파괴적 확인은 ui-hub의 RepoActions 한 곳에 모아 두는 게 이번 구조의 규칙이고
+  // (계약 6번이 git_pending_action(abort)를 확인 필수로 올려 뒀다),
+  // 양쪽이 다 띄우면 다이얼로그가 두 번 뜬다. 버튼의 위험 표시만 여기 남긴다.
   function run(task: Promise<void>) {
     void task.catch(() => undefined);
   }
-
-  const abortSpec: ConfirmSpec = {
-    title: `Abort ${KIND_LABEL[kind].toLowerCase()}`,
-    body: `Stops the ${kind === "cherryPick" ? "cherry-pick" : kind} and puts the working tree back to where it was before it started.`,
-    undo: "Cannot be undone. Any conflict resolution you have done in this operation is thrown away.",
-    scope: files.length > 0 ? `${files.length} conflicted files` : null,
-    confirmLabel: "Abort",
-    danger: true,
-  };
-
-  const skipSpec: ConfirmSpec = {
-    title: "Skip this commit",
-    body: "Drops the commit currently being replayed and moves on to the next one.",
-    undo: "The commit stays in the reflog, but it will not be part of the rebased branch.",
-    scope: pending.progress,
-    confirmLabel: "Skip commit",
-    danger: true,
-  };
 
   return (
     <div className="cfp">
@@ -135,7 +116,7 @@ export function ConflictPanel({ pending, files, actions, onOpenFile }: ConflictP
               className="cfp-btn"
               disabled={busy}
               title="Drop the commit being replayed and move on"
-              onClick={() => setConfirm("skip")}
+              onClick={() => run(actions.pendingAction("skip"))}
             >
               Skip commit
             </button>
@@ -144,7 +125,7 @@ export function ConflictPanel({ pending, files, actions, onOpenFile }: ConflictP
             className="cfp-btn danger"
             disabled={busy}
             title="Go back to the state before this operation started"
-            onClick={() => setConfirm("abort")}
+            onClick={() => run(actions.pendingAction("abort"))}
           >
             Abort
           </button>
@@ -207,17 +188,6 @@ export function ConflictPanel({ pending, files, actions, onOpenFile }: ConflictP
           ))}
         </div>
       )}
-
-      <ConfirmDialog
-        open={confirm !== null}
-        spec={confirm === "skip" ? skipSpec : abortSpec}
-        onCancel={() => setConfirm(null)}
-        onConfirm={() => {
-          const action = confirm === "skip" ? "skip" : "abort";
-          setConfirm(null);
-          run(actions.pendingAction(action));
-        }}
-      />
     </div>
   );
 }
