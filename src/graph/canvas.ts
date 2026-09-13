@@ -281,28 +281,41 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
 
     // 진행 중 작업: 정적인 이중 링. 애니메이션을 쓰면 rAF가 상시 돌아 배터리를 먹는다
     if (i === pendingRow) {
-      ctx.strokeStyle = PENDING_COLOR;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(x, y, AVATAR_R + 2.5, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.lineWidth = 1;
-      ctx.beginPath();
+      statusRing(ctx, p.bgColor, PENDING_COLOR, x, y, AVATAR_R + 2.5, 1.5);
       // ROW_HEIGHT 30이라 반지름 15가 한계다. 바깥 링은 여유 1px을 남긴다
-      ctx.arc(x, y, AVATAR_R + 5.5, 0, Math.PI * 2);
-      ctx.stroke();
+      statusRing(ctx, p.bgColor, PENDING_COLOR, x, y, AVATAR_R + 5.5, 1);
     }
 
     // 드롭 후보: 굵은 노란 링 하나. 진행 중 링과 겹쳐도 색과 굵기로 갈린다
     if (i === dropRow) {
-      ctx.strokeStyle = DROP_COLOR;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(x, y, AVATAR_R + 4, 0, Math.PI * 2);
-      ctx.stroke();
+      statusRing(ctx, p.bgColor, DROP_COLOR, x, y, AVATAR_R + 4, 2);
     }
   }
   ctx.globalAlpha = 1;
+}
+
+/**
+ * 상태 링(드롭 후보, 진행 중 작업) 하나. 바탕색 halo를 먼저 깔고 그 위에 색 링을 얹는다.
+ * halo가 없으면 같은 색 레인선이 링을 지나갈 때 테두리가 사라져 보인다.
+ * 예를 들어 드롭 후보 행의 레인이 LANE_COLORS[5]면 노란 링과 노란 선이 그대로 겹친다.
+ */
+function statusRing(
+  ctx: CanvasRenderingContext2D,
+  haloColor: string,
+  color: string,
+  x: number,
+  y: number,
+  radius: number,
+  width: number,
+): void {
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.strokeStyle = haloColor;
+  ctx.lineWidth = width + 2;
+  ctx.stroke();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
 }
 
 /**
