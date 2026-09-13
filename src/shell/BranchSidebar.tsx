@@ -294,7 +294,21 @@ export function BranchSidebar({
   onOpenWorktree,
   onRefDragStateChange,
 }: BranchSidebarProps) {
-  const all = useMemo(() => group(refs), [refs]);
+  // refs에 안 잡히는 remote(방금 추가해 아직 fetch 안 한 것)도 헤더는 보여야 Fetch를 누를 수 있다
+  const all = useMemo<Grouped>(() => {
+    const grouped = group(refs);
+    const known = new Set(grouped.remotes.map((g) => g.remote));
+    const extra = (remotes ?? [])
+      .filter((remote) => !known.has(remote.name))
+      .map((remote) => ({ remote: remote.name, entries: [] as RefEntry[] }));
+    if (extra.length === 0) {
+      return grouped;
+    }
+    return {
+      ...grouped,
+      remotes: [...grouped.remotes, ...extra].sort((a, b) => a.remote.localeCompare(b.remote)),
+    };
+  }, [refs, remotes]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(readCollapsed);
   const [filter, setFilter] = useState("");
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -624,6 +638,7 @@ export function BranchSidebar({
         <Section
           title="Remotes"
           count={view.remoteCount}
+          empty={view.remotes.length === 0}
           collapsed={isCollapsed("remotes")}
           emptyLabel={filtering ? "No matches" : "No remote branches"}
           actionLabel={dialogAvailable ? "Add remote" : undefined}
@@ -788,6 +803,8 @@ interface SectionProps {
   title: string;
   /** 실제로 그릴 항목 수 (필터 중이면 매치 수) */
   count: number;
+  /** 배지 숫자와 "그릴 게 있는가"가 다를 때만 준다 (브랜치가 없는 remote 헤더 등) */
+  empty?: boolean;
   collapsed: boolean;
   /** count가 0일 때 목록 대신 보여줄 한 줄 */
   emptyLabel: string;
@@ -801,6 +818,7 @@ interface SectionProps {
 function Section({
   title,
   count,
+  empty,
   collapsed,
   emptyLabel,
   actionLabel,
@@ -838,7 +856,7 @@ function Section({
         )}
       </div>
       {!collapsed &&
-        (count === 0 ? (
+        ((empty ?? count === 0) ? (
           <div className="sb-nomatch">{emptyLabel}</div>
         ) : (
           <ul className="sb-list">{children}</ul>
