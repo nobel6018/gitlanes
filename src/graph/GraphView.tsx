@@ -259,9 +259,11 @@ function WipRow({
   onSelect?: () => void;
   onHover: () => void;
 }) {
-  // WipInfo에는 untracked 수가 없다(types.ts 동결). staged가 아닌 나머지를
-  // unstaged로 묶어 보여주고, untracked는 총계 배지 안에 남는다
-  const unstagedFiles = Math.max(0, wip.changedFiles - wip.stagedFiles);
+  // changedFiles가 총계고 staged/untracked가 그 부분집합이다. 나머지가 unstaged.
+  // rust가 아직 untrackedFiles를 안 채운 빌드와 섞여도 NaN이 나오지 않게 ?? 0을 건다
+  const stagedFiles = wip.stagedFiles ?? 0;
+  const untrackedFiles = wip.untrackedFiles ?? 0;
+  const unstagedFiles = Math.max(0, wip.changedFiles - stagedFiles - untrackedFiles);
   return (
     <div
       className={
@@ -277,16 +279,21 @@ function WipRow({
     >
       <div className="gl-cell gl-col-branch" />
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
-      <div className="gl-cell gl-cell-message gl-wip-message">
+      <div
+        className="gl-cell gl-cell-message gl-wip-message"
+        // 총계는 배지에서 뺐다. 회색 배지를 untracked가 가져가 두 개가 겹치기 때문이다.
+        // 대신 셀 툴팁에 남겨 한 항목만 있는 상태에서도 전체 규모를 확인할 수 있게 한다
+        title={`${wip.changedFiles} changed file${wip.changedFiles === 1 ? "" : "s"}`}
+      >
         <span className="gl-wip-label">// WIP</span>
-        <span className="gl-wip-badge gl-wip-total">
-          {`${wip.changedFiles} changed file${wip.changedFiles === 1 ? "" : "s"}`}
-        </span>
-        {wip.stagedFiles > 0 ? (
-          <span className="gl-wip-badge gl-wip-staged">{`${wip.stagedFiles} staged`}</span>
+        {stagedFiles > 0 ? (
+          <span className="gl-wip-badge gl-wip-staged">{`${stagedFiles} staged`}</span>
         ) : null}
         {unstagedFiles > 0 ? (
           <span className="gl-wip-badge gl-wip-unstaged">{`${unstagedFiles} unstaged`}</span>
+        ) : null}
+        {untrackedFiles > 0 ? (
+          <span className="gl-wip-badge gl-wip-untracked">{`${untrackedFiles} untracked`}</span>
         ) : null}
       </div>
       <div className="gl-cell gl-col-author" />

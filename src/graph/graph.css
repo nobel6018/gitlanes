@@ -208,15 +208,10 @@
   line-height: 16px;
 }
 
-/* 총 변경 수는 중립(회색). 그 안에 untracked가 섞여 있는데 WipInfo가
-   따로 세어 주지 않아 색으로 구분할 수 없다 */
-.gl-wip-total {
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--fg-2);
-}
-
-/* staged는 초록(커밋 가능), unstaged는 주황(아직 남은 일). diff 패널의
-   추가/수정 색과 같은 변수를 써서 앱 전체가 같은 뜻으로 읽힌다 */
+/* 왼쪽부터 staged -> unstaged -> untracked. 커밋에 가까운 순서라
+   왼쪽이 밝고 오른쪽으로 갈수록 가라앉는다.
+   staged는 초록(커밋 가능), unstaged는 주황(손이 더 가야 함), untracked는
+   회색(아직 git이 모르는 파일). 초록과 주황은 diff 패널과 같은 변수를 쓴다 */
 .gl-wip-staged {
   background: var(--added-bg);
   color: var(--added);
@@ -225,6 +220,11 @@
 .gl-wip-unstaged {
   background: rgba(212, 180, 85, 0.15);
   color: var(--modified);
+}
+
+.gl-wip-untracked {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--fg-2);
 }
 
 .gl-cell {

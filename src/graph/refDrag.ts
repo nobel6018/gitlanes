@@ -5,7 +5,11 @@
 
 import type { RefKind } from "../types";
 
-/** dataTransfer에 JSON 문자열로 담기는 ref 드래그 타입 */
+/**
+ * dataTransfer에 JSON 문자열로 담기는 ref 드래그 타입.
+ * src/shell/dnd.ts의 REF_DRAG_MIME과 **반드시 같은 문자열이어야 한다.**
+ * 갈라지면 타입 에러 없이 드롭만 조용히 안 먹는다. 한쪽을 고치면 다른 쪽도 고쳐라.
+ */
 export const REF_DRAG_MIME = "application/x-gitlanes-ref";
 
 /** 스태시는 RefKind에 없어 여기서만 더한다. src/shell/dnd.ts의 RefDragKind와 같은 정의다 */
