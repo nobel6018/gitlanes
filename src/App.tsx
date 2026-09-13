@@ -7,7 +7,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { errorMessage, getStartupRepo, revealPath, setRecentRepos } from "./shell/api";
 import { copyText } from "./shell/clipboard";
 import { basename } from "./shell/format";
-import { RepoWorkspace } from "./shell/RepoWorkspace";
+import { NO_REPO_COMMANDS, RepoWorkspace } from "./shell/RepoWorkspace";
+import type { RepoCommandNonces } from "./shell/RepoWorkspace";
 import { Preferences } from "./shell/Preferences";
 import type { PrefValues } from "./shell/Preferences";
 import { clampZoom, readPrefs, writePrefs, ZOOM_STEP } from "./shell/prefs";
@@ -88,7 +89,7 @@ function applyZoom(level: number): void {
 }
 
 /** 탭별 메뉴 명령 카운터. 값이 오른 탭만 그 명령을 실행한다 */
-interface TabCommands {
+interface TabCommands extends RepoCommandNonces {
   open: number;
   refresh: number;
   toggleSidebar: number;
@@ -102,6 +103,7 @@ const NO_COMMANDS: TabCommands = {
   toggleSidebar: 0,
   toggleTerminal: 0,
   closeTerminal: 0,
+  ...NO_REPO_COMMANDS,
 };
 
 /** 탭 스피너 최소 표시 시간(ms). 로컬 레포는 30ms에 끝나 번쩍임만 남는다 */
@@ -506,6 +508,17 @@ export default function App() {
     bumpCommand(activeIdRef.current, "closeTerminal");
   }, [bumpCommand]);
 
+  /**
+   * Repository 메뉴(menu:fetch 등). 대상은 언제나 활성 탭이다.
+   * 실제 동작은 RepoWorkspace가 RepoActions로 수행한다
+   */
+  const handleRepoCommand = useCallback(
+    (key: keyof RepoCommandNonces) => {
+      bumpCommand(activeIdRef.current, key);
+    },
+    [bumpCommand],
+  );
+
   const openPreferences = useCallback(() => setPrefsOpen(true), []);
   const closePreferences = useCallback(() => setPrefsOpen(false), []);
 
@@ -578,6 +591,7 @@ export default function App() {
     clearRecents,
     checkUpdates: updater.checkNow,
     reopenClosed: handleReopenClosed,
+    repoCommand: handleRepoCommand,
   });
   menuHandlers.current = {
     newTab: handleNewTab,
@@ -596,6 +610,7 @@ export default function App() {
     clearRecents,
     checkUpdates: updater.checkNow,
     reopenClosed: handleReopenClosed,
+    repoCommand: handleRepoCommand,
   };
 
   useEffect(() => {
@@ -643,6 +658,16 @@ export default function App() {
     track(listen("menu:clear-recent", () => menuHandlers.current.clearRecents()));
     // 툴바 버전 라벨 클릭과 같은 경로. 확인 중이면 useUpdateChecker가 알아서 무시한다
     track(listen("menu:check-updates", () => menuHandlers.current.checkUpdates()));
+
+    // Repository 메뉴 (v0.18 쓰기). macOS muda가 Shift 조합 accelerator를 제대로 못 잡아
+    // 실제로는 RepoWorkspace의 웹뷰 keydown이 주 경로다. 이쪽은 메뉴 클릭용
+    track(listen("menu:fetch", () => menuHandlers.current.repoCommand("fetch")));
+    track(listen("menu:pull", () => menuHandlers.current.repoCommand("pull")));
+    track(listen("menu:push", () => menuHandlers.current.repoCommand("push")));
+    track(listen("menu:commit", () => menuHandlers.current.repoCommand("commit")));
+    track(listen("menu:new-branch", () => menuHandlers.current.repoCommand("newBranch")));
+    track(listen("menu:stash", () => menuHandlers.current.repoCommand("stash")));
+    track(listen("menu:stash-pop", () => menuHandlers.current.repoCommand("stashPop")));
 
     return () => {
       disposed = true;
@@ -895,6 +920,7 @@ function TabPanel({
         toggleSidebarNonce={commands.toggleSidebar}
         toggleTerminalNonce={commands.toggleTerminal}
         closeTerminalNonce={commands.closeTerminal}
+        repoCommands={commands}
         prefs={prefs}
         onLoadingChange={handleLoadingChange}
       />

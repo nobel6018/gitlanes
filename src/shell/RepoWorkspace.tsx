@@ -1,41 +1,54 @@
 // 탭 하나의 작업 공간. 레포/그래프/선택/검색/사이드바 상태를 전부 여기서 들고 있다.
 // App은 이 컴포넌트를 탭마다 하나씩 마운트해두고 활성 탭만 보여준다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { ComponentProps, CSSProperties, ReactElement, ReactNode } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraphView } from "../graph";
 import { COMMITS_PER_PAGE, WIP_SHA } from "../constants";
 import type {
+  ConflictFile,
   FileChange,
   GraphData,
   RefEntry,
+  RemoteInfo,
   RepoInfo,
   SearchMatch,
+  SyncState,
   WipArea,
   WipDetails,
   WipInfo,
+  WorktreeInfo,
 } from "../types";
 import {
   errorMessage,
+  getConflicts,
   getFileContent,
   getFileDiff,
   getRemoteUrl,
+  getSyncState,
   getWipDetails,
   getWipFileContent,
   getWipFileDiff,
   getRepoState,
   listRefs,
+  listRemotes,
+  listWorktrees,
   loadGraph,
   openRepo,
   revealPath,
   searchCommits,
+  termWrite,
 } from "./api";
+import { formatCommand, useRepoActions } from "./actions";
+import type { ConfirmSpec, RepoActions, ToastSpec } from "./actions";
 import { copyText } from "./clipboard";
 import { BranchSidebar } from "./BranchSidebar";
 import { CommitDetailPanel } from "./CommitDetailPanel";
+import { ConflictBanner } from "./ConflictBanner";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
+import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { DiffPanel } from "./DiffPanel";
 import { Terminal } from "./Terminal";
 import { WipDetailPanel } from "./WipDetailPanel";
@@ -64,7 +77,20 @@ import { Toolbar } from "./Toolbar";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { useRecentRepos } from "./useRecentRepos";
 import { APP_VERSION } from "./version";
-import { formatCount, shortSha } from "./format";
+import { basename, formatCount, shortSha } from "./format";
+
+/**
+ * Toast에 액션 버튼 prop을 얹는 다리.
+ * needsAuth일 때의 "Run in terminal" 버튼은 계약상 Toast(ui-actions 소유)가 그린다.
+ * 아직 그 prop이 없어 여기서 타입만 넓혀 넘긴다. 모르는 prop은 React가 그냥 버리므로
+ * 지금은 표시만 안 되고, ui-actions가 actionLabel/onAction을 추가하는 순간 살아난다.
+ */
+const ToastWithAction = Toast as (
+  props: ComponentProps<typeof Toast> & {
+    actionLabel?: string;
+    onAction?: () => void;
+  },
+) => ReactElement;
 
 const SIDEBAR_KEY = "gitlanes.sidebar";
 
@@ -124,7 +150,48 @@ interface ToastState {
   tone: "error" | "info";
   durationMs?: number;
   copyable?: boolean;
+  /** needsAuth일 때의 "Run in terminal" 버튼 */
+  action?: { label: string; run: () => void };
 }
+
+/** 확인 다이얼로그 한 건. resolve로 사용자의 선택을 액션 계층에 돌려준다 */
+interface PendingConfirm {
+  spec: ConfirmSpec;
+  resolve: (ok: boolean) => void;
+}
+
+/** 이름 하나만 받으면 되는 쓰기 작업의 프롬프트 */
+type PromptState =
+  | { kind: "createBranch"; startPoint: string | null }
+  | { kind: "createTag"; target: string }
+  | { kind: "stash" };
+
+/**
+ * Repository 메뉴와 웹뷰 단축키가 올리는 카운터.
+ * App이 탭별로 세기 때문에 탭 전환만으로는 값이 바뀌지 않는다.
+ */
+export interface RepoCommandNonces {
+  fetch: number;
+  pull: number;
+  push: number;
+  commit: number;
+  newBranch: number;
+  stash: number;
+  stashPop: number;
+}
+
+export const NO_REPO_COMMANDS: RepoCommandNonces = {
+  fetch: 0,
+  pull: 0,
+  push: 0,
+  commit: 0,
+  newBranch: 0,
+  stash: 0,
+  stashPop: 0,
+};
+
+/** 가장 최근 스태시. Pop/Apply 단축키의 기본 대상 */
+const TOP_STASH = "stash@{0}";
 
 /** nonce가 바뀔 때마다 GraphView가 해당 행을 뷰포트 중앙으로 스크롤한다 */
 interface ScrollTarget {
@@ -157,6 +224,8 @@ export interface RepoWorkspaceProps {
   toggleTerminalNonce: number;
   /** ⌘W를 터미널 포커스에서 눌렀을 때. 토글이 아니라 닫기 */
   closeTerminalNonce: number;
+  /** Repository 메뉴(menu:fetch 등)의 탭별 카운터. 활성 탭에만 올라온다 */
+  repoCommands: RepoCommandNonces;
   /** 전역 설정 (App 소유, Preferences로 조절) */
   prefs: PrefValues;
   /** 그래프 로드/새로고침 중인지 App에 알린다 (탭 스피너용) */
@@ -227,6 +296,7 @@ export function RepoWorkspace({
   toggleSidebarNonce,
   toggleTerminalNonce,
   closeTerminalNonce,
+  repoCommands,
   prefs,
   onLoadingChange,
 }: RepoWorkspaceProps) {
@@ -267,6 +337,20 @@ export function RepoWorkspace({
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
 
+  // ── v0.18 쓰기 상태 ───────────────────────────────────────
+  /** ahead/behind, stash 수, 진행 중인 머지/리베이스. 폴링과 refreshAll이 갱신한다 */
+  const [syncState, setSyncState] = useState<SyncState | null>(null);
+  /** 진행 중인 작업의 충돌 파일. pending이 없으면 항상 빈 배열 */
+  const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
+  const [remotes, setRemotes] = useState<RemoteInfo[]>([]);
+  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
+  /** 충돌 배너/패널을 접었는가. 새 충돌이 생기면 다시 펴진다 */
+  const [conflictDismissed, setConflictDismissed] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [prompt, setPrompt] = useState<PromptState | null>(null);
+  /** 프롬프트의 체크박스 상태 (브랜치 생성 후 체크아웃 / 스태시에 untracked 포함) */
+  const [promptFlag, setPromptFlag] = useState(true);
+
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
   const graphReq = useRef(0);
@@ -300,8 +384,21 @@ export function RepoWorkspace({
   const rowCount = useRef(0);
   const loadingRef = useRef(false);
   const wipRef = useRef<WipInfo | null>(null);
+  /** 콜백 안에서 최신 레포를 읽는다 (refreshAll의 의존성을 레포에 묶지 않기 위함) */
+  const repoRef = useRef<RepoInfo | null>(null);
+  /**
+   * 하단 터미널의 PTY 세션 id. Terminal.tsx가 자기 세션을 안에서만 들고 있어
+   * 아직 위로 올라오지 않는다. onSession prop이 생기면 여기에 채운다.
+   * 그때까지 인증 핸드오프는 클립보드 폴백으로 동작한다.
+   */
+  const termSessionRef = useRef<string | null>(null);
+  /** 진행 중인 sync/conflict 요청 번호. 늦게 온 응답을 버린다 */
+  const syncReq = useRef(0);
+  /** Repository 메뉴 카운터의 직전 값 */
+  const lastRepoCommands = useRef<RepoCommandNonces>(NO_REPO_COMMANDS);
 
   const data: GraphData = graph ?? EMPTY_GRAPH;
+  repoRef.current = repo;
   activeRef.current = active;
   rowCount.current = data.rows.length;
   loadingRef.current = graphLoading;
@@ -325,6 +422,41 @@ export function RepoWorkspace({
   );
 
   const dismissToast = useCallback(() => setToast(null), []);
+
+  /** 액션 계층이 주는 ToastSpec을 화면 토스트로 바꾼다 */
+  const pushToast = useCallback((spec: ToastSpec) => {
+    toastSeq.current += 1;
+    setToast({ id: toastSeq.current, ...spec });
+  }, []);
+
+  /**
+   * 동기화 상태와 충돌 목록을 한 번에 읽는다.
+   * 5초 폴링과 refreshAll이 같은 경로를 쓴다. 요청 번호로 늦게 온 응답을 버린다.
+   */
+  const loadSyncData = useCallback(async (path: string) => {
+    const reqId = syncReq.current + 1;
+    syncReq.current = reqId;
+    try {
+      const state = await getSyncState(path);
+      if (syncReq.current !== reqId) {
+        return;
+      }
+      setSyncState(state);
+      if (state.pending === null) {
+        setConflicts([]);
+        setConflictDismissed(false);
+        return;
+      }
+      const files = await getConflicts(path);
+      if (syncReq.current === reqId) {
+        setConflicts(files);
+      }
+    } catch {
+      // rust가 아직 이 command를 안 들고 있거나(하네스) 일시적 실패다.
+      // 그래프 자체는 멀쩡하므로 조용히 넘긴다
+    }
+  }, []);
+
 
   // 레포/페이지 요청/새로고침 키가 바뀌면 load_graph를 부른다.
   // skip=0은 교체, skip>0은 append. graphReq로 뒤늦게 도착한 이전 요청 응답을 버린다.
@@ -459,6 +591,36 @@ export function RepoWorkspace({
   useEffect(() => {
     onLoadingChange?.(graphLoading);
   }, [graphLoading, onLoadingChange]);
+
+  // 사이드바 Remotes/Worktrees 섹션과 동기화 배지의 초기 데이터.
+  // reloadKey가 오를 때(=쓰기 직후) 다시 읽어 remote 추가/워크트리 생성이 바로 보이게 한다
+  useEffect(() => {
+    if (repo === null) {
+      setRemotes([]);
+      setWorktrees([]);
+      setSyncState(null);
+      setConflicts([]);
+      return;
+    }
+    const path = repo.path;
+    listRemotes(path)
+      .then(setRemotes)
+      .catch(() => setRemotes([]));
+    listWorktrees(path)
+      .then(setWorktrees)
+      .catch(() => setWorktrees([]));
+    void loadSyncData(path);
+  }, [repo, reloadKey, loadSyncData]);
+
+  // 진행 중인 머지/리베이스가 새로 생기면 충돌 배너를 다시 편다
+  const pendingKindRef = useRef<string | null>(null);
+  useEffect(() => {
+    const kind = syncState?.pending?.kind ?? null;
+    if (kind !== null && kind !== pendingKindRef.current) {
+      setConflictDismissed(false);
+    }
+    pendingKindRef.current = kind;
+  }, [syncState]);
 
   /** 선택 + 해당 행을 뷰포트 중앙으로 스크롤 */
   const jumpTo = useCallback((sha: string) => {
@@ -647,6 +809,283 @@ export function RepoWorkspace({
     setReloadKey((k) => k + 1);
   }, []);
 
+  // ════════════════════════════════════════════════════════
+  // v0.18 쓰기 액션 배선
+  // ════════════════════════════════════════════════════════
+
+  /**
+   * 쓰기 직후 전체 새로고침. 폴링(5초)을 기다리지 않는다.
+   * load_graph(skip=0, 현재 깊이 유지) + list_refs + get_sync_state + WIP 재로드.
+   * 그래프/refs는 효과 기반이라 reloadFromStart가 트리거만 걸고,
+   * await는 sync/conflict까지만 기다린다.
+   */
+  const refreshAll = useCallback(async () => {
+    const current = repoRef.current;
+    searchCache.current.clear();
+    fileTextCache.current.clear();
+    setWipNonce((n) => n + 1);
+    reloadFromStart();
+    if (current === null) {
+      return;
+    }
+    await loadSyncData(current.path);
+  }, [reloadFromStart, loadSyncData]);
+
+  /**
+   * 확인 다이얼로그를 띄우고 사용자의 선택을 Promise로 돌려준다.
+   * 이미 하나 떠 있으면 새 요청은 즉시 거절한다 (쓰기는 직렬 큐라 실제로는 겹치지 않는다).
+   */
+  const confirmAction = useCallback((spec: ConfirmSpec): Promise<boolean> => {
+    return new Promise<boolean>((resolve) => {
+      setPendingConfirm((prev) => {
+        if (prev !== null) {
+          resolve(false);
+          return prev;
+        }
+        return { spec, resolve };
+      });
+    });
+  }, []);
+
+  const settleConfirm = useCallback(
+    (ok: boolean) => {
+      pendingConfirm?.resolve(ok);
+      setPendingConfirm(null);
+    },
+    [pendingConfirm],
+  );
+
+  /**
+   * 인증 핸드오프. 비대화식 git은 패스프레이즈를 물을 수 없으므로
+   * 같은 명령을 내장 PTY에 그대로 넘겨 사용자가 직접 답하게 한다.
+   *
+   * Terminal.tsx가 세션 id를 위로 올려주지 않아(onSession prop 미구현)
+   * 지금은 클립보드 폴백으로 동작한다. termSessionRef가 채워지면 자동으로 직접 실행으로 바뀐다.
+   */
+  const runInTerminal = useCallback(
+    (command: string[]) => {
+      const line = formatCommand(command);
+      setTerminalOpen(true);
+      const id = termSessionRef.current;
+      if (id !== null) {
+        termWrite(id, `${line}\n`).catch((err: unknown) => showError(errorMessage(err)));
+        return;
+      }
+      void copyText(line).then((ok) => {
+        showToast(
+          ok
+            ? "Command copied. Paste it into the terminal below and answer the prompt."
+            : `Run this in the terminal below: ${line}`,
+          "info",
+          { durationMs: 10_000, copyable: true },
+        );
+      });
+    },
+    [showToast, showError],
+  );
+
+  /** 충돌이 생기면 WIP 패널을 열고 배너를 다시 펴준다 */
+  const handleConflicts = useCallback((files: string[]) => {
+    if (files.length === 0) {
+      return;
+    }
+    setConflictDismissed(false);
+    setSelectedSha(WIP_SHA);
+    setOpenFile(null);
+  }, []);
+
+  const actions: RepoActions = useRepoActions({
+    repoPath: repo?.path ?? "",
+    refreshAll,
+    confirm: confirmAction,
+    toast: pushToast,
+    runInTerminal,
+    onConflicts: handleConflicts,
+  });
+
+  /** 충돌 배너에 보여줄 경로. 진행 중인 작업이 없으면 빈 배열 */
+  const conflictPaths = useMemo(() => conflicts.map((entry) => entry.path), [conflicts]);
+
+  /** 실패는 액션 계층이 이미 토스트로 알렸다. 여기서는 unhandled rejection만 막는다 */
+  const fire = useCallback((pending: Promise<void>) => {
+    pending.catch(() => undefined);
+  }, []);
+
+  const doFetch = useCallback(() => fire(actions.fetch()), [actions, fire]);
+  const doPull = useCallback(() => fire(actions.pull("merge")), [actions, fire]);
+  const doPush = useCallback(() => fire(actions.push()), [actions, fire]);
+  const doStashPop = useCallback(
+    () => fire(actions.stashApply(TOP_STASH, true)),
+    [actions, fire],
+  );
+
+  /**
+   * ⌘Enter(Commit). 커밋 메시지는 CommitBox(ui-wip)가 들고 있어 여기서 바로 커밋할 수 없다.
+   * WIP 행을 선택해 커밋 상자를 띄우는 데까지가 셸의 몫이다.
+   * TODO(통합): WipDetailPanel에 focusCommitNonce prop이 생기면 여기서 같이 올린다.
+   */
+  const doCommit = useCallback(() => {
+    setOpenFile(null);
+    setSelectedSha(WIP_SHA);
+  }, []);
+
+  const openNewBranchPrompt = useCallback((startPoint: string | null) => {
+    setPromptFlag(true);
+    setPrompt({ kind: "createBranch", startPoint });
+  }, []);
+
+  const openNewTagPrompt = useCallback((target: string) => {
+    setPromptFlag(false);
+    setPrompt({ kind: "createTag", target });
+  }, []);
+
+  const openStashPrompt = useCallback(() => {
+    setPromptFlag(false);
+    setPrompt({ kind: "stash" });
+  }, []);
+
+  const closePrompt = useCallback(() => setPrompt(null), []);
+
+  /** ref 이름이 git 규칙에 맞는지는 rust가 check-ref-format으로 본다. 여기서는 빈 값만 막는다 */
+  const validateName = useCallback((value: string): string | null => {
+    if (value.trim() === "") {
+      return "Enter a name.";
+    }
+    return null;
+  }, []);
+
+  const submitPrompt = useCallback(
+    (value: string) => {
+      const current = prompt;
+      setPrompt(null);
+      if (current === null) {
+        return;
+      }
+      const text = value.trim();
+      if (current.kind === "createBranch") {
+        fire(actions.createBranch(text, current.startPoint, promptFlag));
+        return;
+      }
+      if (current.kind === "createTag") {
+        fire(actions.createTag(text, current.target, null));
+        return;
+      }
+      fire(
+        actions.stashPush({
+          message: text === "" ? undefined : text,
+          includeUntracked: promptFlag,
+        }),
+      );
+    },
+    [prompt, promptFlag, actions, fire],
+  );
+
+  // Repository 메뉴(menu:fetch 등). App이 활성 탭의 카운터만 올린다
+  useEffect(() => {
+    const prev = lastRepoCommands.current;
+    lastRepoCommands.current = repoCommands;
+    if (repo === null) {
+      return;
+    }
+    if (repoCommands.fetch > prev.fetch) {
+      doFetch();
+    }
+    if (repoCommands.pull > prev.pull) {
+      doPull();
+    }
+    if (repoCommands.push > prev.push) {
+      doPush();
+    }
+    if (repoCommands.commit > prev.commit) {
+      doCommit();
+    }
+    if (repoCommands.newBranch > prev.newBranch) {
+      openNewBranchPrompt(null);
+    }
+    if (repoCommands.stash > prev.stash) {
+      openStashPrompt();
+    }
+    if (repoCommands.stashPop > prev.stashPop) {
+      doStashPop();
+    }
+  }, [
+    repoCommands,
+    repo,
+    doFetch,
+    doPull,
+    doPush,
+    doCommit,
+    doStashPop,
+    openNewBranchPrompt,
+    openStashPrompt,
+  ]);
+
+  /**
+   * 쓰기 단축키는 웹뷰 keydown이 실질적인 경로다.
+   * macOS muda가 Shift 조합 accelerator를 제대로 못 잡아 네이티브 메뉴 쪽은 안 울릴 수 있다.
+   * 입력창(커밋 메시지 textarea 포함)에서도 ⌘Enter는 살려둔다.
+   */
+  useEffect(() => {
+    if (repo === null) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!activeRef.current || (!event.metaKey && !event.ctrlKey) || event.altKey) {
+        return;
+      }
+      if (!event.shiftKey) {
+        // ⌘Enter = Commit. 커밋 메시지를 치는 중에도 먹어야 한다
+        if (event.code === "Enter" || event.code === "NumpadEnter") {
+          event.preventDefault();
+          doCommit();
+        }
+        return;
+      }
+      // 나머지는 전부 ⌘⇧ 조합. 터미널이나 입력창에서는 가로채지 않는다
+      if (textFieldFocused()) {
+        return;
+      }
+      switch (event.code) {
+        case "KeyF":
+          event.preventDefault();
+          doFetch();
+          return;
+        case "KeyP":
+          event.preventDefault();
+          doPull();
+          return;
+        case "KeyU":
+          event.preventDefault();
+          doPush();
+          return;
+        case "KeyN":
+          event.preventDefault();
+          openNewBranchPrompt(null);
+          return;
+        case "KeyS":
+          event.preventDefault();
+          openStashPrompt();
+          return;
+        case "KeyO":
+          event.preventDefault();
+          doStashPop();
+          return;
+        default:
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    repo,
+    doFetch,
+    doPull,
+    doPush,
+    doCommit,
+    doStashPop,
+    openNewBranchPrompt,
+    openStashPrompt,
+  ]);
+
   // 메뉴 Open Repository… (⌘O): 이 탭에서 폴더 다이얼로그를 연다
   useEffect(() => {
     if (openDialogNonce === 0 || openDialogNonce === lastOpenNonce.current) {
@@ -665,11 +1104,16 @@ export function RepoWorkspace({
     reloadFromStart();
   }, [refreshNonce, reloadFromStart]);
 
-  /** refs 지문/wip이 바뀌었으면 전체 리로드. 폴링과 탭 전환이 함께 쓴다 */
+  /**
+   * refs 지문/wip이 바뀌었으면 전체 리로드. 폴링과 탭 전환이 함께 쓴다.
+   * get_sync_state는 배지와 충돌 배너에 필요해 지문과 무관하게 매 주기 같이 읽는다
+   * (활성 탭 + 창 포커스 조건은 호출 측이 이미 걸어둔다).
+   */
   const checkRepoState = useCallback(() => {
     if (repo === null || loadingRef.current || graphToken.current === "") {
       return;
     }
+    void loadSyncData(repo.path);
     getRepoState(repo.path)
       .then((state) => {
         const wipChanged = !sameWip(state.wip, wipRef.current);
@@ -686,7 +1130,7 @@ export function RepoWorkspace({
       .catch(() => {
         // 폴링 실패는 조용히 넘긴다. 다음 주기에 다시 시도한다
       });
-  }, [repo, reloadFromStart]);
+  }, [repo, reloadFromStart, loadSyncData]);
 
   // 자동 새로고침: 활성 탭이고 창이 포커스+가시 상태일 때만 5초마다 경량 폴링
   useEffect(() => {
@@ -734,6 +1178,10 @@ export function RepoWorkspace({
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
+  /** 메뉴 콜백에서 최신 openPath를 쓴다 (정의 순서와 의존성 배열을 얽지 않기 위함) */
+  const openPathRef = useRef(openPath);
+  openPathRef.current = openPath;
+
   /** 우클릭한 행의 메시지. 커밋이면 subject, 스태시면 스태시 메시지 */
   const menuMessage = useMemo(() => {
     if (menu === null || menu.kind !== "commit") {
@@ -751,7 +1199,7 @@ export function RepoWorkspace({
       return [];
     }
     const path = repo.path;
-    return [
+    const items: MenuItem[] = [
       {
         label: "Copy Path",
         onSelect: () => {
@@ -771,7 +1219,45 @@ export function RepoWorkspace({
         },
       },
     ];
-  }, [repo, showToast, showError]);
+
+    // list_remotes / list_worktrees 배선. 사이드바 섹션(ui-sidebar)이 붙기 전에도
+    // 이 두 데이터는 여기서 바로 쓸모가 있다
+    if (remotes.length > 0) {
+      items.push({
+        label: "Copy remote URL",
+        separatorBefore: true,
+        children: remotes.map((remote) => ({
+          label: `${remote.name} \u2014 ${remote.fetchUrl}`,
+          onSelect: () => {
+            void copyText(remote.fetchUrl).then((ok) => {
+              if (ok) {
+                showToast(`${remote.name} URL 복사됨`, "info");
+                return;
+              }
+              showError("클립보드에 복사하지 못했습니다.");
+            });
+          },
+        })),
+      });
+    }
+
+    const others = worktrees.filter((tree) => !tree.isMain && !tree.isPrunable);
+    if (others.length > 0) {
+      items.push({
+        label: "Open worktree",
+        separatorBefore: remotes.length === 0,
+        children: others.map((tree) => ({
+          label: `${basename(tree.path)}${tree.branch === null ? "" : ` (${tree.branch})`}`,
+          title: tree.path,
+          onSelect: () => {
+            void openPathRef.current(tree.path);
+          },
+        })),
+      });
+    }
+
+    return items;
+  }, [repo, remotes, worktrees, showToast, showError]);
 
   const menuItems: MenuItem[] = useMemo(() => {
     if (menu === null) {
@@ -781,8 +1267,71 @@ export function RepoWorkspace({
       return copyPathItems;
     }
     const sha = menu.sha;
-    const items: MenuItem[] = [
-      { label: "Copy sha", onSelect: () => copySha(sha) },
+    // WIP 의사 행과 스태시 행은 진짜 커밋이 아니라 쓰기 대상이 될 수 없다
+    const isCommit = sha !== WIP_SHA && data.rows.some((row) => row.sha === sha);
+    const label = shortSha(sha);
+    const branch = repo?.headBranch ?? "HEAD";
+
+    const items: MenuItem[] = [];
+
+    if (isCommit) {
+      items.push(
+        {
+          label: `Checkout ${label}`,
+          title: "Leaves HEAD detached. Create a branch here to keep new commits.",
+          onSelect: () => fire(actions.checkout(sha, false)),
+        },
+        {
+          label: "Create branch here\u2026",
+          onSelect: () => openNewBranchPrompt(sha),
+        },
+        {
+          label: "Create tag here\u2026",
+          onSelect: () => openNewTagPrompt(sha),
+        },
+        {
+          label: "Cherry-pick",
+          separatorBefore: true,
+          title: `Apply ${label} on top of ${branch}`,
+          onSelect: () => fire(actions.cherryPick([sha], false)),
+        },
+        {
+          label: "Revert",
+          title: `Create a commit on ${branch} that undoes ${label}`,
+          onSelect: () => fire(actions.revert([sha], false)),
+        },
+        {
+          label: `Reset ${branch} here`,
+          separatorBefore: true,
+          children: [
+            {
+              label: "Soft \u2014 keep index and working tree",
+              onSelect: () => fire(actions.reset(sha, "soft")),
+            },
+            {
+              label: "Mixed \u2014 keep working tree",
+              onSelect: () => fire(actions.reset(sha, "mixed")),
+            },
+            {
+              label: "Hard \u2014 discard all changes",
+              danger: true,
+              onSelect: () => fire(actions.reset(sha, "hard")),
+            },
+          ],
+        },
+        {
+          label: "Interactive rebase from here\u2026",
+          // TODO(통합): ui-actions의 RebaseEditor가 붙으면 모달을 띄운다.
+          // 그때까지는 계약대로 sha를 base로 넘겨 에디터 없이 실행하지 않는다
+          disabled: true,
+          title: "Coming with the rebase editor",
+          onSelect: () => undefined,
+        },
+      );
+    }
+
+    items.push(
+      { label: "Copy sha", separatorBefore: isCommit, onSelect: () => copySha(sha) },
       {
         label: "Copy message",
         disabled: menuMessage === "",
@@ -796,7 +1345,7 @@ export function RepoWorkspace({
           });
         },
       },
-    ];
+    );
     if (remoteUrl !== null) {
       items.push({
         label: remoteUrl.includes("github.com") ? "Open on GitHub" : "Open on Remote",
@@ -808,7 +1357,21 @@ export function RepoWorkspace({
       });
     }
     return items;
-  }, [menu, menuMessage, remoteUrl, copySha, showToast, showError, copyPathItems]);
+  }, [
+    menu,
+    menuMessage,
+    remoteUrl,
+    copySha,
+    showToast,
+    showError,
+    copyPathItems,
+    data.rows,
+    repo,
+    actions,
+    fire,
+    openNewBranchPrompt,
+    openNewTagPrompt,
+  ]);
 
   const previewWidth = useCallback((name: "sidebar" | "detail", width: number) => {
     mainRef.current?.style.setProperty(`--${name}-w`, `${width}px`);
@@ -1203,7 +1766,9 @@ export function RepoWorkspace({
           goToHead();
           return;
         }
-        if (event.code === "KeyF") {
+        // ⌘⇧F는 v0.18에서 Fetch가 가져갔다 (네이티브 Repository 메뉴와 같은 조합).
+        // 필터 모드는 ⌘⇧L로 옮겼다
+        if (event.code === "KeyL") {
           event.preventDefault();
           handleToggleFilterMode();
           return;
@@ -1260,15 +1825,60 @@ export function RepoWorkspace({
 
   const toastNode =
     toast === null ? null : (
-      <Toast
+      <ToastWithAction
         key={toast.id}
         message={toast.message}
         tone={toast.tone}
         durationMs={toast.durationMs}
         copyable={toast.copyable}
+        actionLabel={toast.action?.label}
+        onAction={
+          toast.action === undefined
+            ? undefined
+            : () => {
+                const run = toast.action?.run;
+                dismissToast();
+                run?.();
+              }
+        }
         onClose={dismissToast}
       />
     );
+
+  /** 프롬프트 다이얼로그의 kind별 문구. 열려 있지 않으면 null */
+  const promptConfig = useMemo(() => {
+    if (prompt === null) {
+      return null;
+    }
+    if (prompt.kind === "createBranch") {
+      return {
+        title: "Create branch",
+        label:
+          prompt.startPoint === null
+            ? "Branch name"
+            : `Branch name (starting at ${shortSha(prompt.startPoint)})`,
+        placeholder: "feature/my-change",
+        confirmLabel: "Create",
+        checkbox: "Check out after creating",
+      };
+    }
+    if (prompt.kind === "createTag") {
+      return {
+        title: "Create tag",
+        label: `Tag name (at ${shortSha(prompt.target)})`,
+        placeholder: "v1.2.0",
+        confirmLabel: "Create",
+        checkbox: null,
+      };
+    }
+    return {
+      title: "Stash changes",
+      label: "Message (optional)",
+      placeholder: "work in progress",
+      confirmLabel: "Stash",
+      checkbox: "Include untracked files",
+    };
+  }, [prompt]);
 
   if (repo === null) {
     return (
@@ -1323,6 +1933,18 @@ export function RepoWorkspace({
         onCheckUpdates={update.onCheck}
       />
       {banner}
+      {/* TODO(통합): ui-actions의 ConflictPanel이 오면 이 배너 대신 그쪽을 연다.
+          배너는 pending이 있는 동안만 뜨고, 사용자가 접으면 다음 작업까지 조용하다 */}
+      {!conflictDismissed && syncState?.pending != null && (
+        <ConflictBanner
+          files={conflictPaths}
+          onOpenWip={() => {
+            setOpenFile(null);
+            setSelectedSha(WIP_SHA);
+          }}
+          onDismiss={() => setConflictDismissed(true)}
+        />
+      )}
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
       <div
@@ -1467,6 +2089,22 @@ export function RepoWorkspace({
           {formatCount(data.totalLoaded)} commits{data.hasMore ? "+" : ""}
         </span>
         <span>HEAD {shortSha(repo.headSha)}</span>
+        {syncState !== null && (syncState.ahead > 0 || syncState.behind > 0) && (
+          <span title={syncState.upstream ?? "no upstream"}>
+            {syncState.ahead > 0 && `\u2191${syncState.ahead}`}
+            {syncState.ahead > 0 && syncState.behind > 0 ? " " : ""}
+            {syncState.behind > 0 && `\u2193${syncState.behind}`}
+          </span>
+        )}
+        {syncState?.pending != null && (
+          <span className="sb-pending">
+            {syncState.pending.kind}
+            {syncState.pending.progress === null ? "" : ` ${syncState.pending.progress}`}
+            {syncState.pending.conflictCount > 0
+              ? ` \u2014 ${syncState.pending.conflictCount} conflicted`
+              : ""}
+          </span>
+        )}
         {data.wip !== null && (
           <span>
             WIP {data.wip.changedFiles} changed ({data.wip.stagedFiles} staged)
@@ -1488,6 +2126,47 @@ export function RepoWorkspace({
         onSelect={handleQuickSelect}
         onClose={closeQuickSwitcher}
       />
+
+      {/* 파괴적 작업 확인. body 아래 한 줄이 되돌리는 방법이다 (안전 계약 6번) */}
+      <ConfirmDialog
+        open={pendingConfirm !== null}
+        title={pendingConfirm?.spec.title ?? ""}
+        body={
+          <>
+            <p>{pendingConfirm?.spec.body}</p>
+            <p className="cf-undo">{pendingConfirm?.spec.undo}</p>
+          </>
+        }
+        confirmLabel={pendingConfirm?.spec.confirmLabel ?? "OK"}
+        danger={pendingConfirm?.spec.danger}
+        onConfirm={() => settleConfirm(true)}
+        onCancel={() => settleConfirm(false)}
+      />
+
+      {promptConfig !== null && (
+        <PromptDialog
+          open
+          title={promptConfig.title}
+          label={promptConfig.label}
+          placeholder={promptConfig.placeholder}
+          confirmLabel={promptConfig.confirmLabel}
+          validate={prompt?.kind === "stash" ? undefined : validateName}
+          extra={
+            promptConfig.checkbox === null ? undefined : (
+              <label className="pd-check">
+                <input
+                  type="checkbox"
+                  checked={promptFlag}
+                  onChange={(event) => setPromptFlag(event.target.checked)}
+                />
+                {promptConfig.checkbox}
+              </label>
+            )
+          }
+          onSubmit={submitPrompt}
+          onCancel={closePrompt}
+        />
+      )}
 
       {toastNode}
     </div>
