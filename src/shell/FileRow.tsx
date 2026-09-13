@@ -68,6 +68,7 @@ export function FileRow({
   const kind = untracked === true ? "새 파일(untracked)" : statusLabel(file.status);
   const title = file.oldPath === null ? `${kind}: ${file.path}` : `${kind}: ${file.oldPath} → ${file.path}`;
   const hasCheck = checked !== undefined && onToggleCheck !== undefined;
+  const hasActs = actions !== undefined && actions.length > 0;
   const rowClass =
     "file-row" +
     (focused === true ? " kb-focus" : "") +
@@ -83,7 +84,8 @@ export function FileRow({
   }
 
   return (
-    <li className="file-row-shell">
+    // 커밋 상세 패널도 같은 행을 쓰므로, 액션이 있을 때만 hover 규칙을 켠다
+    <li className={hasActs ? "file-row-shell has-acts" : "file-row-shell"}>
       {hasCheck && (
         <input
           type="checkbox"
@@ -123,7 +125,7 @@ export function FileRow({
           {file.deletions > 0 && <span className="stat-del">-{file.deletions}</span>}
         </span>
       </button>
-      {actions !== undefined && actions.length > 0 && (
+      {hasActs && (
         <span className="file-acts">
           {actions.map((action) => (
             <button

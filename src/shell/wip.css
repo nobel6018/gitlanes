@@ -35,12 +35,13 @@
   gap: 3px;
 }
 
-.file-row-shell:hover .file-acts {
+.file-row-shell.has-acts:hover .file-acts {
   display: flex;
 }
 
-/* 액션 버튼이 덮는 자리라 hover 중에는 ± 숫자를 감춘다 */
-.file-row-shell:hover .file-stat {
+/* 액션 버튼이 덮는 자리라 hover 중에는 ± 숫자를 감춘다.
+   커밋 상세 패널의 읽기 전용 행까지 건드리지 않도록 has-acts로 좁힌다 */
+.file-row-shell.has-acts:hover .file-stat {
   visibility: hidden;
 }
 
