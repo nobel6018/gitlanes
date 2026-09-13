@@ -199,6 +199,12 @@ function writeFlag(key: string, value: boolean): void {
 /** 한 번에 쌓아 둘 토스트 수. 넘치면 오래된 것부터 밀어낸다 */
 const MAX_TOASTS = 4;
 
+/**
+ * 같은 Repository 명령을 다시 받기까지의 최소 간격(ms).
+ * 네이티브 메뉴와 웹뷰 keydown이 같은 조합을 물고 있어 중복 실행을 막는다
+ */
+const REPO_COMMAND_DEBOUNCE_MS = 400;
+
 /** PTY 세션이 열리기를 기다리는 시간(ms). 넘으면 클립보드로 넘어간다 */
 const TERM_SESSION_WAIT_MS = 3000;
 
@@ -1071,12 +1077,37 @@ export function RepoWorkspace({
     pending.catch(() => undefined);
   }, []);
 
-  const doFetch = useCallback(() => fire(actions.fetch()), [actions, fire]);
-  const doPull = useCallback(() => fire(actions.pull("merge")), [actions, fire]);
-  const doPush = useCallback(() => fire(actions.push()), [actions, fire]);
+  /**
+   * 같은 Repository 명령이 짧은 사이에 두 번 들어오면 뒤엣것을 버린다.
+   * 네이티브 메뉴 accelerator와 웹뷰 keydown이 같은 조합에 걸려 있어, 플랫폼에 따라
+   * 두 경로가 모두 살아날 수 있다. push가 두 번 나가는 것보다 한 번 무시하는 쪽이 낫다.
+   */
+  const lastCommandAt = useRef<Record<string, number>>({});
+
+  const runRepoCommand = useCallback((key: string, action: () => void) => {
+    const now = Date.now();
+    if (now - (lastCommandAt.current[key] ?? 0) < REPO_COMMAND_DEBOUNCE_MS) {
+      return;
+    }
+    lastCommandAt.current[key] = now;
+    action();
+  }, []);
+
+  const doFetch = useCallback(
+    () => runRepoCommand("fetch", () => fire(actions.fetch())),
+    [actions, fire, runRepoCommand],
+  );
+  const doPull = useCallback(
+    () => runRepoCommand("pull", () => fire(actions.pull("merge"))),
+    [actions, fire, runRepoCommand],
+  );
+  const doPush = useCallback(
+    () => runRepoCommand("push", () => fire(actions.push())),
+    [actions, fire, runRepoCommand],
+  );
   const doStashPop = useCallback(
-    () => fire(actions.stashApply(TOP_STASH, true)),
-    [actions, fire],
+    () => runRepoCommand("stashPop", () => fire(actions.stashApply(TOP_STASH, true))),
+    [actions, fire, runRepoCommand],
   );
 
   /**

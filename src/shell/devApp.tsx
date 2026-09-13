@@ -652,6 +652,9 @@ const CONFLICT_FILES: ConflictFile[] = [
   { path: "src/legacy/OldGraph.tsx", kind: "deletedByUs", hasMarkers: false },
 ];
 
+/** 해결 처리된 충돌 파일 경로. get_conflicts 결과에서 빠진다 */
+const resolvedConflicts = new Set<string>();
+
 /** 하네스에서 만든 스태시 개수. get_sync_state의 stashCount에 쓴다 */
 let stashCount = 2;
 let aheadCount = 3;
@@ -960,7 +963,8 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
         mode === "rebase" ? "--rebase" : mode === "ff-only" ? "--ff-only" : "--no-rebase",
       ];
       if (shouldFail(cmd)) {
-        // 풀 충돌은 진행 중 상태를 남긴다. 충돌 배너/패널 경로를 이걸로 검증한다
+        // 풀 충돌은 진행 중 상태를 남긴다. 충돌 패널 경로를 이걸로 검증한다
+        resolvedConflicts.clear();
         pendingOp = {
           kind: mode === "rebase" ? "rebase" : "merge",
           progress: mode === "rebase" ? "2/5" : null,
@@ -1007,6 +1011,7 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
         source,
       ];
       if (shouldFail(cmd)) {
+        resolvedConflicts.clear();
         pendingOp = {
           kind: "merge",
           progress: null,
@@ -1028,6 +1033,7 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
       const upstream = strArg(payload, "upstream");
       const command = ["rebase", "--autostash", upstream];
       if (shouldFail(cmd)) {
+        resolvedConflicts.clear();
         pendingOp = {
           kind: "rebase",
           progress: "3/7",
@@ -1112,6 +1118,7 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
       }
       if (action === "abort" || action === "continue") {
         pendingOp = null;
+        resolvedConflicts.clear();
       }
       writeSalt += 1;
       return ok(command);
@@ -1346,17 +1353,23 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
   }
 }
 
-/** 충돌 파일 하나를 해결 처리한다. 전부 해결되면 continue를 누를 수 있는 상태가 된다 */
+/**
+ * 충돌 파일 하나를 해결 처리한다.
+ * git 기준으로 "해결"은 인덱스에서 unmerged가 사라지는 것이라, 해결한 파일은
+ * get_conflicts 결과에서 빠져야 한다. hasMarkers만 내리면 ConflictPanel의
+ * Continue 활성 조건(files.length === 0)이 영원히 안 채워진다
+ */
 function resolveConflict(file: string): void {
-  const entry = CONFLICT_FILES.find((conflict) => conflict.path === file);
-  if (entry !== undefined) {
-    entry.hasMarkers = false;
-  }
+  resolvedConflicts.add(file);
   if (pendingOp !== null) {
-    const left = CONFLICT_FILES.filter((conflict) => conflict.hasMarkers).length;
-    pendingOp = { ...pendingOp, conflictCount: left };
+    pendingOp = { ...pendingOp, conflictCount: remainingConflicts().length };
   }
   writeSalt += 1;
+}
+
+/** 아직 해결되지 않은 충돌 파일 */
+function remainingConflicts(): ConflictFile[] {
+  return CONFLICT_FILES.filter((file) => !resolvedConflicts.has(file.path));
 }
 
 function currentSyncState(): SyncState {
@@ -1446,7 +1459,7 @@ mockIPC(async (cmd, payload) => {
 
     case "get_conflicts":
       await sleep(40);
-      return pendingOp === null ? [] : CONFLICT_FILES.map((file) => ({ ...file }));
+      return pendingOp === null ? [] : remainingConflicts().map((file) => ({ ...file }));
 
     case "get_conflict_side": {
       await sleep(50);
