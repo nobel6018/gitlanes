@@ -1112,8 +1112,8 @@ export function RepoWorkspace({
 
   /**
    * ⌘Enter(Commit). 커밋 메시지는 CommitBox(ui-wip)가 들고 있어 여기서 바로 커밋할 수 없다.
-   * WIP 행을 선택해 커밋 상자를 띄우는 데까지가 셸의 몫이다.
-   * TODO(통합): WipDetailPanel에 focusCommitNonce prop이 생기면 여기서 같이 올린다.
+   * WIP 행을 선택해 커밋 상자를 띄우는 데까지가 셸의 몫이고, 포커스까지 옮기지는 않는다.
+   * 상자 안에서 누른 ⌘Enter는 CommitBox가 직접 처리하므로 여기로 오지 않는다.
    */
   const doCommit = useCallback(() => {
     setOpenFile(null);
@@ -1389,8 +1389,11 @@ export function RepoWorkspace({
         return;
       }
       if (!event.shiftKey) {
-        // ⌘Enter = Commit. 커밋 메시지를 치는 중에도 먹어야 한다
-        if (event.code === "Enter" || event.code === "NumpadEnter") {
+        // ⌘Enter = Commit.
+        // 커밋 메시지 상자 안에서는 CommitBox가 직접 커밋한다. 그 이벤트는
+        // stopPropagation 없이 window까지 올라오므로, 여기서 한 번 더 처리하면
+        // doCommit이 열려 있던 diff를 닫아버린다. 입력창에 있으면 손대지 않는다
+        if ((event.code === "Enter" || event.code === "NumpadEnter") && !textFieldFocused()) {
           event.preventDefault();
           doCommit();
         }
