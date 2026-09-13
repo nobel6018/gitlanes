@@ -1272,7 +1272,7 @@ export function RepoWorkspace({
         label: "Copy remote URL",
         separatorBefore: true,
         children: remotes.map((remote) => ({
-          label: `${remote.name} \u2014 ${remote.fetchUrl}`,
+          label: `${remote.name}: ${remote.fetchUrl}`,
           onSelect: () => {
             void copyText(remote.fetchUrl).then((ok) => {
               if (ok) {
@@ -1350,15 +1350,15 @@ export function RepoWorkspace({
           separatorBefore: true,
           children: [
             {
-              label: "Soft \u2014 keep index and working tree",
+              label: "Soft (keep index and working tree)",
               onSelect: () => fire(actions.reset(sha, "soft")),
             },
             {
-              label: "Mixed \u2014 keep working tree",
+              label: "Mixed (keep working tree)",
               onSelect: () => fire(actions.reset(sha, "mixed")),
             },
             {
-              label: "Hard \u2014 discard all changes",
+              label: "Hard (discard all changes)",
               danger: true,
               onSelect: () => fire(actions.reset(sha, "hard")),
             },
@@ -2161,7 +2161,7 @@ export function RepoWorkspace({
             {syncState.pending.kind}
             {syncState.pending.progress === null ? "" : ` ${syncState.pending.progress}`}
             {syncState.pending.conflictCount > 0
-              ? ` \u2014 ${syncState.pending.conflictCount} conflicted`
+              ? `, ${syncState.pending.conflictCount} conflicted`
               : ""}
           </span>
         )}
