@@ -80,6 +80,14 @@ pub struct WipInfo {
     pub changed_files: usize,
     /// 그중 index에 올라간 수
     pub staged_files: usize,
+    /// 그중 추적되지 않는 새 파일 수. v0.18에서 그래프 WIP 배지 3분할용으로 추가했다.
+    ///
+    /// 셋은 `changed_files`의 부분집합이고 **서로 겹칠 수 있다.** 한 파일이 staged이면서
+    /// unstaged일 수 있고(`AM`), `git rm --cached`처럼 staged이면서 untracked일 수도 있다
+    /// (`D ` + `??`). 그래서 셋을 더해도 `changed_files`가 되지 않는다.
+    /// 프론트는 unstaged를 `changedFiles - stagedFiles`로 계산하므로 앞의 두 필드의
+    /// 의미는 바꾸지 않는다.
+    pub untracked_files: usize,
 }
 
 /// 스태시 항목. 그래프에서 base 커밋 위에 의사 행으로 표시한다.
@@ -400,10 +408,11 @@ mod tests {
         let wip = WipInfo {
             changed_files: 7,
             staged_files: 4,
+            untracked_files: 2,
         };
         assert_eq!(
             serde_json::to_string(&wip).unwrap(),
-            r#"{"changedFiles":7,"stagedFiles":4}"#
+            r#"{"changedFiles":7,"stagedFiles":4,"untrackedFiles":2}"#
         );
 
         let entry = RefEntry {
@@ -434,11 +443,12 @@ mod tests {
             wip: Some(WipInfo {
                 changed_files: 2,
                 staged_files: 1,
+                untracked_files: 0,
             }),
         };
         assert_eq!(
             serde_json::to_string(&state).unwrap(),
-            r#"{"graphToken":"deadbeef","wip":{"changedFiles":2,"stagedFiles":1}}"#
+            r#"{"graphToken":"deadbeef","wip":{"changedFiles":2,"stagedFiles":1,"untrackedFiles":0}}"#
         );
 
         let clean = RepoState {

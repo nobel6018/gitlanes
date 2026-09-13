@@ -25,13 +25,28 @@ pub fn git_unstage(path: String, files: Vec<String>) -> Result<OpResult, String>
     run_op(&path, &args, LOCAL_TIMEOUT)
 }
 
-/// 변경을 버린다. **파일을 HEAD 상태로 되돌린다**(인덱스와 워킹 트리 양쪽).
+/// 변경을 버린다. `area`가 무엇을 얼마나 버릴지 가른다.
 ///
-/// 스테이지된 변경만 남은 파일을 버릴 때도 사용자가 기대하는 결과가 "HEAD로 복귀"라
-/// 한쪽만 되돌리지 않는다. 추적되지 않는 파일은 되돌릴 원본이 없으니 지운다.
+/// | `area` | 추적 파일 | 기준 |
+/// |---|---|---|
+/// | `"worktree"` | `restore --worktree` | **인덱스**. 스테이지된 변경은 살아남는다 |
+/// | `"all"` | `restore --source=HEAD --staged --worktree` | **HEAD**. 전부 사라진다 |
+///
+/// 두 모드를 나눈 이유는 WIP 패널이 Unstaged와 Staged를 눈에 보이게 갈라 놓기 때문이다.
+/// Unstaged 행의 되돌리기 버튼이 스테이지된 변경까지 지우면 사용자가 읽은 화면과
+/// 동작이 어긋난다. 그 간극은 확인 다이얼로그 문구로 덮을 수 있는 크기가 아니다.
+///
+/// 추적되지 않는 파일은 되돌릴 원본이 없어서 어느 모드에서나 삭제다.
 /// 되돌릴 방법이 없는 작업이라 UI에서 확인 다이얼로그를 반드시 거친다.
 #[tauri::command]
-pub fn git_discard(path: String, files: Vec<String>) -> Result<OpResult, String> {
+pub fn git_discard(path: String, files: Vec<String>, area: String) -> Result<OpResult, String> {
+    // `--source` 없이 쓰면 git이 인덱스를 기준으로 삼는다. 그게 "worktree"의 정의다.
+    let restore: &[&str] = match area.as_str() {
+        "worktree" => &["restore", "--worktree", "--"],
+        "all" => &["restore", "--source=HEAD", "--staged", "--worktree", "--"],
+        other => return Err(format!("알 수 없는 discard 범위입니다: {other}")),
+    };
+
     let files = validate_paths(&files)?;
     let untracked = untracked_set(&path);
     let (fresh, tracked): (Vec<&String>, Vec<&String>) =
@@ -39,7 +54,7 @@ pub fn git_discard(path: String, files: Vec<String>) -> Result<OpResult, String>
 
     let mut steps: Vec<Vec<&str>> = Vec::new();
     if !tracked.is_empty() {
-        let mut args: Vec<&str> = vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
+        let mut args: Vec<&str> = restore.to_vec();
         args.extend(tracked.iter().map(|file| file.as_str()));
         steps.push(args);
     }
@@ -203,6 +218,11 @@ mod tests {
         lines_of(&git::run(repo.path(), &["diff", "--cached", "--name-only"]).unwrap())
     }
 
+    /// 인덱스에 올라가지 않은 추적 파일 변경. `git diff`와 같다.
+    fn unstaged_files(repo: &TempRepo) -> Vec<String> {
+        lines_of(&git::run(repo.path(), &["diff", "--name-only"]).unwrap())
+    }
+
     fn exists(repo: &TempRepo, name: &str) -> bool {
         std::path::Path::new(&repo.path()).join(name).exists()
     }
@@ -226,7 +246,7 @@ mod tests {
         let repo = dirty();
         assert!(git_stage(repo.path(), vec![]).is_err());
         assert!(git_unstage(repo.path(), vec![]).is_err());
-        assert!(git_discard(repo.path(), vec![]).is_err());
+        assert!(git_discard(repo.path(), vec![], "all".to_string()).is_err());
         assert!(git_clean(repo.path(), vec![]).is_err());
         // 옵션처럼 보이는 경로도 막는다
         assert!(git_stage(repo.path(), vec!["--all".to_string()]).is_err());
@@ -247,8 +267,12 @@ mod tests {
         assert!(exists(&repo, "fresh.txt"));
     }
 
+    fn read(repo: &TempRepo, name: &str) -> String {
+        std::fs::read_to_string(std::path::Path::new(&repo.path()).join(name)).unwrap()
+    }
+
     #[test]
-    fn discard는_추적_파일을_head로_되돌리고_새_파일은_지운다() {
+    fn discard_all은_추적_파일을_head로_되돌리고_새_파일은_지운다() {
         let repo = dirty();
         // 스테이지까지 해 둔 변경도 함께 사라져야 한다
         assert!(
@@ -260,24 +284,125 @@ mod tests {
         let result = git_discard(
             repo.path(),
             vec!["a.txt".to_string(), "fresh.txt".to_string()],
+            "all".to_string(),
         )
         .unwrap();
         assert!(result.ok, "{result:?}");
 
-        assert_eq!(
-            std::fs::read_to_string(std::path::Path::new(&repo.path()).join("a.txt")).unwrap(),
-            "1\n"
-        );
+        assert_eq!(read(&repo, "a.txt"), "1\n");
         assert!(!exists(&repo, "fresh.txt"));
         assert!(staged_files(&repo).is_empty());
     }
 
     #[test]
-    fn discard는_없는_파일에서_실패를_그대로_전한다() {
+    fn discard_worktree는_인덱스를_기준으로_되돌린다() {
         let repo = dirty();
-        let result = git_discard(repo.path(), vec!["nope.txt".to_string()]).unwrap();
+
+        // 추적 파일만 넘겨 restore 인자를 그대로 확인한다. 새 파일이 섞이면 clean이
+        // 뒤에 붙고, run_chain은 마지막으로 실행한 명령을 command에 담는다.
+        let tracked = git_discard(
+            repo.path(),
+            vec!["a.txt".to_string()],
+            "worktree".to_string(),
+        )
+        .unwrap();
+        assert!(tracked.ok, "{tracked:?}");
+        assert_eq!(tracked.command, ["restore", "--worktree", "--", "a.txt"]);
+
+        // 인덱스가 비어 있으면 인덱스 = HEAD라 결과는 HEAD 복귀와 같다
+        assert_eq!(read(&repo, "a.txt"), "1\n");
+
+        // untracked는 어느 모드에서나 삭제다
+        let fresh = git_discard(
+            repo.path(),
+            vec!["fresh.txt".to_string()],
+            "worktree".to_string(),
+        )
+        .unwrap();
+        assert!(fresh.ok, "{fresh:?}");
+        assert_eq!(fresh.command[0], "clean");
+        assert!(!exists(&repo, "fresh.txt"));
+    }
+
+    /// 이 테스트가 `area` 인자를 나눈 이유 전부다.
+    ///
+    /// 한 파일에 스테이지된 변경과 그 위의 추가 변경이 함께 있을 때, WIP 패널의
+    /// Unstaged 행에서 되돌리기를 누르면 스테이지된 쪽은 살아 있어야 한다.
+    #[test]
+    fn discard_worktree는_스테이지된_변경을_남긴다() {
+        let repo = dirty();
+
+        // 1 -> 2를 스테이지하고, 그 위에 3을 워킹 트리에만 얹는다
+        repo.write("a.txt", "2\n");
+        assert!(
+            git_stage(repo.path(), vec!["a.txt".to_string()])
+                .unwrap()
+                .ok
+        );
+        repo.write("a.txt", "3\n");
+
+        // 시작 상태 확인: 같은 파일이 staged와 unstaged 양쪽에 있다
+        assert_eq!(staged_files(&repo), ["a.txt"]);
+        assert_eq!(unstaged_files(&repo), ["a.txt"]);
+
+        let result = git_discard(
+            repo.path(),
+            vec!["a.txt".to_string()],
+            "worktree".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+
+        // 인덱스는 그대로다. 여기가 --source=HEAD를 붙이면 깨지는 지점이다.
+        assert_eq!(
+            staged_files(&repo),
+            ["a.txt"],
+            "worktree 모드가 스테이지된 변경을 지웠다"
+        );
+        // 워킹 트리 쪽 변경만 사라졌다
+        assert!(
+            unstaged_files(&repo).is_empty(),
+            "unstaged 변경이 남았다: {:?}",
+            unstaged_files(&repo)
+        );
+        // 파일은 HEAD의 "1"이 아니라 스테이지한 "2"다
+        assert_eq!(read(&repo, "a.txt"), "2\n");
+
+        // 같은 상황에 all을 걸면 양쪽이 모두 사라진다
+        repo.write("a.txt", "3\n");
+        assert_eq!(
+            unstaged_files(&repo),
+            ["a.txt"],
+            "다시 양쪽에 변경을 만든다"
+        );
+
+        let all = git_discard(repo.path(), vec!["a.txt".to_string()], "all".to_string()).unwrap();
+        assert!(all.ok, "{all:?}");
+        assert!(staged_files(&repo).is_empty(), "all인데 인덱스가 남았다");
+        assert!(
+            unstaged_files(&repo).is_empty(),
+            "all인데 워킹 트리가 남았다"
+        );
+        assert_eq!(read(&repo, "a.txt"), "1\n");
+    }
+
+    #[test]
+    fn discard는_없는_파일과_모르는_범위에서_실패한다() {
+        let repo = dirty();
+
+        let result =
+            git_discard(repo.path(), vec!["nope.txt".to_string()], "all".to_string()).unwrap();
         assert!(!result.ok, "{result:?}");
         assert!(!result.stderr.is_empty(), "{result:?}");
+
+        // 범위 오타는 파일을 건드리기 전에 막는다
+        assert!(git_discard(repo.path(), vec!["a.txt".to_string()], "index".to_string()).is_err());
+        assert!(git_discard(repo.path(), vec!["a.txt".to_string()], String::new()).is_err());
+        assert_eq!(
+            read(&repo, "a.txt"),
+            "changed\n",
+            "거부된 호출이 파일을 건드렸다"
+        );
     }
 
     #[test]

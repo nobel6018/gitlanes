@@ -35,7 +35,7 @@ export function WelcomeScreen({
             </svg>
           </div>
           <h1 className="welcome-title">GitLanes</h1>
-          <p className="welcome-subtitle">읽기 전용 커밋 그래프 뷰어 + 내장 터미널</p>
+          <p className="welcome-subtitle">Commit graph, staging, and history editing in one place</p>
         </div>
 
         <button
