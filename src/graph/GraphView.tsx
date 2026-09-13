@@ -1,7 +1,7 @@
 // GitKraken 스타일 커밋 테이블. 가상 스크롤 + 단일 캔버스 그래프.
 // 접점 계약: CONTRACTS.md의 "GraphView 컴포넌트" 절. GraphViewProps는 동결이다.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
+import type { DragEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import { ROW_HEIGHT, WIP_SHA } from "../constants";
 import type { CommitRow, GraphData, StashInfo, WipInfo } from "../types";
 import { drawGraph } from "./canvas";
@@ -28,6 +28,7 @@ import {
 } from "./layout";
 import type { DateMode } from "./layout";
 import { highlightText } from "./mark";
+import { REF_DRAG_MIME } from "./refDrag";
 import { RefPills, refsTitle } from "./RefPills";
 import "./graph.css";
 
@@ -67,6 +68,17 @@ export interface GraphViewProps {
    * undefined/false면 강조하지 않는다 (선택 강조가 항상 우선)
    */
   hoverHighlight?: boolean;
+  /**
+   * ref 드래그가 커밋 행 위에 올라왔을 때. 그래프 밖으로 나가면 null.
+   * 같은 행 위에서 계속 움직이는 동안에는 다시 부르지 않는다
+   */
+  onRowDragOver?: (sha: string | null) => void;
+  /** 커밋 행에 ref를 놓았을 때. payload는 dataTransfer의 원본 문자열 */
+  onRowDrop?: (sha: string, payload: string) => void;
+  /** 드롭 후보로 강조할 행 sha. 노란 테두리로 그린다 */
+  dropTargetSha?: string | null;
+  /** 진행 중인 머지/리베이스의 대상 커밋. 점 주위에 이중 링을 그린다 */
+  pendingSha?: string | null;
 }
 
 /** 보이는 범위 위아래로 더 그려두는 행 수 */
@@ -122,6 +134,10 @@ interface RowProps {
   branchWidth: number;
   /** 경로 강조 집합 밖이면 true */
   dimmed: boolean;
+  /** ref 드롭 후보로 강조 중이면 true (노란 테두리) */
+  dropTarget: boolean;
+  /** 진행 중인 머지/리베이스의 대상이면 true (주황 테두리) */
+  pending: boolean;
   /** 폭이 부족해 드롭된 컬럼 비트마스크. 원시값이라 memo가 유지된다 */
   hiddenMask: number;
   /** 검색어. 빈 문자열이면 강조 없이 원본 문자열을 그대로 렌더한다 */
@@ -144,6 +160,8 @@ const Row = memo(function Row({
   graphWidth,
   branchWidth,
   dimmed,
+  dropTarget,
+  pending,
   hiddenMask,
   highlightQuery,
   dateMode,
@@ -157,7 +175,10 @@ const Row = memo(function Row({
     "gl-row" +
     (selected ? " gl-row-selected" : "") +
     (row.isHead ? " gl-row-head" : "") +
-    (dimmed ? " gl-row-dim" : "");
+    // dim은 액션 상태 아래에 둔다. 드롭 후보와 진행 중 행은 경로 밖이어도 또렷해야 한다
+    (dimmed && !dropTarget && !pending ? " gl-row-dim" : "") +
+    (pending ? " gl-row-pending" : "") +
+    (dropTarget ? " gl-row-drop" : "");
   const avatarColor = authorColorIndex(row.authorEmail);
   const refsLabel = refsTitle(row.refs, showTags);
   const shortSha = row.shortSha.slice(0, SHA_DISPLAY_LENGTH);
@@ -238,6 +259,9 @@ function WipRow({
   onSelect?: () => void;
   onHover: () => void;
 }) {
+  // WipInfo에는 untracked 수가 없다(types.ts 동결). staged가 아닌 나머지를
+  // unstaged로 묶어 보여주고, untracked는 총계 배지 안에 남는다
+  const unstagedFiles = Math.max(0, wip.changedFiles - wip.stagedFiles);
   return (
     <div
       className={
@@ -255,11 +279,14 @@ function WipRow({
       <div className="gl-cell gl-cell-graph" style={{ width: graphWidth }} />
       <div className="gl-cell gl-cell-message gl-wip-message">
         <span className="gl-wip-label">// WIP</span>
-        <span className="gl-wip-badge">
+        <span className="gl-wip-badge gl-wip-total">
           {`${wip.changedFiles} changed file${wip.changedFiles === 1 ? "" : "s"}`}
         </span>
         {wip.stagedFiles > 0 ? (
-          <span className="gl-wip-staged">{`${wip.stagedFiles} staged`}</span>
+          <span className="gl-wip-badge gl-wip-staged">{`${wip.stagedFiles} staged`}</span>
+        ) : null}
+        {unstagedFiles > 0 ? (
+          <span className="gl-wip-badge gl-wip-unstaged">{`${unstagedFiles} unstaged`}</span>
         ) : null}
       </div>
       <div className="gl-cell gl-col-author" />
@@ -384,6 +411,10 @@ export function GraphView({
   dateMode = "absolute",
   onSelectWip,
   hoverHighlight,
+  onRowDragOver,
+  onRowDrop,
+  dropTargetSha,
+  pendingSha,
 }: GraphViewProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -643,6 +674,12 @@ export function GraphView({
     (rowIndex: number) => highlight !== null && highlight[rowIndex] !== 1,
     [highlight],
   );
+
+  // 상태 강조 대상의 행 인덱스. 로드 범위 밖 sha(스태시 등)면 -1이라 아무것도 안 그린다.
+  // sha가 그대로면 값도 그대로라 캔버스 재그리기와 Row 리렌더가 늘지 않는다
+  const dropRowIndex =
+    dropTargetSha != null ? (shaToRow.get(dropTargetSha) ?? -1) : -1;
+  const pendingRowIndex = pendingSha != null ? (shaToRow.get(pendingSha) ?? -1) : -1;
   const totalHeight = displayCount * ROW_HEIGHT;
 
   // 실제 적용 폭을 ref에 남긴다. 드래그 시작값과 pill 재계산이 이 값을 본다
@@ -695,6 +732,126 @@ export function GraphView({
     handler(sha, event.clientX, event.clientY);
   }, []);
 
+  // ── ref 드래그 수신 ─────────────────────────────────────────
+  // GraphView는 payload를 해석하지 않는다. 어느 행 위인지만 알려주고,
+  // "이 브랜치를 이 커밋에 놓으면 무슨 일이 일어나는가"는 shell이 정한다
+
+  const onRowDragOverRef = useRef(onRowDragOver);
+  useEffect(() => {
+    onRowDragOverRef.current = onRowDragOver;
+  }, [onRowDragOver]);
+
+  const onRowDropRef = useRef(onRowDrop);
+  useEffect(() => {
+    onRowDropRef.current = onRowDrop;
+  }, [onRowDrop]);
+
+  /** 마지막으로 shell에 보고한 행. 같은 행 위의 dragover를 여기서 흡수한다 */
+  const dragOverShaRef = useRef<string | null>(null);
+
+  /**
+   * 드래그 대상 행 보고. sha가 실제로 바뀔 때만 콜백을 부른다.
+   * dragover는 커서가 멈춰 있어도 수십 ms마다 오므로, 그대로 흘리면
+   * shell의 setState -> dropTargetSha 변경 -> 캔버스 전체 재그리기가 초당 수십 번 돈다
+   */
+  const reportDragOver = useCallback((sha: string | null) => {
+    if (dragOverShaRef.current === sha) {
+      return;
+    }
+    dragOverShaRef.current = sha;
+    onRowDragOverRef.current?.(sha);
+  }, []);
+
+  /**
+   * 포인터 y좌표로 커밋 sha를 역산한다. 클릭 히트 테스트와 달리 drag 이벤트는
+   * 행 DOM이 아니라 스크롤 컨테이너에서 받으므로 좌표 계산이 필요하다.
+   * 의사 행(WIP, 스태시) 위거나 목록 밖이면 null.
+   */
+  const commitShaAt = useCallback(
+    (clientY: number): string | null => {
+      const el = scrollRef.current;
+      if (!el) {
+        return null;
+      }
+      // scrollTop은 ref 캐시를 쓴다. dragover마다 실제 프로퍼티를 읽으면 리플로우가 강제된다
+      const y = clientY - el.getBoundingClientRect().top + scrollTopRef.current;
+      if (y < 0) {
+        return null;
+      }
+      const displayIndex = Math.floor(y / ROW_HEIGHT);
+      if (displayIndex >= displayCount || pseudoAt(displayIndex)) {
+        return null;
+      }
+      return rows[toRowIndex(displayIndex)]?.sha ?? null;
+    },
+    [displayCount, pseudoAt, rows, toRowIndex],
+  );
+
+  const handleDragOver = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      const transfer = event.dataTransfer;
+      // 우리 payload가 아니면 건드리지 않는다. 파일 드래그 등이 그대로 통과한다
+      if (!transfer.types.includes(REF_DRAG_MIME)) {
+        return;
+      }
+      // dragover에서 preventDefault를 해야 drop 이벤트가 발생한다. HTML5 DnD의 1번 함정
+      event.preventDefault();
+      const sha = commitShaAt(event.clientY);
+      // 의사 행 위에서는 dropEffect를 none으로 둬서 놓아도 drop이 발생하지 않게 한다
+      transfer.dropEffect = sha === null ? "none" : "copy";
+      reportDragOver(sha);
+    },
+    [commitShaAt, reportDragOver],
+  );
+
+  const handleDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      const transfer = event.dataTransfer;
+      if (!transfer.types.includes(REF_DRAG_MIME)) {
+        return;
+      }
+      event.preventDefault();
+      const sha = commitShaAt(event.clientY);
+      const payload = transfer.getData(REF_DRAG_MIME);
+      // 강조는 성공/실패와 무관하게 즉시 끈다
+      reportDragOver(null);
+      if (sha !== null && payload !== "") {
+        onRowDropRef.current?.(sha, payload);
+      }
+    },
+    [commitShaAt, reportDragOver],
+  );
+
+  const handleDragLeave = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      // 행 DOM 사이를 지날 때도 dragleave가 올라온다. 컨테이너 안에 머무르면 무시한다
+      const next = event.relatedTarget as Node | null;
+      if (next !== null && event.currentTarget.contains(next)) {
+        return;
+      }
+      reportDragOver(null);
+    },
+    [reportDragOver],
+  );
+
+  /**
+   * 드래그가 그래프 밖에서 끝나면 우리에게는 아무 이벤트도 오지 않는다.
+   * dragend는 원본 요소에서 window까지 버블하므로 여기서 받아 강조를 끈다.
+   * 이게 없으면 사이드바에서 드래그를 취소했을 때 노란 테두리가 남는다.
+   */
+  useEffect(() => {
+    if (!onRowDragOver) {
+      return;
+    }
+    const clear = () => reportDragOver(null);
+    window.addEventListener("dragend", clear);
+    window.addEventListener("drop", clear);
+    return () => {
+      window.removeEventListener("dragend", clear);
+      window.removeEventListener("drop", clear);
+    };
+  }, [onRowDragOver, reportDragOver]);
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) {
@@ -709,8 +866,10 @@ export function GraphView({
       height: size.height,
       devicePixelRatio: window.devicePixelRatio || 1,
       bgColor: bgColorRef.current,
+      dropRow: dropRowIndex,
+      pendingRow: pendingRowIndex,
     });
-  }, [rows, layout, highlight, graphWidth, size.height]);
+  }, [rows, layout, highlight, graphWidth, size.height, dropRowIndex, pendingRowIndex]);
 
   const syncRange = useCallback(() => {
     if (size.height <= 0) {
@@ -1027,6 +1186,8 @@ export function GraphView({
         graphWidth={graphWidth}
         branchWidth={pillBranchWidth}
         dimmed={isDimmed(rowIndex)}
+        dropTarget={rowIndex === dropRowIndex}
+        pending={rowIndex === pendingRowIndex}
         hiddenMask={hiddenMask}
         highlightQuery={highlightQuery}
         dateMode={dateMode}
@@ -1087,6 +1248,11 @@ export function GraphView({
           onKeyDown={handleKeyDown}
           // 그래프 영역을 벗어나면 hover 강조를 즉시 해제한다
           onMouseLeave={clearHover}
+          // drag 이벤트는 행 DOM이 아니라 컨테이너에서 한 번만 받는다.
+          // 행마다 핸들러를 달면 가상 스크롤로 만들어지는 행 수만큼 리스너가 늘어난다
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
         >
           {displayCount === 0 ? (
             <div className="gl-empty">{loading ? "Loading…" : "No commits"}</div>

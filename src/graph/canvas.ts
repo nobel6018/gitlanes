@@ -1,6 +1,6 @@
 // GRAPH 컬럼 캔버스 페인터. 순수 그리기 함수만 두고 스크롤/rAF 관리는 GraphView가 한다.
 // 계약(CONTRACTS.md): CommitRow.edges는 rust-core가 계산해 내려준다. 여기서는 좌표 변환만 한다.
-import { DOT_RADIUS, EDGE_WIDTH, ROW_HEIGHT } from "../constants";
+import { DOT_RADIUS, EDGE_WIDTH, LANE_COLORS, ROW_HEIGHT } from "../constants";
 import type { CommitRow, Edge } from "../types";
 import { authorColorIndex, authorInitials, laneColor, laneColorAlpha, laneX } from "./layout";
 import type { PseudoLayout, PseudoRow } from "./pseudo";
@@ -19,6 +19,10 @@ export interface DrawParams {
   bgColor: string;
   /** 경로 강조 플래그(행 인덱스 기준). null이면 강조 없음(전부 밝게) */
   highlight: Uint8Array | null;
+  /** 드롭 후보 커밋의 행 인덱스. 없으면 -1 */
+  dropRow?: number;
+  /** 진행 중인 머지/리베이스 대상 커밋의 행 인덱스. 없으면 -1 */
+  pendingRow?: number;
 }
 
 /** 화면 밖 한 행씩 여유를 둬서 절단된 곡선이 보이지 않게 한다 */
@@ -35,6 +39,8 @@ const BEND_MIN_FACTOR = 0.38;
 /** 넘으면 제어점이 뒤집혀 곡선이 위로 되돌아간다(비단조) */
 const BEND_MAX_FACTOR = 0.9;
 const PSEUDO_DASH = [3, 3];
+/** WIP 의사 행 마크(점선 사각형)의 반변 길이(px). 커밋 점보다 커야 입구로 읽힌다 */
+const WIP_MARK_R = DOT_RADIUS + 1.5;
 /** 경로 밖 요소의 불투명도 */
 const DIM_ALPHA = 0.35;
 /**
@@ -48,6 +54,16 @@ const LANE_BAR_WIDTH = 3;
 const AVATAR_R = 8;
 /** 아바타 이니셜 폰트. AUTHOR 컬럼 .gl-avatar(9px/700)와 눈금을 맞춘다 */
 const AVATAR_FONT = '700 9px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+
+// 드롭 후보와 진행 중 작업은 레인 색이 아니라 상태 색이다. 레인 팔레트에서
+// 어느 레인에도 거의 안 겹치는 두 색을 빌려 새 색을 만들지 않는다.
+// graph.css의 --gl-drop / --gl-pending과 같은 값이라 DOM 강조와 색이 맞는다.
+/** 드롭 후보 링/띠 색 (LANE_COLORS[5], 노랑) */
+const DROP_COLOR = LANE_COLORS[5];
+/** 진행 중 작업 링 색 (LANE_COLORS[1], 주황) */
+const PENDING_COLOR = LANE_COLORS[1];
+/** 드롭 후보 행 배경 띠의 불투명도. 레인 띠(0.06)보다 확실히 진해야 눈에 걸린다 */
+const DROP_BAND_ALPHA = 0.16;
 
 export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   const ctx = canvas.getContext("2d");
@@ -144,6 +160,16 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
     drawLaneTint(row.lane, row.color, toDisplay(i), isLit(i));
   }
   drawPseudoTints();
+
+  // 드롭 후보 행은 레인 띠 위에 노란 띠를 덮는다. 배경 레이어라 곡선과 점은 그대로 보인다.
+  // 경로 강조로 어두워진 행이라도 드롭 후보는 밝게 둔다(액션 상태가 우선)
+  const dropRow = p.dropRow ?? -1;
+  if (dropRow >= 0 && dropRow < rows.length) {
+    const top = toDisplay(dropRow) * ROW_HEIGHT - p.scrollTop;
+    ctx.globalAlpha = DROP_BAND_ALPHA;
+    ctx.fillStyle = DROP_COLOR;
+    ctx.fillRect(0, top, p.width, ROW_HEIGHT);
+  }
   ctx.globalAlpha = 1;
 
   // 색상별로 Path2D를 모아 stroke 호출 수를 색 개수(<=10)로 줄인다.
@@ -213,6 +239,7 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.font = AVATAR_FONT;
+  const pendingRow = p.pendingRow ?? -1;
   for (let i = first; i <= last; i++) {
     const row = rows[i];
     const x = laneX(row.lane);
@@ -238,12 +265,42 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
     ctx.fillStyle = laneColor(authorColorIndex(row.authorEmail));
     ctx.fillText(authorInitials(row.author), x, y + 0.5);
 
-    // HEAD는 바깥에 얇은 링을 하나 더 둘러 현재 위치를 표시한다
-    if (row.isHead) {
+    // HEAD는 바깥에 얇은 링을 하나 더 둘러 현재 위치를 표시한다.
+    // 진행 중 표시가 붙은 행에서는 생략한다. 반지름이 겹쳐 두 링이 뭉개지고,
+    // HEAD는 굵은 글씨와 ref pill로도 읽히지만 머지/리베이스 진행은 여기 말고 표시할 데가 없다
+    if (row.isHead && i !== pendingRow) {
       ctx.beginPath();
       ctx.arc(x, y, AVATAR_R + 3, 0, Math.PI * 2);
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = ring;
+      ctx.stroke();
+    }
+
+    // 상태 링은 dim을 무시한다. 진행 중 작업과 드롭 후보는 경로 밖이어도 또렷해야 한다
+    if (i === pendingRow || i === dropRow) {
+      ctx.globalAlpha = 1;
+    }
+
+    // 진행 중 작업: 정적인 이중 링. 애니메이션을 쓰면 rAF가 상시 돌아 배터리를 먹는다
+    if (i === pendingRow) {
+      ctx.strokeStyle = PENDING_COLOR;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, AVATAR_R + 2.5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      // ROW_HEIGHT 30이라 반지름 15가 한계다. 바깥 링은 여유 1px을 남긴다
+      ctx.arc(x, y, AVATAR_R + 5.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // 드롭 후보: 굵은 노란 링 하나. 진행 중 링과 겹쳐도 색과 굵기로 갈린다
+    if (i === dropRow) {
+      ctx.strokeStyle = DROP_COLOR;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, AVATAR_R + 4, 0, Math.PI * 2);
       ctx.stroke();
     }
   }
@@ -278,9 +335,9 @@ function drawPseudoMark(
     ctx.stroke();
   }
 
-  ctx.lineWidth = 1.5;
   ctx.beginPath();
   if (pseudo.kind === "stash") {
+    ctx.lineWidth = 1.5;
     const r = DOT_RADIUS + 1;
     ctx.moveTo(x, y - r);
     ctx.lineTo(x + r, y);
@@ -288,7 +345,12 @@ function drawPseudoMark(
     ctx.lineTo(x - r, y);
     ctx.closePath();
   } else {
-    ctx.arc(x, y, DOT_RADIUS, 0, Math.PI * 2);
+    // WIP은 스테이징 화면으로 들어가는 입구다. 커밋 원, 스태시 다이아몬드와
+    // 형태부터 갈라지도록 점선 사각형으로 그리고 커밋 점보다 크게 잡는다.
+    // roundRect는 구형 WKWebView에 없어 직각 사각형으로 둔다
+    ctx.lineWidth = 1.75;
+    const r = WIP_MARK_R;
+    ctx.rect(x - r, y - r, r * 2, r * 2);
   }
   ctx.stroke();
   ctx.restore();
