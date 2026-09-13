@@ -790,6 +790,11 @@ export function GraphView({
   const handleDragOver = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
       const transfer = event.dataTransfer;
+      // 아무것도 배선되지 않았으면 preventDefault도 하지 않는다.
+      // 새 prop을 안 넘긴 호출부에서 드롭 커서만 바뀌고 아무 일도 안 일어나는 상태를 막는다
+      if (!onRowDragOverRef.current && !onRowDropRef.current) {
+        return;
+      }
       // 우리 payload가 아니면 건드리지 않는다. 파일 드래그 등이 그대로 통과한다
       if (!transfer.types.includes(REF_DRAG_MIME)) {
         return;

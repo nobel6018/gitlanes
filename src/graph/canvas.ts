@@ -245,7 +245,10 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
     const x = laneX(row.lane);
     const y = centerY(toDisplay(i));
     const ring = laneColor(row.color);
-    ctx.globalAlpha = isLit(i) ? 1 : DIM_ALPHA;
+    // 드롭 후보와 진행 중 행은 경로 강조 밖이어도 또렷하게 둔다. 액션 대상이
+    // 흐릿하면 "여기에 놓으면 된다"가 읽히지 않는다
+    const actionRow = i === dropRow || i === pendingRow;
+    ctx.globalAlpha = isLit(i) || actionRow ? 1 : DIM_ALPHA;
 
     // 배경을 불투명하게 채워 레인 배경 띠를 덮어야 이니셜이 묻히지 않는다.
     // merge는 레인 색 옅은 채움을 덧대 일반 커밋과 구분한다.
@@ -274,11 +277,6 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = ring;
       ctx.stroke();
-    }
-
-    // 상태 링은 dim을 무시한다. 진행 중 작업과 드롭 후보는 경로 밖이어도 또렷해야 한다
-    if (i === pendingRow || i === dropRow) {
-      ctx.globalAlpha = 1;
     }
 
     // 진행 중 작업: 정적인 이중 링. 애니메이션을 쓰면 rAF가 상시 돌아 배터리를 먹는다
