@@ -2,13 +2,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CommitDetails,
+  CommitOptions,
+  ConflictFile,
+  DiscardArea,
   GraphData,
+  OpResult,
+  PendingKind,
+  PullMode,
+  RebaseStep,
   RefEntry,
+  RemoteInfo,
   RepoInfo,
   RepoState,
   SearchMatch,
+  SyncState,
   WipArea,
   WipDetails,
+  WorktreeInfo,
 } from "../types";
 
 export function openRepo(path: string): Promise<RepoInfo> {
@@ -106,4 +116,390 @@ export function openInTerminal(path: string): Promise<void> {
 /** File > Open Recent 서브메뉴를 다시 만든다 (최대 10개) */
 export function setRecentRepos(paths: string[]): Promise<void> {
   return invoke<void>("set_recent_repos", { paths });
+}
+
+// ════════════════════════════════════════════════════════════
+// v0.18 쓰기 command 래퍼.
+// 전부 얇다. invoke만 부르고 확인/토스트/새로고침은 actions.ts가 맡는다.
+// 인자는 camelCase로 넘긴다 (Tauri 2가 Rust snake_case로 변환한다).
+// ════════════════════════════════════════════════════════════
+
+// ── 상태 조회 ───────────────────────────────────────────────
+
+/** 툴바 ↑ahead ↓behind 배지와 진행 중인 머지/리베이스 판정 */
+export function getSyncState(path: string): Promise<SyncState> {
+  return invoke<SyncState>("get_sync_state", { path });
+}
+
+/** 충돌 파일 목록. 진행 중인 작업이 없으면 [] */
+export function getConflicts(path: string): Promise<ConflictFile[]> {
+  return invoke<ConflictFile[]>("get_conflicts", { path });
+}
+
+/** 3-way 비교용 원문. 해당 stage가 없으면 "" (한쪽이 삭제된 충돌) */
+export function getConflictSide(
+  path: string,
+  file: string,
+  side: "base" | "ours" | "theirs",
+): Promise<string> {
+  return invoke<string>("get_conflict_side", { path, file, side });
+}
+
+export function listRemotes(path: string): Promise<RemoteInfo[]> {
+  return invoke<RemoteInfo[]>("list_remotes", { path });
+}
+
+export function listWorktrees(path: string): Promise<WorktreeInfo[]> {
+  return invoke<WorktreeInfo[]>("list_worktrees", { path });
+}
+
+/** amend 체크 시 커밋 메시지 초기값 */
+export function getLastCommitMessage(path: string): Promise<string> {
+  return invoke<string>("get_last_commit_message", { path });
+}
+
+/** commit.template 설정이 있으면 그 내용, 없으면 null */
+export function getCommitTemplate(path: string): Promise<string | null> {
+  return invoke<string | null>("get_commit_template", { path });
+}
+
+// ── 스테이징 ───────────────────────────────────────────────
+
+export function gitStage(path: string, files: string[]): Promise<OpResult> {
+  return invoke<OpResult>("git_stage", { path, files });
+}
+
+export function gitUnstage(path: string, files: string[]): Promise<OpResult> {
+  return invoke<OpResult>("git_unstage", { path, files });
+}
+
+/**
+ * 추적 파일은 restore, untracked는 삭제. 되돌릴 수 없다.
+ * area="worktree"는 인덱스 기준으로 워킹트리만 되돌려 staged 변경을 살린다.
+ * area="all"은 마지막 커밋 상태로 전부 되돌린다.
+ */
+export function gitDiscard(
+  path: string,
+  files: string[],
+  area: DiscardArea,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_discard", { path, files, area });
+}
+
+export function gitStageAll(path: string): Promise<OpResult> {
+  return invoke<OpResult>("git_stage_all", { path });
+}
+
+export function gitUnstageAll(path: string): Promise<OpResult> {
+  return invoke<OpResult>("git_unstage_all", { path });
+}
+
+/**
+ * hunk/line 단위 스테이징의 유일한 원시 연산.
+ * 스테이지 cached=true/reverse=false, 언스테이지 cached=true/reverse=true,
+ * 워킹트리에서 되돌리기 cached=false/reverse=true
+ */
+export function gitApplyPatch(
+  path: string,
+  patch: string,
+  cached: boolean,
+  reverse: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_apply_patch", { path, patch, cached, reverse });
+}
+
+/** untracked 삭제 (-fd). 경로 지정이 필수라 레포 전체를 날릴 수 없다 */
+export function gitClean(path: string, paths: string[]): Promise<OpResult> {
+  return invoke<OpResult>("git_clean", { path, paths });
+}
+
+// ── 커밋 ───────────────────────────────────────────────────
+
+export function gitCommit(path: string, options: CommitOptions): Promise<OpResult> {
+  return invoke<OpResult>("git_commit", { path, options });
+}
+
+/** reset --soft HEAD~1. 머지 커밋에도 안전하다 */
+export function gitUndoCommit(path: string): Promise<OpResult> {
+  return invoke<OpResult>("git_undo_commit", { path });
+}
+
+// ── 브랜치 ─────────────────────────────────────────────────
+
+/** createLocal=true면 origin/foo -> foo 추적 브랜치를 만들고 체크아웃 */
+export function gitCheckout(
+  path: string,
+  target: string,
+  createLocal: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_checkout", { path, target, createLocal });
+}
+
+export function gitCreateBranch(
+  path: string,
+  name: string,
+  startPoint: string | null,
+  checkout: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_create_branch", { path, name, startPoint, checkout });
+}
+
+/** remote=true면 "origin/foo"를 받아 origin에서 foo를 지운다 */
+export function gitDeleteBranch(
+  path: string,
+  name: string,
+  force: boolean,
+  remote: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_delete_branch", { path, name, force, remote });
+}
+
+export function gitRenameBranch(path: string, from: string, to: string): Promise<OpResult> {
+  return invoke<OpResult>("git_rename_branch", { path, from, to });
+}
+
+/** upstream이 null이면 --unset-upstream */
+export function gitSetUpstream(
+  path: string,
+  branch: string,
+  upstream: string | null,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_set_upstream", { path, branch, upstream });
+}
+
+// ── 네트워크 ───────────────────────────────────────────────
+
+export function gitFetch(
+  path: string,
+  remote: string | null,
+  prune: boolean,
+  allRemotes: boolean,
+  tags: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_fetch", { path, remote, prune, allRemotes, tags });
+}
+
+export function gitPull(
+  path: string,
+  mode: PullMode,
+  remote: string | null,
+  branch: string | null,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_pull", { path, mode, remote, branch });
+}
+
+/** forceWithLease만 허용한다. --force는 계약상 금지 */
+export function gitPush(
+  path: string,
+  remote: string | null,
+  branch: string | null,
+  setUpstream: boolean,
+  forceWithLease: boolean,
+  tags: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_push", { path, remote, branch, setUpstream, forceWithLease, tags });
+}
+
+// ── 히스토리 ───────────────────────────────────────────────
+
+export function gitMerge(
+  path: string,
+  source: string,
+  noFf: boolean,
+  squash: boolean,
+  noCommit: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_merge", { path, source, noFf, squash, noCommit });
+}
+
+export function gitRebase(
+  path: string,
+  upstream: string,
+  onto: string | null,
+  autostash: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_rebase", { path, upstream, onto, autostash });
+}
+
+/** mainline: 머지 커밋을 체리픽할 때 고를 부모 번호 (1부터). 아니면 null */
+export function gitCherryPick(
+  path: string,
+  shas: string[],
+  noCommit: boolean,
+  mainline: number | null,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_cherry_pick", { path, shas, noCommit, mainline });
+}
+
+export function gitRevert(
+  path: string,
+  shas: string[],
+  noCommit: boolean,
+  mainline: number | null,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_revert", { path, shas, noCommit, mainline });
+}
+
+export function gitReset(
+  path: string,
+  target: string,
+  mode: "soft" | "mixed" | "hard",
+): Promise<OpResult> {
+  return invoke<OpResult>("git_reset", { path, target, mode });
+}
+
+/** 진행 중인 머지/리베이스/체리픽/리버트 제어. kind는 SyncState.pending.kind 그대로 */
+export function gitPendingAction(
+  path: string,
+  kind: PendingKind,
+  action: "continue" | "abort" | "skip",
+): Promise<OpResult> {
+  return invoke<OpResult>("git_pending_action", { path, kind, action });
+}
+
+/** steps 순서가 곧 적용 순서 (위 -> 아래 = 과거 -> 현재). Windows는 Err */
+export function gitRebaseInteractive(
+  path: string,
+  base: string,
+  steps: RebaseStep[],
+): Promise<OpResult> {
+  return invoke<OpResult>("git_rebase_interactive", { path, base, steps });
+}
+
+// ── 태그 ───────────────────────────────────────────────────
+
+/** message가 있으면 annotated tag */
+export function gitCreateTag(
+  path: string,
+  name: string,
+  target: string,
+  message: string | null,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_create_tag", { path, name, target, message });
+}
+
+export function gitDeleteTag(path: string, name: string): Promise<OpResult> {
+  return invoke<OpResult>("git_delete_tag", { path, name });
+}
+
+/** del=true면 원격에서 태그를 지운다 */
+export function gitPushTag(
+  path: string,
+  remote: string,
+  name: string,
+  del: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_push_tag", { path, remote, name, delete: del });
+}
+
+// ── 스태시 ─────────────────────────────────────────────────
+
+/** files가 있으면 부분 스태시 (git stash push -- <files>) */
+export function gitStashPush(
+  path: string,
+  message: string | null,
+  includeUntracked: boolean,
+  keepIndex: boolean,
+  files: string[] | null,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_stash_push", {
+    path,
+    message,
+    includeUntracked,
+    keepIndex,
+    files,
+  });
+}
+
+/** drop=true가 pop이다 */
+export function gitStashApply(path: string, ref: string, drop: boolean): Promise<OpResult> {
+  return invoke<OpResult>("git_stash_apply", { path, ref, drop });
+}
+
+export function gitStashDrop(path: string, ref: string): Promise<OpResult> {
+  return invoke<OpResult>("git_stash_drop", { path, ref });
+}
+
+export function gitStashBranch(path: string, ref: string, name: string): Promise<OpResult> {
+  return invoke<OpResult>("git_stash_branch", { path, ref, name });
+}
+
+// ── remote ─────────────────────────────────────────────────
+
+export function gitAddRemote(path: string, name: string, url: string): Promise<OpResult> {
+  return invoke<OpResult>("git_add_remote", { path, name, url });
+}
+
+export function gitRemoveRemote(path: string, name: string): Promise<OpResult> {
+  return invoke<OpResult>("git_remove_remote", { path, name });
+}
+
+export function gitRenameRemote(path: string, from: string, to: string): Promise<OpResult> {
+  return invoke<OpResult>("git_rename_remote", { path, from, to });
+}
+
+export function gitSetRemoteUrl(path: string, name: string, url: string): Promise<OpResult> {
+  return invoke<OpResult>("git_set_remote_url", { path, name, url });
+}
+
+// ── 충돌 ───────────────────────────────────────────────────
+
+/** checkout --ours/--theirs 후 git add까지 한 번에 */
+export function gitResolveWith(
+  path: string,
+  file: string,
+  side: "ours" | "theirs",
+): Promise<OpResult> {
+  return invoke<OpResult>("git_resolve_with", { path, file, side });
+}
+
+/** 손으로 고친 파일을 해결됨으로 표시 (git add) */
+export function gitMarkResolved(path: string, files: string[]): Promise<OpResult> {
+  return invoke<OpResult>("git_mark_resolved", { path, files });
+}
+
+// ── 워크트리 ───────────────────────────────────────────────
+
+export function gitAddWorktree(
+  path: string,
+  dir: string,
+  branch: string,
+  createBranch: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_add_worktree", { path, dir, branch, createBranch });
+}
+
+export function gitRemoveWorktree(path: string, dir: string, force: boolean): Promise<OpResult> {
+  return invoke<OpResult>("git_remove_worktree", { path, dir, force });
+}
+
+// ── 패치 ───────────────────────────────────────────────────
+
+/** git format-patch. outDir에 .patch 파일을 쓴다 */
+export function gitCreatePatch(
+  path: string,
+  shas: string[],
+  outDir: string,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_create_patch", { path, shas, outDir });
+}
+
+export function gitApplyPatchFile(
+  path: string,
+  file: string,
+  threeWay: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_apply_patch_file", { path, file, threeWay });
+}
+
+// ── 내장 터미널 (인증 핸드오프) ─────────────────────────────
+
+/** PTY를 열고 세션 id를 돌려준다. Terminal.tsx가 자기 세션을 관리한다 */
+export function termOpen(path: string, cols: number, rows: number): Promise<string> {
+  return invoke<string>("term_open", { path, cols, rows });
+}
+
+/** 세션에 그대로 써 넣는다. 개행까지 포함해야 실제로 실행된다 */
+export function termWrite(id: string, data: string): Promise<void> {
+  return invoke<void>("term_write", { id, data });
 }

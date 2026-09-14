@@ -17,6 +17,12 @@ export interface TerminalProps {
   repoPath: string;
   visible: boolean;
   onClose: () => void;
+  /**
+   * PTY 세션이 열리거나 닫힐 때 그 id를 올려준다. 셸이 이 id로 `term_write`를 직접 불러
+   * 인증이 필요한 git 명령을 사용자의 진짜 셸에서 실행시킨다 (CONTRACTS.md v0.18).
+   * 세션이 없으면 null이 온다.
+   */
+  onSession?: (id: string | null) => void;
 }
 
 type Status = "idle" | "opening" | "ready" | "exited" | "unavailable";
@@ -70,11 +76,19 @@ function isAppShortcut(event: KeyboardEvent): boolean {
   return event.ctrlKey && !event.altKey && (event.key === "`" || event.code === "Backquote");
 }
 
-export function Terminal({ repoPath, visible, onClose }: TerminalProps) {
+export function Terminal({ repoPath, visible, onClose, onSession }: TerminalProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const idRef = useRef<string | null>(null);
+  // 부모가 매 렌더 새 함수를 주더라도 세션 effect를 다시 돌리지 않으려고 ref에 담아 둔다
+  const onSessionRef = useRef(onSession);
+  onSessionRef.current = onSession;
+  /** idRef와 부모 통지를 항상 같이 움직인다. 한쪽만 바꾸면 핸드오프가 죽은 id를 쓴다 */
+  const setSessionId = useCallback((id: string | null) => {
+    idRef.current = id;
+    onSessionRef.current?.(id);
+  }, []);
   const unlistenRef = useRef<UnlistenFn[]>([]);
   const openingRef = useRef(false);
   const disposedRef = useRef(false);
@@ -98,7 +112,7 @@ export function Terminal({ repoPath, visible, onClose }: TerminalProps) {
       nudgeRef.current = null;
     }
     const id = idRef.current;
-    idRef.current = null;
+    setSessionId(null);
     if (id !== null) {
       // 실패해도 할 수 있는 게 없다 (앱 종료 시 rust가 전부 kill 한다)
       void invoke("term_close", { id }).catch(() => undefined);
@@ -125,7 +139,7 @@ export function Terminal({ repoPath, visible, onClose }: TerminalProps) {
         void invoke("term_close", { id }).catch(() => undefined);
         return;
       }
-      idRef.current = id;
+      setSessionId(id);
       const onData = await listen<string>(`term:data:${id}`, (event) => {
         sawDataRef.current = true;
         termRef.current?.write(event.payload);
@@ -133,7 +147,7 @@ export function Terminal({ repoPath, visible, onClose }: TerminalProps) {
       const onExit = await listen<number>(`term:exit:${id}`, (event) => {
         exitedRef.current = true;
         dropListeners();
-        idRef.current = null;
+        setSessionId(null);
         setStatus("exited");
         termRef.current?.write(
           `\r\n\x1b[2m[process exited: ${event.payload}] press Enter to restart\x1b[0m\r\n`,

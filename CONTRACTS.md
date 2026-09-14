@@ -506,3 +506,261 @@ export function Preferences(props: PreferencesProps): JSX.Element | null;
 
 ### ui-shell
 - 설정 상태를 한 곳(PrefValues)으로 모으고 각 localStorage 키에 저장. `menu:preferences` 이벤트 + ⌘, 웹뷰 keydown(code Comma + meta/ctrl)으로 Preferences 열기. autoUpdateCheck는 useUpdateChecker의 자동 확인을 이 값으로 게이트. showTags/dateMode/hoverHighlight/zoom을 각 소비처(GraphView, 줌 적용)에 연결. Tags 버튼/DATE 헤더 토글 제거에 맞춰 관련 prop 정리
+
+---
+
+# v0.18 — 쓰기 작업 전면 도입 (git client 전환)
+
+> 사용자 결정(2026-09-14): 읽기 전용 뷰어를 접고 GitKraken/SourceGit 수준의 쓰기 기능을
+> 갖춘 git 클라이언트로 간다. v0.13에서 `write-ops` cargo feature 뒤에 봉인했던 ops.rs를
+> 되살리고 대폭 확장한다. **feature flag는 제거한다** — 쓰기는 이제 기본 기능이다.
+
+## 인증 문제의 해법 (v0.13 롤백 사유의 해소)
+
+v0.13 롤백의 유일한 이유는 인증이었다. 앱에 터미널이 없어 git이 패스프레이즈나 토큰을
+물으면 프로세스가 영구히 멈추므로 `GIT_TERMINAL_PROMPT=0`으로 막았고, 그러면 ssh-agent나
+credential helper가 없는 사용자는 push 자체를 못 했다.
+
+v0.13에서 내장 PTY 터미널(`term_*`)이 들어왔으므로 답이 생겼다.
+
+1. 기본 경로는 그대로 **비대화식**이다. 빠르고 결과가 구조화된다. 대부분의 macOS 사용자는
+   ssh-agent나 osxkeychain helper가 있어 이 경로로 끝난다.
+2. 실패하고 stderr가 인증 실패로 보이면 `OpResult.needsAuth = true`로 돌려준다.
+3. ui-shell은 토스트에 **"터미널에서 실행"** 버튼을 띄우고, 누르면 하단 터미널을 열어
+   `OpResult.command`를 `git ...` 한 줄로 조립해 `term_write(id, line + "\n")` 한다.
+   사용자의 진짜 셸에서 프롬프트가 정상 동작한다.
+
+새 Rust command가 필요 없다. 기존 `term_write` 재사용이다.
+
+### needsAuth 판정 (rust-core)
+stderr를 소문자로 내려 아래 중 하나라도 포함하면 true.
+`authentication failed`, `permission denied`, `could not read username`, `could not read password`,
+`terminal prompts disabled`, `host key verification failed`, `publickey`, `access denied`,
+`support for password authentication was removed`, `invalid username or token`, `403 forbidden`
+
+## 안전 계약 (전 command 공통, 어길 수 없음)
+
+1. **비대화식 고정.** stdin=null, `GIT_TERMINAL_PROMPT=0`, `GIT_SSH_COMMAND="ssh -oBatchMode=yes"`,
+   `GIT_ASKPASS=""`, `SSH_ASKPASS=""`, `GIT_EDITOR=true`, `LANG/LC_ALL=C`.
+   (`git_rebase_interactive`만 예외적으로 `GIT_SEQUENCE_EDITOR`/`GIT_EDITOR`를 주입한다.)
+2. **실패는 Err가 아니라 `ok=false`.** 사용자가 읽어야 하는 git 메시지는 stderr로 그대로 올린다.
+   `Err(String)`은 인자 검증 실패(빈 이름, 잘못된 ref 형식 등)에만 쓴다.
+3. **`--force` 금지.** push는 `--force-with-lease`만 허용한다. 코드에 `"--force"` 리터럴이
+   들어가면 리뷰에서 반려한다(`--force-with-lease`, `-f`도 push에는 금지).
+4. **타임아웃.** 네트워크 120초, 로컬 60초. 초과 시 kill + `ok=false`, stderr="timed out after Ns".
+5. **ref 이름은 git에게 물어 검증.** `git check-ref-format`을 쓰고 정규식을 새로 짜지 않는다.
+6. **파괴적 작업은 UI에서 확인을 받는다.** 아래 목록은 ConfirmDialog 필수이며, 되돌리는 방법을
+   다이얼로그 본문에 한 줄로 적는다:
+   `git_discard`, `git_clean`, `git_reset(mode="hard")`, `git_delete_branch(force=true)`,
+   `git_delete_branch(remote=true)`, `git_stash_drop`, `git_delete_tag`, `git_push(forceWithLease=true)`,
+   `git_push_tag(delete=true)`, `git_remove_worktree`, `git_pending_action(action="abort")`
+7. **모든 쓰기 후 새로고침.** ui-shell이 `load_graph(skip=0)` + `list_refs` + `get_sync_state`
+   + WIP 재로드를 한 번에 돌린다(`refreshAll()`). 폴링을 기다리지 않는다.
+
+## 패키지와 소유권 (v0.18)
+
+각 패키지는 **자기 worktree에서만** 작업한다. 남의 파일은 읽기만 하고 절대 수정하지 않는다.
+동결 파일(`src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`)은 누구도 수정하지 않는다.
+새 npm 의존성이 필요하면 설치하지 말고 보고한다.
+
+| 패키지 | 소유 파일 | 완료 기준 |
+|---|---|---|
+| rust-ops | `src-tauri/**` 전체 | `cargo test` + `cargo clippy` 통과 |
+| ui-wip | `src/shell/WipDetailPanel.tsx`, `src/shell/DiffView.tsx`, `src/shell/DiffPanel.tsx`, `src/shell/FileRow.tsx`, `src/shell/FileTree.tsx`, 신규 `src/shell/CommitBox.tsx`, `src/shell/hunks.ts`, `src/shell/wip.css` | `npm run build` 통과 |
+| ui-actions | `src/shell/Toolbar.tsx`, `src/shell/Dialogs.tsx`, `src/shell/ConflictBanner.tsx`, `src/shell/Toast.tsx`, 신규 `src/shell/ActionDialogs.tsx`, `src/shell/ConflictPanel.tsx`, `src/shell/RebaseEditor.tsx`, `src/shell/actions.css` | `npm run build` 통과 |
+| ui-sidebar | `src/shell/BranchSidebar.tsx`, `src/shell/SidebarContextMenu.tsx`, `src/shell/sidebar.css`, 신규 `src/shell/dnd.ts` | `npm run build` 통과 |
+| ui-graph | `src/graph/**` | `npm run build` 통과 |
+| ui-hub | `src/App.tsx`, `src/shell/RepoWorkspace.tsx`, `src/shell/api.ts`, `src/shell/ContextMenu.tsx`, `src/shell/shell.css`, `src/shell/panels.css`, `src/shell/devApp.tsx`, `src/shell/prefs.ts`, `src/shell/Preferences.tsx` | `npm run build` 통과 |
+
+`src/shell/shortcuts.ts`, `src/shell/format.ts`, `src/shell/clipboard.ts`는 **읽기 전용 공용**이다.
+수정이 필요하면 감독에게 요청한다.
+
+## 공용 UI 규약
+
+- **오버레이**: 모든 모달은 `.ov-backdrop` 안에 놓고 Esc / 바깥 클릭 / × 로 닫힌다.
+- **토스트**: 쓰기 결과는 `Toast`로 알린다. 성공은 3초 자동 소멸, 실패는 수동 닫기 + stderr 펼치기 +
+  needsAuth면 "터미널에서 실행" 버튼.
+- **진행 중 표시**: 네트워크 작업은 버튼에 스피너를 넣고 중복 클릭을 막는다.
+- **단축키 툴팁**: `withKbd(label, "Mod+K")` 헬퍼를 쓴다.
+
+## ui-hub가 다른 패키지에 제공하는 액션 (props로 내려감)
+
+ui-hub는 모든 쓰기 command를 감싸 refresh + 토스트 + 확인 다이얼로그까지 처리하는 단일 객체를
+만들고, 이걸 각 패널에 prop으로 내린다. 다른 패키지는 `api.ts`를 직접 부르지 않는다.
+
+```ts
+// src/shell/RepoWorkspace.tsx 가 만들어 내리는 객체. 시그니처 동결.
+export interface RepoActions {
+  // 스테이징
+  stage(files: string[]): Promise<void>;
+  unstage(files: string[]): Promise<void>;
+  discard(files: string[]): Promise<void>;       // 확인 다이얼로그 포함
+  stageAll(): Promise<void>;
+  unstageAll(): Promise<void>;
+  applyPatch(patch: string, cached: boolean, reverse: boolean): Promise<void>;
+  // 커밋
+  commit(options: CommitOptions): Promise<void>;
+  undoCommit(): Promise<void>;
+  // 브랜치
+  checkout(target: string, createLocal: boolean): Promise<void>;
+  createBranch(name: string, startPoint: string | null, checkout: boolean): Promise<void>;
+  deleteBranch(name: string, force: boolean, remote: boolean): Promise<void>;
+  renameBranch(from: string, to: string): Promise<void>;
+  setUpstream(branch: string, upstream: string | null): Promise<void>;
+  // 네트워크
+  fetch(opts?: { remote?: string; prune?: boolean; allRemotes?: boolean; tags?: boolean }): Promise<void>;
+  pull(mode: PullMode): Promise<void>;
+  push(opts?: { remote?: string; branch?: string; setUpstream?: boolean; forceWithLease?: boolean; tags?: boolean }): Promise<void>;
+  // 히스토리
+  merge(source: string, opts?: { noFf?: boolean; squash?: boolean }): Promise<void>;
+  rebase(upstream: string, onto?: string | null): Promise<void>;
+  rebaseInteractive(base: string, steps: RebaseStep[]): Promise<void>;
+  cherryPick(shas: string[], noCommit: boolean): Promise<void>;
+  revert(shas: string[], noCommit: boolean): Promise<void>;
+  reset(target: string, mode: "soft" | "mixed" | "hard"): Promise<void>;
+  pendingAction(action: "continue" | "abort" | "skip"): Promise<void>;
+  // 태그 / 스태시 / remote / 워크트리
+  createTag(name: string, target: string, message: string | null): Promise<void>;
+  deleteTag(name: string): Promise<void>;
+  pushTag(remote: string, name: string, del: boolean): Promise<void>;
+  stashPush(opts?: { message?: string; includeUntracked?: boolean; keepIndex?: boolean; files?: string[] }): Promise<void>;
+  stashApply(ref: string, drop: boolean): Promise<void>;
+  stashDrop(ref: string): Promise<void>;
+  stashBranch(ref: string, name: string): Promise<void>;
+  addRemote(name: string, url: string): Promise<void>;
+  removeRemote(name: string): Promise<void>;
+  renameRemote(from: string, to: string): Promise<void>;
+  setRemoteUrl(name: string, url: string): Promise<void>;
+  addWorktree(dir: string, branch: string, createBranch: boolean): Promise<void>;
+  removeWorktree(dir: string, force: boolean): Promise<void>;
+  // 충돌
+  resolveWith(file: string, side: "ours" | "theirs"): Promise<void>;
+  markResolved(files: string[]): Promise<void>;
+  // 공통
+  /** 쓰기 작업이 진행 중인가 (버튼 비활성화용) */
+  busy: boolean;
+}
+```
+
+ui-hub는 각 메서드에서 다음을 한다: 확인이 필요하면 다이얼로그 → command 호출 → `ok=false`면
+토스트(+needsAuth면 터미널 핸드오프) → `refreshAll()` → 충돌이 생겼으면 충돌 패널 열기.
+
+## 패키지별 범위
+
+### rust-ops (`src-tauri/**`)
+- `Cargo.toml`에서 `[features] write-ops` 제거, `lib.rs`의 `#[cfg(feature)]` 분기 제거하고
+  모든 쓰기 command를 invoke_handler에 등록.
+- `ops.rs`를 확장한다. 파일이 2,000줄을 넘으면 `ops/` 모듈로 쪼갠다
+  (`ops/mod.rs`, `ops/run.rs` 공통 실행기, `ops/stage.rs`, `ops/branch.rs`, `ops/network.rs`,
+  `ops/history.rs`, `ops/stash.rs`, `ops/remote.rs`, `ops/conflict.rs`).
+- `OpResult`에 `command: Vec<String>`, `needs_auth: bool` 추가. 공통 실행기가 항상 채운다.
+- `SyncState`에 `pending: Option<PendingOp>` 추가. `.git/MERGE_HEAD`, `rebase-merge/`,
+  `rebase-apply/`, `CHERRY_PICK_HEAD`, `REVERT_HEAD` 존재 여부로 판정하고,
+  `rebase-merge/msgnum`·`end`로 진행도를 만든다.
+- `git_apply_patch`는 patch를 **stdin으로** 넘긴다(임시 파일 금지). `--unidiff-zero
+  --whitespace=nowarn`. 현재 실행기가 stdin을 null로 막으므로 stdin 파이프를 받는 변형이 필요하다.
+- `git_rebase_interactive`: 임시 디렉토리에 todo 파일과 sh 스크립트를 쓰고
+  `GIT_SEQUENCE_EDITOR="sh <script> <todo>"`(todo를 대상 파일에 복사), reword가 있으면
+  `GIT_EDITOR`도 같은 방식으로 메시지를 순서대로 넣는다. Windows는 `Err("unsupported on Windows")`.
+- 테스트: `testrepo::TempRepo` 헬퍼로 실제 레포를 만들어 검증한다. `.`(현재 디렉토리)에
+  의존하는 테스트는 CI 얕은 클론에서 깨지므로 금지. 쓰기 command마다 성공 1개 + 실패 1개가 최소선.
+- 네이티브 메뉴에 쓰기 항목 추가 (menu.rs): Repository 메뉴 신설 —
+  Fetch `CmdOrCtrl+Shift+F`, Pull `CmdOrCtrl+Shift+P`, Push `CmdOrCtrl+Shift+U`,
+  Commit `CmdOrCtrl+Enter`, New Branch `CmdOrCtrl+Shift+N`, Stash `CmdOrCtrl+Shift+S`,
+  Pop Stash `CmdOrCtrl+Shift+O`. emit 이벤트는 `menu:fetch`, `menu:pull`, `menu:push`,
+  `menu:commit`, `menu:new-branch`, `menu:stash`, `menu:stash-pop`.
+  (Shift 조합은 macOS muda 버그가 있으니 `fix_shift_accelerators` 경로를 확인할 것.)
+
+### ui-wip (스테이징 + 커밋 — 가장 많이 쓰는 화면)
+- `WipDetailPanel`을 GitKraken WIP 노드처럼 바꾼다: Unstaged / Staged 두 영역, 각 파일 행에
+  hover 시 `+`(stage) / `−`(unstage) / `↺`(discard) 버튼, 영역 헤더에 Stage all / Unstage all.
+- 체크박스 다중 선택 + Shift 범위 선택, 선택분 일괄 stage/unstage/discard.
+- 파일 클릭 시 우측 diff에 **hunk 단위 스테이지** 버튼(각 hunk 헤더에 "Stage hunk" /
+  "Unstage hunk" / "Discard hunk"). 줄 단위 선택(드래그로 여러 줄) 후 "Stage lines"도 지원.
+  `src/shell/hunks.ts`에 unified diff 파싱 + 선택된 hunk/line으로 **최소 패치 재구성** 로직을
+  둔다. 재구성 패치는 `@@ -a,b +c,d @@` 헤더를 다시 계산해야 하고, 이게 이 패키지의 핵심 난이도다.
+  단위 테스트를 붙일 수 없으니(Rust만 테스트 환경) 파싱 함수는 순수 함수로 만들고
+  `devApp.tsx`에서 눈으로 검증 가능하게 한다.
+- 신규 `CommitBox.tsx`: WIP 패널 하단 고정. 메시지 textarea(첫 줄=subject, 50자 넘으면 옅은 경고선,
+  본문은 72자 가이드), Amend 체크(체크 시 `get_last_commit_message`로 채움), Sign-off 체크,
+  GPG 체크, "Commit N files" 버튼(⌘Enter). staged가 0이면 비활성 + "Stage some changes" 안내.
+- 커밋 성공 시 메시지 비우고 토스트. 실패 시 메시지 보존.
+
+### ui-actions (툴바 + 다이얼로그 + 충돌 + 리베이스 에디터)
+- 툴바에 GitKraken식 액션 그룹 복원: `Fetch▾`(드롭다운: Fetch, Fetch all, Fetch with prune),
+  `Pull▾`(ff-only / merge / rebase), `Push▾`(Push, Push and set upstream, Force push with lease,
+  Push tags), `Branch`, `Stash▾`(Stash, Stash including untracked, Pop, Apply). 각 버튼에
+  `SyncState`의 ahead/behind 배지(↑3 ↓1)를 붙인다.
+- `ActionDialogs.tsx`: 재사용 가능한 폼 다이얼로그들 — 브랜치 생성(이름 + start point + 체크아웃 체크),
+  브랜치 이름 변경, 태그 생성(이름/대상/annotated 메시지), 리셋(soft/mixed/hard 라디오 + 각 설명),
+  merge 옵션(no-ff / squash), rebase 옵션(onto, autostash), remote 추가/편집, 워크트리 추가,
+  스태시 메시지. 전부 Esc/바깥클릭 닫힘, Enter 확정.
+- `ConfirmDialog`는 파괴적 작업용으로 강화: 제목, 무슨 일이 일어나는지 한 문장, **되돌리는 방법**
+  한 줄, 위험 등급(빨간 버튼). hard reset과 discard는 영향 파일 수를 보여준다.
+- `ConflictPanel.tsx`: `PendingOp`가 있으면 상단에 굵은 배너(무슨 작업이 몇 번째인지) + 충돌 파일 목록.
+  각 파일에 "Use ours" / "Use theirs" / "Mark resolved" / "Open in editor". 전부 해결되면
+  "Continue rebase/merge" 버튼 활성. Abort는 항상 보이되 확인 필요.
+- `RebaseEditor.tsx`: 커밋 목록을 드래그로 재정렬하고 각 행의 액션을 pick/reword/edit/squash/fixup/drop
+  으로 바꾸는 모달. reword를 고르면 인라인 메시지 입력. "Start rebase"로 `rebaseInteractive` 호출.
+  (이게 GitKraken 유료 기능의 핵심이라 우선순위가 높다.)
+
+### ui-sidebar (브랜치 트리 + DnD)
+- 섹션 구성: Local / Remotes(리모트별 접힘) / Tags / Stashes / Worktrees. 각 섹션 헤더에 액션 버튼.
+- 우클릭 메뉴를 전면 복원/확장:
+  - 로컬 브랜치: Checkout, Merge into current, Rebase current onto this, Rename, Delete,
+    Set upstream…, Push, Create branch here, Create tag here, Copy name, Open on remote
+  - 원격 브랜치: Checkout(로컬 추적 생성), Merge, Delete remote branch, Copy name, Open on remote
+  - 태그: Checkout, Push tag, Delete tag, Delete on remote, Copy name
+  - 스태시: Apply, Pop, Drop, Create branch from stash
+  - 워크트리: Open(새 탭), Remove
+- **DnD (GitKraken 시그니처)**: 브랜치를 다른 브랜치 위로 드래그하면 드롭 타깃이 하이라이트되고
+  놓으면 선택지 팝오버 — "Merge A into B" / "Rebase B onto A". `src/shell/dnd.ts`에 HTML5
+  drag 이벤트 래퍼를 둔다(dataTransfer에 `application/x-gitlanes-ref` + 이름). 드래그 중 다른
+  섹션은 흐리게. Esc로 취소.
+- 현재 브랜치에 ahead/behind 배지, 체크아웃된 브랜치에 굵은 표시.
+
+### ui-graph (그래프 캔버스)
+- 커밋 행 우클릭 메뉴에 쓰기 항목이 들어갈 수 있도록 기존 `onRowContextMenu`는 그대로 두고
+  (메뉴 내용은 ui-hub 소관), **드롭 타깃**만 추가한다:
+  ```ts
+  /** ref 드래그가 커밋 행 위에 올라왔을 때. null이면 그래프 밖 */
+  onRowDragOver?: (sha: string | null) => void;
+  /** 커밋 행에 ref를 놓았을 때 */
+  onRowDrop?: (sha: string, payload: string) => void;
+  /** 드롭 후보로 강조할 행 sha. 노란 테두리로 그린다 */
+  dropTargetSha?: string | null;
+  ```
+  이걸로 "브랜치를 커밋 위에 놓아 reset / 브랜치 생성"을 만든다.
+- HEAD 행과 WIP 행의 시각적 구분을 강화한다(WIP에 staged/unstaged 개수 배지는 이미 있음).
+- 진행 중인 리베이스/머지가 있으면 해당 커밋 행에 표시(ui-hub가 `pendingSha` prop 전달):
+  ```ts
+  /** 진행 중인 머지/리베이스의 대상 커밋. 점 주위에 펄스 링 */
+  pendingSha?: string | null;
+  ```
+
+### ui-hub (배선)
+- `api.ts`에 위 쓰기 command 전부의 래퍼를 추가한다. 얇게: `invoke`만 부르고 로직은 없다.
+- `RepoWorkspace.tsx`에서 `RepoActions`를 만들어 하위에 내린다. 확인 다이얼로그, 토스트,
+  needsAuth 터미널 핸드오프, `refreshAll()`, 충돌 패널 열기가 전부 여기 모인다.
+- `get_sync_state` 폴링을 기존 `get_repo_state` 폴링에 합친다(5초, 활성 탭만).
+- 그래프 행 우클릭 메뉴 확장: Checkout this commit, Create branch here, Create tag here,
+  Cherry-pick, Revert, Reset current branch here▸(soft/mixed/hard), Interactive rebase from here,
+  Copy sha, Copy message, Open on remote.
+- 단축키 배선: `menu:*` 이벤트 수신 + 웹뷰 keydown. ⌘Enter=commit, ⌘⇧F=fetch, ⌘⇧P=pull,
+  ⌘⇧U=push, ⌘⇧N=new branch, ⌘⇧S=stash, ⌘⇧O=pop.
+- `ShortcutsOverlay`에 새 단축키 추가(이 파일은 ui-actions 소유가 아니라 ui-hub가 가져간다).
+- `devApp.tsx`의 mockIPC에 새 command 전부의 가짜 응답을 넣어 브라우저 QA가 계속 되게 한다.
+
+## 우선순위 (밤새 자율 진행 시 이 순서로)
+
+- **Tier A (필수, 여기까지는 반드시)**: 스테이징(파일+hunk), 커밋/amend, fetch/pull/push,
+  브랜치 생성/체크아웃/삭제/이름변경, 머지, 스태시 push/pop/apply/drop, 충돌 해결, 토스트/확인 다이얼로그
+- **Tier B**: 리베이스(+continue/abort/skip), 체리픽, 리버트, 리셋, 태그, remote 관리,
+  upstream 설정, DnD 머지/리베이스, ahead/behind 배지
+- **Tier C**: 인터랙티브 리베이스 에디터, 워크트리, 패치 생성/적용, 줄 단위 스테이징,
+  GPG 서명, 커밋 템플릿
+
+시간이 부족하면 Tier를 통째로 남기고 보고한다. 반쯤 된 기능을 남기지 않는다.
+
+## README / 문구
+"읽기 전용 뷰어" 문구를 전부 걷어낸다. 웰컴 화면, README, 릴리스 노트 모두. (감독이 처리)

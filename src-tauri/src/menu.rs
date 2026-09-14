@@ -12,7 +12,8 @@
 //! payload가 붙는 것은 탭 번호 이동(`menu:goto-tab`, 1~9)과 최근 항목 클릭
 //! (`menu:open-recent`, 경로 문자열) 둘뿐이고 나머지는 없다.
 //!
-//! 구성은 macOS에서 App/File/Edit/View/Window/Help, 나머지 플랫폼에서 App 메뉴를 뺀 것이다.
+//! 구성은 macOS에서 App/File/Edit/View/Repository/Window/Help, 나머지 플랫폼에서 App 메뉴를
+//! 뺀 것이다. Repository 항목도 동작하지 않고 이벤트만 브로드캐스트한다.
 //! File > Open Recent는 빈 서브메뉴로 만들어 두고 [`apply_recent`]가 나중에 채운다.
 //! View/Help의 accelerator는 전부 Shift 없는 조합이다([`fix_shift_accelerators`]의 한계 참고).
 //!
@@ -45,6 +46,20 @@ const VIEW_EVENTS: [(&str, &str); 5] = [
     ("view:zoom-out", "menu:zoom-out"),
     ("view:zoom-reset", "menu:zoom-reset"),
     ("view:toggle-terminal", "menu:toggle-terminal"),
+];
+
+/// Repository 메뉴 항목. payload는 없다. 실제 동작은 프론트가 한다.
+///
+/// 여기서 git을 부르지 않는 이유는 File 메뉴와 같다. 어느 탭의 어느 저장소인지, 지금
+/// 커밋할 것이 있는지는 프론트가 안다. 메뉴는 의사만 전달한다.
+const REPOSITORY_EVENTS: [(&str, &str); 7] = [
+    ("repo:fetch", "menu:fetch"),
+    ("repo:pull", "menu:pull"),
+    ("repo:push", "menu:push"),
+    ("repo:commit", "menu:commit"),
+    ("repo:new-branch", "menu:new-branch"),
+    ("repo:stash", "menu:stash"),
+    ("repo:stash-pop", "menu:stash-pop"),
 ];
 
 /// Help 메뉴 항목. payload는 없다.
@@ -253,6 +268,51 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
+    // Repository 메뉴의 네트워크/스태시 항목은 Shift 조합이다. macOS에서 Shift 조합
+    // accelerator는 메뉴에 표시는 되지만 실제 키 입력에 반응하지 않는다
+    // (fix_shift_accelerators의 "한계" 참고). 그래서 이 키들은 프론트가 웹뷰 keydown으로
+    // 직접 받는다. 네이티브가 키를 먹지 않는 덕분에 오히려 그 경로가 성립한다.
+    // Shift가 없는 Commit(⌘Enter)만 네이티브 accelerator로 실제 동작한다.
+    // 항목이 늘어도 fix_shift_accelerators는 메뉴 트리를 통째로 훑으므로 따로 등록할
+    // 것은 없다.
+    let repo_accelerators: [(&str, &str, &str); 7] = [
+        (REPOSITORY_EVENTS[0].0, "Fetch", "CmdOrCtrl+Shift+F"),
+        (REPOSITORY_EVENTS[1].0, "Pull", "CmdOrCtrl+Shift+P"),
+        (REPOSITORY_EVENTS[2].0, "Push", "CmdOrCtrl+Shift+U"),
+        (REPOSITORY_EVENTS[3].0, "Commit…", "CmdOrCtrl+Enter"),
+        (REPOSITORY_EVENTS[4].0, "New Branch…", "CmdOrCtrl+Shift+N"),
+        (REPOSITORY_EVENTS[5].0, "Stash Changes", "CmdOrCtrl+Shift+S"),
+        (REPOSITORY_EVENTS[6].0, "Pop Stash", "CmdOrCtrl+Shift+O"),
+    ];
+    let repo_items: Vec<MenuItem<R>> = repo_accelerators
+        .iter()
+        .map(|(id, label, accelerator)| {
+            MenuItem::with_id(app, *id, *label, true, Some(*accelerator))
+        })
+        .collect::<tauri::Result<_>>()?;
+
+    // Fetch/Pull/Push | Commit | New Branch | Stash/Pop 으로 끊어 읽는 순서를 만든다
+    let after_network = PredefinedMenuItem::separator(app)?;
+    let after_commit = PredefinedMenuItem::separator(app)?;
+    let after_branch = PredefinedMenuItem::separator(app)?;
+    let repository = Submenu::with_items(
+        app,
+        "Repository",
+        true,
+        &[
+            &repo_items[0] as &dyn IsMenuItem<R>,
+            &repo_items[1],
+            &repo_items[2],
+            &after_network,
+            &repo_items[3],
+            &after_commit,
+            &repo_items[4],
+            &after_branch,
+            &repo_items[5],
+            &repo_items[6],
+        ],
+    )?;
+
     let shortcuts = MenuItem::with_id(
         app,
         HELP_EVENTS[0].0,
@@ -372,10 +432,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 &PredefinedMenuItem::quit(app, None)?,
             ],
         )?;
-        Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window, &help])
+        Menu::with_items(
+            app,
+            &[&app_menu, &file, &edit, &view, &repository, &window, &help],
+        )
     }
     #[cfg(not(target_os = "macos"))]
-    Menu::with_items(app, &[&file, &edit, &view, &window, &help])
+    Menu::with_items(app, &[&file, &edit, &view, &repository, &window, &help])
 }
 
 /// 메뉴 이벤트를 처리한다. File 항목은 열려 있는 모든 웹뷰로 브로드캐스트한다.
@@ -409,6 +472,7 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
         .iter()
         .chain(TAB_CYCLE_EVENTS.iter())
         .chain(VIEW_EVENTS.iter())
+        .chain(REPOSITORY_EVENTS.iter())
         .chain(HELP_EVENTS.iter())
         .chain(std::iter::once(&CHECK_UPDATES))
         .chain(std::iter::once(&PREFERENCES))
@@ -643,6 +707,80 @@ fn close_focused_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = target {
         if let Err(error) = window.close() {
             eprintln!("창을 닫지 못했습니다: {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 메뉴 항목 id와 emit 이벤트 이름은 프론트와의 접점이다. 여기서 오타가 나면
+    /// 앱은 멀쩡히 뜨고 단축키만 조용히 죽는다. 컴파일로는 잡히지 않아 표로 검증한다.
+    fn all_events() -> Vec<(&'static str, &'static str)> {
+        FILE_EVENTS
+            .iter()
+            .chain(TAB_CYCLE_EVENTS.iter())
+            .chain(VIEW_EVENTS.iter())
+            .chain(REPOSITORY_EVENTS.iter())
+            .chain(HELP_EVENTS.iter())
+            .chain(std::iter::once(&CHECK_UPDATES))
+            .chain(std::iter::once(&PREFERENCES))
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn 메뉴_id와_이벤트_이름이_겹치지_않는다() {
+        let events = all_events();
+
+        let mut ids: Vec<&str> = events.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        let unique = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), unique, "메뉴 항목 id가 겹친다");
+
+        let mut names: Vec<&str> = events.iter().map(|(_, name)| *name).collect();
+        names.sort_unstable();
+        let unique = names.len();
+        names.dedup();
+        assert_eq!(names.len(), unique, "emit 이벤트 이름이 겹친다");
+    }
+
+    #[test]
+    fn 모든_이벤트가_menu_접두사를_쓴다() {
+        for (id, name) in all_events() {
+            assert!(name.starts_with("menu:"), "{id} -> {name}");
+        }
+        // payload가 붙는 두 이벤트도 같은 규칙이다
+        assert!(GOTO_TAB_EVENT.starts_with("menu:"));
+        assert!(OPEN_RECENT_EVENT.starts_with("menu:"));
+    }
+
+    #[test]
+    fn repository_이벤트는_계약이_정한_이름_그대로다() {
+        assert_eq!(
+            REPOSITORY_EVENTS.map(|(_, name)| name),
+            [
+                "menu:fetch",
+                "menu:pull",
+                "menu:push",
+                "menu:commit",
+                "menu:new-branch",
+                "menu:stash",
+                "menu:stash-pop",
+            ]
+        );
+    }
+
+    #[test]
+    fn 최근_항목_id는_다른_file_항목과_구분된다() {
+        // "file:clear-recent"가 접두사에 걸리면 경로로 오인돼 빈 저장소를 열려 한다
+        assert!(!CLEAR_RECENT_ID.starts_with(RECENT_ITEM_PREFIX));
+        assert!(!RECENT_EMPTY_ID.starts_with(RECENT_ITEM_PREFIX));
+        for (id, _) in all_events() {
+            assert!(!id.starts_with(RECENT_ITEM_PREFIX), "{id}");
+            assert!(!id.starts_with(TAB_ID_PREFIX), "{id}");
         }
     }
 }

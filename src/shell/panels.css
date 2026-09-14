@@ -1514,3 +1514,38 @@ kbd.sc-key.wide {
   opacity: 0.45;
   cursor: default;
 }
+
+/* 컨텍스트 메뉴 서브메뉴 (Reset ▸ Soft / Mixed / Hard).
+   부모 항목을 기준으로 오른쪽에 붙인다. 화면 오른쪽 끝에서는 왼쪽으로 접힌다 */
+.context-sub {
+  position: relative;
+}
+
+.context-sub > .context-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.context-caret {
+  color: var(--fg-2);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.context-submenu {
+  position: absolute;
+  left: 100%;
+  top: -4px;
+  /* 부모 메뉴와 겹치지 않게 살짝 띄운다 */
+  margin-left: 2px;
+}
+
+.context-submenu.flip {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 2px;
+}

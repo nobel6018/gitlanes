@@ -267,6 +267,8 @@ pub fn graph_token(refs: &[RefEntry], head_sha: &str) -> String {
 pub fn parse_status(out: &str) -> Option<WipInfo> {
     let mut changed: HashSet<&str> = HashSet::new();
     let mut staged: HashSet<&str> = HashSet::new();
+    // 세 집합은 서로 겹칠 수 있다. WipInfo 필드 주석 참고.
+    let mut untracked: HashSet<&str> = HashSet::new();
 
     let mut chunks = out.split('\0');
     while let Some(chunk) = chunks.next() {
@@ -286,7 +288,9 @@ pub fn parse_status(out: &str) -> Option<WipInfo> {
         }
 
         changed.insert(path);
-        if index_mark != ' ' && index_mark != '?' {
+        if index_mark == '?' {
+            untracked.insert(path);
+        } else if index_mark != ' ' {
             staged.insert(path);
         }
     }
@@ -297,6 +301,7 @@ pub fn parse_status(out: &str) -> Option<WipInfo> {
     Some(WipInfo {
         changed_files: changed.len(),
         staged_files: staged.len(),
+        untracked_files: untracked.len(),
     })
 }
 
@@ -661,6 +666,7 @@ mod tests {
         let wip = parse_status(out).expect("변경이 있으면 Some이다");
         assert_eq!(wip.changed_files, 7);
         assert_eq!(wip.staged_files, 4, "AM, D, R, A만 index에 올라가 있다");
+        assert_eq!(wip.untracked_files, 2, "?? 두 줄");
     }
 
     #[test]
@@ -669,6 +675,7 @@ mod tests {
         let wip = parse_status(out).unwrap();
         assert_eq!(wip.changed_files, 1);
         assert_eq!(wip.staged_files, 0);
+        assert_eq!(wip.untracked_files, 0);
     }
 
     #[test]
@@ -677,6 +684,8 @@ mod tests {
         let wip = parse_status("D  f.txt\0?? f.txt\0").unwrap();
         assert_eq!(wip.changed_files, 1);
         assert_eq!(wip.staged_files, 1);
+        // 같은 파일이 staged이면서 untracked다. 세 수를 더해도 changed가 되지 않는다.
+        assert_eq!(wip.untracked_files, 1);
     }
 
     #[test]
@@ -690,6 +699,7 @@ mod tests {
         let wip = parse_status("UU conflict.txt\0").unwrap();
         assert_eq!(wip.changed_files, 1);
         assert_eq!(wip.staged_files, 1);
+        assert_eq!(wip.untracked_files, 0, "충돌은 추적 중인 파일이다");
     }
 
     #[test]

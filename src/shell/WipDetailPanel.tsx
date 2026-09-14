@@ -1,14 +1,37 @@
-// WIP(미커밋 변경) 상세 패널. GitKraken의 WIP 노드처럼 Staged/Unstaged/Untracked를
-// 세 섹션으로 보여주고, 파일 클릭 시 셸이 메인 영역 DiffPanel을 연다.
-// 이 패널에서는 보기만 한다 (스테이징/언스테이징 조작은 향후 작업).
-// 계약: CONTRACTS.md v0.14 "WipDetailPanelProps".
+// WIP(미커밋 변경) 패널. GitKraken의 WIP 노드처럼 Unstaged / Staged 두 영역으로
+// 나누고, untracked는 Unstaged 안에 "새 파일"로 합쳐 보여준다.
+// 쓰기는 전부 ui-hub가 내려주는 액션(RepoActions의 부분집합)을 거친다.
+// 계약: CONTRACTS.md v0.18 "ui-wip".
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
-import type { FileChange, WipArea, WipDetails } from "../types";
+import type { CommitOptions, DiscardArea, FileChange, WipArea, WipDetails } from "../types";
 import { FileRow } from "./FileRow";
+import type { FileRowAction } from "./FileRow";
 import { FileTree, buildFileNavRows, readFileView, writeFileView } from "./FileTree";
-import type { FileNavRow, FileView } from "./FileTree";
+import type { FileNavRow, FileRowExtras, FileView } from "./FileTree";
+import { CommitBox } from "./CommitBox";
 import "./panels.css";
+import "./wip.css";
+
+/**
+ * RepoWorkspace가 내려주는 액션 중 이 패널이 쓰는 부분만.
+ * 전체 정의는 CONTRACTS.md v0.18의 RepoActions다 (시그니처 동결).
+ */
+export interface WipActions {
+  stage(files: string[]): Promise<void>;
+  unstage(files: string[]): Promise<void>;
+  /**
+   * area="worktree"면 인덱스 기준으로 워킹 트리만 되돌린다 (staged 변경 보존).
+   * area="all"이면 마지막 커밋 상태로 전부 되돌린다 (staged까지 버린다).
+   */
+  discard(files: string[], area: DiscardArea): Promise<void>;
+  stageAll(): Promise<void>;
+  unstageAll(): Promise<void>;
+  applyPatch(patch: string, cached: boolean, reverse: boolean): Promise<void>;
+  commit(options: CommitOptions): Promise<void>;
+  /** 쓰기 작업이 진행 중인가 (버튼 비활성화용) */
+  busy: boolean;
+}
 
 export interface WipDetailPanelProps {
   /** 로딩 중 null */
@@ -17,79 +40,174 @@ export interface WipDetailPanelProps {
   onOpenFile: (file: FileChange, area: WipArea) => void;
   /** 메인 영역 뷰어에 열려 있는 파일 (강조용) */
   openFile: { path: string; area: WipArea } | null;
+  /** 쓰기 액션. 없으면 예전처럼 읽기 전용으로 그린다 */
+  actions?: WipActions;
+  /** 커밋 초안 저장 키. actions와 함께 있어야 CommitBox가 붙는다 */
+  repoPath?: string;
+  /** Amend 체크 시 마지막 커밋 메시지를 받아온다 (get_last_commit_message) */
+  onRequestLastMessage?: () => Promise<string>;
 }
 
-const AREAS: { area: WipArea; label: string }[] = [
-  { area: "staged", label: "Staged" },
-  { area: "unstaged", label: "Unstaged" },
-  { area: "untracked", label: "Untracked" },
-];
+type GroupId = "unstaged" | "staged";
 
-type CollapsedByArea = Record<WipArea, ReadonlySet<string>>;
-
-function emptyCollapsed(): CollapsedByArea {
-  return {
-    staged: new Set<string>(),
-    unstaged: new Set<string>(),
-    untracked: new Set<string>(),
-  };
-}
-
-interface Section {
+interface Entry {
+  file: FileChange;
+  /** diff를 열 때 필요한 원래 영역. untracked는 Unstaged에 섞여 있다 */
   area: WipArea;
+  /** 선택 집합 키 */
+  key: string;
+}
+
+interface Group {
+  id: GroupId;
   label: string;
-  files: FileChange[];
+  entries: Entry[];
+  /** 경로 → 항목. Tree 모드에서 FileChange만 받는 콜백이 area를 되찾는 데 쓴다 */
+  byPath: Map<string, Entry>;
   /** Tree 모드의 평면 행. Path 모드에서는 빈 배열 */
   treeRows: FileNavRow[];
-  /** 전체 키보드 인덱스에서 이 섹션의 시작 위치 */
+  /** 화면에 보이는 순서대로 늘어놓은 파일 키 (Shift 범위 선택용) */
+  orderedKeys: string[];
+  /** 전체 키보드 인덱스에서 이 그룹의 시작 위치 */
   offset: number;
-  /** 이 섹션이 차지하는 키보드 인덱스 개수 */
+  /** 이 그룹이 차지하는 키보드 인덱스 개수 */
   count: number;
 }
 
-export function WipDetailPanel({ details, loading, onOpenFile, openFile }: WipDetailPanelProps) {
+type CollapsedByGroup = Record<GroupId, ReadonlySet<string>>;
+
+function emptyCollapsed(): CollapsedByGroup {
+  return { unstaged: new Set<string>(), staged: new Set<string>() };
+}
+
+function entryKey(group: GroupId, path: string): string {
+  return `${group}:${path}`;
+}
+
+/** Unstaged 목록은 unstaged + untracked를 경로 순으로 합친다 (GitKraken 방식) */
+function buildUnstagedEntries(details: WipDetails): Entry[] {
+  const entries: Entry[] = [
+    ...details.unstaged.map((file) => ({
+      file,
+      area: "unstaged" as WipArea,
+      key: entryKey("unstaged", file.path),
+    })),
+    ...details.untracked.map((file) => ({
+      file,
+      area: "untracked" as WipArea,
+      key: entryKey("unstaged", file.path),
+    })),
+  ];
+  entries.sort((a, b) => a.file.path.localeCompare(b.file.path));
+  return entries;
+}
+
+export function WipDetailPanel({
+  details,
+  loading,
+  onOpenFile,
+  openFile,
+  actions,
+  repoPath,
+  onRequestLastMessage,
+}: WipDetailPanelProps) {
   const [fileView, setFileView] = useState<FileView>(readFileView);
-  const [collapsed, setCollapsed] = useState<CollapsedByArea>(emptyCollapsed);
-  /** 키보드 포커스 행 (세 섹션을 이어 붙인 전체 인덱스). -1이면 없음 */
+  const [collapsed, setCollapsed] = useState<CollapsedByGroup>(emptyCollapsed);
+  /** 키보드 포커스 행 (두 그룹을 이어 붙인 전체 인덱스). -1이면 없음 */
   const [focusIndex, setFocusIndex] = useState(-1);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set<string>());
+  /** Shift 범위 선택의 기준점 */
+  const anchorRef = useRef<{ group: GroupId; key: string } | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  const sections = useMemo<Section[]>(() => {
+  const groups = useMemo<Group[]>(() => {
+    const source: { id: GroupId; label: string; entries: Entry[] }[] = [
+      {
+        id: "unstaged",
+        label: "Unstaged",
+        entries: details === null ? [] : buildUnstagedEntries(details),
+      },
+      {
+        id: "staged",
+        label: "Staged",
+        entries:
+          details === null
+            ? []
+            : details.staged.map((file) => ({
+                file,
+                area: "staged" as WipArea,
+                key: entryKey("staged", file.path),
+              })),
+      },
+    ];
+
     let offset = 0;
-    return AREAS.map(({ area, label }) => {
-      const files = details === null ? [] : details[area];
-      const treeRows = fileView === "tree" ? buildFileNavRows(files, collapsed[area]) : [];
-      const count = fileView === "tree" ? treeRows.length : files.length;
-      const section: Section = { area, label, files, treeRows, offset, count };
+    return source.map(({ id, label, entries }) => {
+      const byPath = new Map(entries.map((entry) => [entry.file.path, entry]));
+      const treeRows =
+        fileView === "tree"
+          ? buildFileNavRows(
+              entries.map((entry) => entry.file),
+              collapsed[id],
+            )
+          : [];
+      const orderedKeys: string[] = [];
+      if (fileView === "tree") {
+        for (const row of treeRows) {
+          if (row.kind === "file") {
+            orderedKeys.push(entryKey(id, row.file.path));
+          }
+        }
+      } else {
+        for (const entry of entries) {
+          orderedKeys.push(entry.key);
+        }
+      }
+      const count = fileView === "tree" ? treeRows.length : entries.length;
+      const group: Group = { id, label, entries, byPath, treeRows, orderedKeys, offset, count };
       offset += count;
-      return section;
+      return group;
     });
   }, [details, fileView, collapsed]);
 
-  const navCount = sections.reduce((sum, section) => sum + section.count, 0);
-  const totalFiles = sections.reduce((sum, section) => sum + section.files.length, 0);
+  const navCount = groups.reduce((sum, group) => sum + group.count, 0);
+  const totalFiles = groups.reduce((sum, group) => sum + group.entries.length, 0);
 
   // 목록이 줄어들면(뷰 전환, 접기, 새로고침) 포커스를 범위 안으로 당긴다
   useEffect(() => {
     setFocusIndex((prev) => (prev >= navCount ? navCount - 1 : prev));
   }, [navCount]);
 
-  // 포커스 행 스크롤 추종. 섹션마다 data-nav-index가 0부터라 area로 먼저 좁힌다
+  // 새로고침으로 사라진 파일의 선택은 버린다
+  useEffect(() => {
+    const live = new Set<string>();
+    for (const group of groups) {
+      for (const entry of group.entries) {
+        live.add(entry.key);
+      }
+    }
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((key) => live.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [groups]);
+
+  // 포커스 행 스크롤 추종. 그룹마다 data-nav-index가 0부터라 group으로 먼저 좁힌다
   useEffect(() => {
     if (focusIndex < 0) {
       return;
     }
-    const hit = sections.find(
-      (section) => focusIndex >= section.offset && focusIndex < section.offset + section.count,
+    const hit = groups.find(
+      (group) => focusIndex >= group.offset && focusIndex < group.offset + group.count,
     );
     if (hit === undefined) {
       return;
     }
     const local = focusIndex - hit.offset;
     listRef.current
-      ?.querySelector<HTMLElement>(`[data-area="${hit.area}"] [data-nav-index="${local}"]`)
+      ?.querySelector<HTMLElement>(`[data-group="${hit.id}"] [data-nav-index="${local}"]`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [focusIndex, sections]);
+  }, [focusIndex, groups]);
 
   function changeFileView(next: FileView) {
     setFileView(next);
@@ -97,34 +215,36 @@ export function WipDetailPanel({ details, loading, onOpenFile, openFile }: WipDe
     writeFileView(next);
   }
 
-  function toggleDir(area: WipArea, path: string) {
+  function toggleDir(group: GroupId, path: string) {
     setCollapsed((prev) => {
-      const next = new Set(prev[area]);
+      const next = new Set(prev[group]);
       if (next.has(path)) {
         next.delete(path);
       } else {
         next.add(path);
       }
-      return { ...prev, [area]: next };
+      return { ...prev, [group]: next };
     });
   }
 
-  /** 전체 인덱스 → 섹션과 그 안의 행 */
+  /** 전체 인덱스 → 그룹과 그 안의 행 */
   function rowAt(index: number):
-    | { section: Section; local: number; row: FileNavRow | null; file: FileChange | null }
+    | { group: Group; local: number; row: FileNavRow | null; entry: Entry | null }
     | null {
-    const section = sections.find(
+    const group = groups.find(
       (candidate) => index >= candidate.offset && index < candidate.offset + candidate.count,
     );
-    if (section === undefined) {
+    if (group === undefined) {
       return null;
     }
-    const local = index - section.offset;
+    const local = index - group.offset;
     if (fileView === "tree") {
-      const row = section.treeRows[local] ?? null;
-      return { section, local, row, file: row?.kind === "file" ? row.file : null };
+      const row = group.treeRows[local] ?? null;
+      const entry =
+        row !== null && row.kind === "file" ? (group.byPath.get(row.file.path) ?? null) : null;
+      return { group, local, row, entry };
     }
-    return { section, local, row: null, file: section.files[local] ?? null };
+    return { group, local, row: null, entry: group.entries[local] ?? null };
   }
 
   function moveFocus(delta: number) {
@@ -142,24 +262,66 @@ export function WipDetailPanel({ details, loading, onOpenFile, openFile }: WipDe
     if (hit === null) {
       return;
     }
-    if (hit.file !== null) {
-      onOpenFile(hit.file, hit.section.area);
+    if (hit.entry !== null) {
+      onOpenFile(hit.entry.file, hit.entry.area);
       return;
     }
     if (hit.row !== null && hit.row.kind === "dir") {
-      toggleDir(hit.section.area, hit.row.path);
+      toggleDir(hit.group.id, hit.row.path);
     }
   }
 
-  /** Tree 모드에서 같은 섹션 안의 부모 디렉토리 행 (없으면 -1) */
+  /** 체크박스 토글. range면 같은 그룹 안에서 기준점까지 한 번에 켠다 */
+  function toggleSelect(group: Group, key: string, range: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const anchor = anchorRef.current;
+      if (range && anchor !== null && anchor.group === group.id) {
+        const from = group.orderedKeys.indexOf(anchor.key);
+        const to = group.orderedKeys.indexOf(key);
+        if (from >= 0 && to >= 0) {
+          const [lo, hi] = from <= to ? [from, to] : [to, from];
+          for (let i = lo; i <= hi; i++) {
+            next.add(group.orderedKeys[i]);
+          }
+          return next;
+        }
+      }
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      anchorRef.current = { group: group.id, key };
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    anchorRef.current = null;
+    setSelected(new Set<string>());
+  }
+
+  /** 그룹 안에서 선택된 파일 경로 (화면 순서 그대로) */
+  function selectedPaths(group: Group): string[] {
+    return group.entries.filter((entry) => selected.has(entry.key)).map((entry) => entry.file.path);
+  }
+
+  /** 쓰기 액션을 돌리고 나면 선택을 비운다 (대상이 목록에서 사라진다) */
+  function run(action: Promise<void>) {
+    clearSelection();
+    void action.catch(() => undefined);
+  }
+
+  /** Tree 모드에서 같은 그룹 안의 부모 디렉토리 행 (없으면 -1) */
   function parentIndex(index: number): number {
     const hit = rowAt(index);
     if (hit === null || hit.row === null) {
       return -1;
     }
     for (let i = hit.local - 1; i >= 0; i--) {
-      if (hit.section.treeRows[i].depth < hit.row.depth) {
-        return hit.section.offset + i;
+      if (hit.group.treeRows[i].depth < hit.row.depth) {
+        return hit.group.offset + i;
       }
     }
     return -1;
@@ -190,6 +352,18 @@ export function WipDetailPanel({ details, loading, onOpenFile, openFile }: WipDe
           setFocusIndex(navCount - 1);
         }
         return;
+      case " ": {
+        if (actions === undefined || focusIndex < 0) {
+          return;
+        }
+        event.preventDefault();
+        const hit = rowAt(focusIndex);
+        if (hit === null || hit.entry === null) {
+          return;
+        }
+        toggleSelect(hit.group, hit.entry.key, event.shiftKey);
+        return;
+      }
       case "Enter":
         event.preventDefault();
         if (focusIndex < 0) {
@@ -213,7 +387,7 @@ export function WipDetailPanel({ details, loading, onOpenFile, openFile }: WipDe
         }
         if (hit.row !== null && hit.row.kind === "dir") {
           if (hit.row.collapsed) {
-            toggleDir(hit.section.area, hit.row.path);
+            toggleDir(hit.group.id, hit.row.path);
           } else {
             moveFocus(1);
           }
@@ -232,7 +406,7 @@ export function WipDetailPanel({ details, loading, onOpenFile, openFile }: WipDe
           return;
         }
         if (hit.row.kind === "dir" && !hit.row.collapsed) {
-          toggleDir(hit.section.area, hit.row.path);
+          toggleDir(hit.group.id, hit.row.path);
           return;
         }
         const parent = parentIndex(focusIndex);
@@ -263,6 +437,158 @@ export function WipDetailPanel({ details, loading, onOpenFile, openFile }: WipDe
           </section>
         </div>
       </aside>
+    );
+  }
+
+  const busy = actions?.busy === true;
+
+  /** 행 하나에 붙는 체크박스와 hover 액션 */
+  function rowExtrasFor(group: Group, entry: Entry): FileRowExtras {
+    if (actions === undefined) {
+      return { untracked: entry.area === "untracked" };
+    }
+    const path = entry.file.path;
+    // 영역이 눈에 보이게 나뉘어 있으므로, 그 영역에서 누른 만큼만 날아가야 한다.
+    // Unstaged의 되돌리기는 워킹 트리만, Staged의 되돌리기는 staged까지 버린다
+    const rowActions: FileRowAction[] =
+      group.id === "unstaged"
+        ? [
+            {
+              key: "stage",
+              glyph: "+",
+              label: `Stage ${path}`,
+              disabled: busy,
+              onRun: () => run(actions.stage([path])),
+            },
+            {
+              key: "discard",
+              glyph: "↺",
+              label: `Discard working tree changes in ${path}`,
+              danger: true,
+              disabled: busy,
+              onRun: () => run(actions.discard([path], "worktree")),
+            },
+          ]
+        : [
+            {
+              key: "unstage",
+              glyph: "−",
+              label: `Unstage ${path}`,
+              disabled: busy,
+              onRun: () => run(actions.unstage([path])),
+            },
+            {
+              key: "discard",
+              glyph: "↺",
+              label: `Discard staged and unstaged changes in ${path}`,
+              danger: true,
+              disabled: busy,
+              onRun: () => run(actions.discard([path], "all")),
+            },
+          ];
+    return {
+      untracked: entry.area === "untracked",
+      checked: selected.has(entry.key),
+      onToggleCheck: (range) => toggleSelect(group, entry.key, range),
+      actions: rowActions,
+    };
+  }
+
+  function renderGroupBody(group: Group): ReactNode {
+    const activePath =
+      openFile !== null && (group.id === "staged") === (openFile.area === "staged")
+        ? openFile.path
+        : null;
+
+    if (fileView === "tree") {
+      return (
+        <FileTree
+          rows={group.treeRows}
+          focusIndex={focusIndex - group.offset}
+          activePath={activePath}
+          rowExtras={(file) => {
+            const entry = group.byPath.get(file.path);
+            return entry === undefined ? {} : rowExtrasFor(group, entry);
+          }}
+          onOpen={(file, index) => {
+            setFocusIndex(group.offset + index);
+            onOpenFile(file, group.byPath.get(file.path)?.area ?? "unstaged");
+          }}
+          onToggle={(path, index) => {
+            setFocusIndex(group.offset + index);
+            toggleDir(group.id, path);
+          }}
+        />
+      );
+    }
+
+    return (
+      <ul className="file-list">
+        {group.entries.map((entry, index) => (
+          <FileRow
+            key={entry.file.path}
+            file={entry.file}
+            navIndex={index}
+            focused={focusIndex === group.offset + index}
+            active={entry.file.path === activePath}
+            {...rowExtrasFor(group, entry)}
+            onOpen={() => {
+              setFocusIndex(group.offset + index);
+              onOpenFile(entry.file, entry.area);
+            }}
+          />
+        ))}
+      </ul>
+    );
+  }
+
+  function renderGroupHead(group: Group): ReactNode {
+    const picked = selectedPaths(group);
+    const isUnstaged = group.id === "unstaged";
+    return (
+      <h3 className="files-title wip-section-title">
+        <span className="wip-group-name">
+          {group.label}
+          <span className={`wip-count wip-count-${group.id}`}>{group.entries.length}</span>
+        </span>
+        {actions !== undefined && group.entries.length > 0 && (
+          <span className="wip-group-acts">
+            {picked.length > 0 ? (
+              <>
+                <button
+                  className="wip-btn"
+                  disabled={busy}
+                  onClick={() =>
+                    run(isUnstaged ? actions.stage(picked) : actions.unstage(picked))
+                  }
+                >
+                  {isUnstaged ? "Stage" : "Unstage"} {picked.length} selected
+                </button>
+                <button
+                  className="wip-btn danger"
+                  disabled={busy}
+                  onClick={() => run(actions.discard(picked, isUnstaged ? "worktree" : "all"))}
+                  title={
+                    isUnstaged
+                      ? `Discard working tree changes in ${picked.length} selected`
+                      : `Discard staged and unstaged changes in ${picked.length} selected`
+                  }
+                >
+                  ↺
+                </button>
+              </>
+            ) : (
+              <button
+                className="wip-btn"
+                disabled={busy}
+                onClick={() => run(isUnstaged ? actions.stageAll() : actions.unstageAll())}
+              >
+                {isUnstaged ? "Stage all" : "Unstage all"}
+              </button>
+            )}
+          </span>
+        )}
+      </h3>
     );
   }
 
@@ -308,65 +634,34 @@ export function WipDetailPanel({ details, loading, onOpenFile, openFile }: WipDe
         {totalFiles === 0 ? (
           <div className="panel-empty">Working tree clean</div>
         ) : (
-          // 세 섹션을 하나의 연속 목록처럼 다루는 단일 탭 스톱
-          <div className="file-nav" ref={listRef} tabIndex={0} aria-label="Working tree changes" onKeyDown={handleKeyDown}>
-            {sections.map((section) => {
-              if (section.files.length === 0) {
-                return null;
-              }
-              const activePath =
-                openFile !== null && openFile.area === section.area ? openFile.path : null;
-              let body: ReactNode;
-              if (fileView === "tree") {
-                body = (
-                  <FileTree
-                    rows={section.treeRows}
-                    focusIndex={focusIndex - section.offset}
-                    activePath={activePath}
-                    onOpen={(file, index) => {
-                      setFocusIndex(section.offset + index);
-                      onOpenFile(file, section.area);
-                    }}
-                    onToggle={(path, index) => {
-                      setFocusIndex(section.offset + index);
-                      toggleDir(section.area, path);
-                    }}
-                  />
-                );
-              } else {
-                body = (
-                  <ul className="file-list">
-                    {section.files.map((file, index) => (
-                      <FileRow
-                        key={file.path}
-                        file={file}
-                        navIndex={index}
-                        focused={focusIndex === section.offset + index}
-                        active={file.path === activePath}
-                        onOpen={() => {
-                          setFocusIndex(section.offset + index);
-                          onOpenFile(file, section.area);
-                        }}
-                      />
-                    ))}
-                  </ul>
-                );
-              }
-              return (
-                <section className="panel-section files" key={section.area} data-area={section.area}>
-                  <h3 className="files-title wip-section-title">
-                    <span>{section.label}</span>
-                    <span className={`wip-count wip-count-${section.area}`}>
-                      {section.files.length}
-                    </span>
-                  </h3>
-                  {body}
+          // 두 그룹을 하나의 연속 목록처럼 다루는 단일 탭 스톱
+          <div
+            className="file-nav"
+            ref={listRef}
+            tabIndex={0}
+            aria-label="Working tree changes"
+            onKeyDown={handleKeyDown}
+          >
+            {groups.map((group) =>
+              group.entries.length === 0 ? null : (
+                <section className="panel-section files" key={group.id} data-group={group.id}>
+                  {renderGroupHead(group)}
+                  {renderGroupBody(group)}
                 </section>
-              );
-            })}
+              ),
+            )}
           </div>
         )}
       </div>
+
+      {actions !== undefined && repoPath !== undefined && (
+        <CommitBox
+          repoPath={repoPath}
+          stagedCount={counts.staged}
+          actions={actions}
+          onRequestLastMessage={onRequestLastMessage}
+        />
+      )}
     </aside>
   );
 }

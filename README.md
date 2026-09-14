@@ -1,6 +1,6 @@
 # GitLanes
 
-GitKraken-style commit graph viewer. Free and open source (MIT), read-only, works with any local repository — private or public makes no difference. When you need to run git, there's a built-in terminal.
+GitKraken-style git client. Free and open source (MIT), works with any local repository: private or public makes no difference. Read the graph, stage hunks, commit, branch, merge, rebase. When git needs your credentials, the built-in terminal takes over.
 
 ![GitLanes commit graph](docs/screenshot.png)
 
@@ -9,15 +9,20 @@ GitKraken-style commit graph viewer. Free and open source (MIT), read-only, work
 - **GitKraken-style layout**: separate BRANCH/TAG column, curved lane graph with color recycling (adjacent lanes never share a color), author initial avatars
 - **WIP & stash rows**: uncommitted changes and every stash appear inline in the graph; stash rows open in the detail panel like any commit
 - **Branch sidebar**: collapsible LOCAL / REMOTE / TAGS tree, click to jump to a ref's commit
-- **Search**: Cmd+F over message / author / sha across the *entire* history — matches beyond the loaded range are paged in automatically
+- **Search**: Cmd+F over message / author / sha across the *entire* history. Matches beyond the loaded range are paged in automatically
 - **Commit details**: file list with status badges and ±stats (flat or tree view), rename-aware unified diff (virtualized for huge diffs)
 - **Repo tabs**: several repositories side by side, each with its own state
 - **Path highlight**: selecting a commit dims everything outside its ancestry, so you can read one branch through a busy graph
 - **Context menu**: copy sha/message, open the commit on GitHub/your remote
 - **Live**: auto-refreshes when the repository changes (refs fingerprint polling, focused window only); update badge when a newer release exists
-- **Fast**: Rust backend wrapping the system `git` CLI, parallel subprocess calls, canvas rendering with virtual scrolling — a 32k-commit repository loads in ~300ms and scrolls at 60fps
-- **Built-in terminal**: a dockable bottom terminal (⌃`) running a login shell in the repo directory — use your own git for anything that writes (push, pull, checkout), with your existing auth
-- **Read-only graph**: the viewer never mutates your repository
+- **Staging**: stage and unstage by file, by hunk, or by line, with discard scoped to the area you clicked. Commit with amend, sign-off, and GPG, and your draft message survives a closed tab
+- **Branching**: create, check out, rename, delete, set upstream. Drag a branch onto another to merge or rebase, the GitKraken gesture
+- **History editing**: merge, rebase, cherry-pick, revert, reset, and an interactive rebase editor where you reorder, squash, fixup, reword, and drop by dragging
+- **Conflicts**: a panel listing unmerged files with "use ours" / "use theirs" / "mark resolved", plus continue or abort with the step you are on spelled out
+- **Remotes, tags, stashes, worktrees**: all managed from the sidebar
+- **Safety**: git never runs interactively, so it fails instead of hanging. Destructive actions state what is lost and how to get it back before you confirm. Push only ever uses `--force-with-lease`, and a test enforces that
+- **Credentials stay yours**: GitLanes stores no tokens and no keys. When git asks for one, the failing command is handed to the built-in terminal (⌃`), where your ssh-agent, keychain, and prompts work as they always do
+- **Fast**: Rust backend wrapping the system `git` CLI, parallel subprocess calls, canvas rendering with virtual scrolling. A 32k-commit repository loads in ~300ms and scrolls at 60fps
 - Draggable column widths, keyboard navigation (↑/↓), sha copy (button or row double-click), eye-comfort dark theme
 
 ## Install
@@ -48,7 +53,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # backend tests
 # headless backend check on any repo (timing, lanes, WIP, stashes)
 src-tauri/target/release/gitlanes --dump /path/to/repo
 
-# browser harnesses (no Tauri needed) — with `npm run dev` running:
+# browser harnesses (no Tauri needed), with `npm run dev` running:
 #   http://localhost:1420/dev-mock.html   GraphView only, mock data
 #   http://localhost:1420/dev-app.html    full app with mocked IPC
 ```
