@@ -38,6 +38,9 @@ pub fn git_unstage(path: String, files: Vec<String>) -> Result<OpResult, String>
 ///
 /// 추적되지 않는 파일은 되돌릴 원본이 없어서 어느 모드에서나 삭제다.
 /// 되돌릴 방법이 없는 작업이라 UI에서 확인 다이얼로그를 반드시 거친다.
+///
+/// 레퍼런스 앱(GitKraken, SourceGit)에는 이 구분이 없다. 왜 다르게 했는지와
+/// 되돌리는 방법은 @see docs/decisions.md#discard-범위
 #[tauri::command]
 pub fn git_discard(path: String, files: Vec<String>, area: String) -> Result<OpResult, String> {
     // `--source` 없이 쓰면 git이 인덱스를 기준으로 삼는다. 그게 "worktree"의 정의다.

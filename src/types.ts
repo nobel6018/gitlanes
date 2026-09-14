@@ -191,6 +191,8 @@ export type WipArea = "staged" | "unstaged" | "untracked";
  * git_discard의 범위. 레퍼런스 앱(GitKraken/SourceGit)은 "all"만 있지만, 우리 WIP 패널은
  * Unstaged와 Staged를 시각적으로 나눠 그리므로 Unstaged 행의 discard가 staged 변경까지
  * 날리면 사용자의 기대를 배신한다. 커밋 안 한 변경은 reflog로도 복구가 안 된다.
+ *
+ * @see docs/decisions.md#discard-범위
  */
 export type DiscardArea = "worktree" | "all";
 

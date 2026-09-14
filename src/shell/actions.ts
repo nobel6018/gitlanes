@@ -270,6 +270,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           call: () => api.gitUnstage(path, files),
         }),
 
+      // area별로 문구가 다르다. 동작을 가른 이유는 @see docs/decisions.md#discard-범위
       discard: (files, area = "all") =>
         run({
           success: `Discarded ${fileWord(files.length)}`,
