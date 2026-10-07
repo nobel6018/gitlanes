@@ -2745,9 +2745,7 @@ export function RepoWorkspace({
               badge={openFile.area ?? undefined}
               hunkActions={hunkActions}
               diffText={diffText}
-              // diffEncoding prop은 ui16-b가 DiffPanel에 추가한다. 두 브랜치가 따로 빌드되게
-              // 스프레드로 넘긴다(JSX 스프레드는 초과 속성 검사를 하지 않는다). 머지 후 일반 prop으로 바꿔도 된다
-              {...{ diffEncoding }}
+              diffEncoding={diffEncoding}
               fileText={fileText}
               onRequestFileText={handleRequestFileText}
               loading={diffLoading}
