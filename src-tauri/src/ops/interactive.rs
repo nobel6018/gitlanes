@@ -201,16 +201,12 @@ fn check_in_range(repo: &str, base: &str, planned: &mut [Planned]) -> Result<(),
         return Err("커밋을 확인하지 못했습니다".to_string());
     }
 
-    // 각 줄은 "<sha> <부모...>"다. 부모가 둘 이상이면 머지 커밋이다
-    let range = format!("{base}..HEAD");
-    let listed = git::run(repo, &["rev-list", "--parents", range.as_str()])?;
-    let in_range: std::collections::HashMap<&str, bool> = listed
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let sha = parts.next()?;
-            Some((sha, parts.count() > 1))
-        })
+    // 에디터 초기 목록(get_rebase_steps)과 같은 함수로 범위를 구한다. 기준이 다르면
+    // 에디터가 보여 준 목록을 그대로 실행해도 여기서 거절된다.
+    let range = rebase_range(repo, base)?;
+    let in_range: std::collections::HashMap<&str, bool> = range
+        .iter()
+        .map(|commit| (commit.sha.as_str(), commit.is_merge))
         .collect();
 
     for (step, sha) in planned.iter_mut().zip(full) {
@@ -226,6 +222,92 @@ fn check_in_range(repo: &str, base: &str, planned: &mut [Planned]) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// `base..HEAD`에 들어가는 커밋 한 개.
+#[cfg(not(target_os = "windows"))]
+struct RangeCommit {
+    sha: String,
+    is_merge: bool,
+    subject: String,
+}
+
+/// 인터랙티브 리베이스가 다시 쌓을 커밋을 todo 순서(오래된 것이 먼저)로 돌려준다.
+///
+/// [`get_rebase_steps`]의 목록과 [`check_in_range`]의 검증이 둘 다 이 함수를 쓴다.
+/// base가 HEAD의 조상이 아니면 `base..HEAD`에 다른 갈래의 커밋까지 섞이므로 거절한다.
+#[cfg(not(target_os = "windows"))]
+fn rebase_range(repo: &str, base: &str) -> Result<Vec<RangeCommit>, String> {
+    // HEAD에 없는 커밋이 base 쪽에 하나라도 있으면 조상이 아니다
+    let outside = format!("HEAD..{base}");
+    let ahead = git::run(repo, &["rev-list", "--max-count=1", outside.as_str(), "--"])?;
+    if !ahead.trim().is_empty() {
+        return Err("This commit is not an ancestor of the current branch.".to_string());
+    }
+
+    // `--format`을 주면 커밋마다 "commit <sha>" 머리 줄이 따로 붙는다. 우리 줄은 NUL로
+    // 시작하게 해서 머리 줄과 구분한다. subject가 비어도 줄이 남는다.
+    // 날짜가 뒤틀린 커밋이 있어도 부모가 먼저 나오게 topo-order를 건다.
+    let range = format!("{base}..HEAD");
+    let listed = git::run(
+        repo,
+        &[
+            "rev-list",
+            "--reverse",
+            "--topo-order",
+            "--format=%x00%H %P%x00%s",
+            range.as_str(),
+            "--",
+        ],
+    )?;
+
+    let commits = listed
+        .lines()
+        .filter_map(|line| line.strip_prefix('\0'))
+        .filter_map(|line| {
+            let (shas, subject) = line.split_once('\0')?;
+            let mut parts = shas.split_whitespace();
+            let sha = parts.next()?.to_string();
+            Some(RangeCommit {
+                sha,
+                // 부모가 둘 이상이면 머지 커밋이다
+                is_merge: parts.count() > 1,
+                subject: subject.to_string(),
+            })
+        })
+        .collect();
+    Ok(commits)
+}
+
+/// 인터랙티브 리베이스 에디터의 초기 목록. 모두 pick이다.
+///
+/// 그래프 행으로 목록을 만들면 다른 브랜치 커밋이 섞이고 페이징 때문에 범위를 다 알 수도
+/// 없어서 git에게 직접 묻는다.
+#[cfg(not(target_os = "windows"))]
+#[tauri::command(async)]
+pub fn get_rebase_steps(path: String, base: String) -> Result<Vec<RebaseStep>, String> {
+    let base = validate_commitish(&path, &base)?;
+    let range = rebase_range(&path, &base)?;
+    // 머지 커밋은 --rebase-merges 없이 pick할 수 없다. 에디터를 열기 전에 알린다
+    if range.iter().any(|commit| commit.is_merge) {
+        return Err("Interactive rebase over merge commits is not supported.".to_string());
+    }
+    Ok(range
+        .into_iter()
+        .map(|commit| RebaseStep {
+            sha: commit.sha,
+            action: "pick".to_string(),
+            subject: commit.subject,
+            message: None,
+        })
+        .collect())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command(async)]
+pub fn get_rebase_steps(path: String, base: String) -> Result<Vec<RebaseStep>, String> {
+    let _ = (path, base);
+    Err("unsupported on Windows".to_string())
 }
 
 /// todo와 메시지 파일을 담는 `<git 디렉토리>/gitlanes-rebase`. 지우는 것은

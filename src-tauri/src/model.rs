@@ -320,7 +320,8 @@ pub struct WorktreeInfo {
 }
 
 /// `git_rebase_interactive`의 todo 한 줄.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// `get_rebase_steps`가 초기 목록으로 돌려줄 때도 같은 모양을 쓴다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RebaseStep {
     pub sha: String,
