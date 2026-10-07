@@ -16,7 +16,7 @@ use super::run::{finish, run_op, Outcome, LOCAL_TIMEOUT};
 pub fn git_commit(path: String, options: CommitOptions) -> Result<OpResult, String> {
     let message = options.message.trim().to_string();
     if message.is_empty() && !options.amend {
-        return Err("커밋 메시지가 비어 있습니다".to_string());
+        return Err("Commit message is empty.".to_string());
     }
 
     let mut args: Vec<&str> = vec!["commit"];

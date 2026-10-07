@@ -35,7 +35,7 @@ where
     let mut rest = args.into_iter().skip_while(|arg| arg != DUMP_FLAG);
     rest.next()?; // DUMP_FLAG 자신
 
-    let usage = format!("사용법: gitlanes {DUMP_FLAG} <repo-path> [limit]");
+    let usage = format!("Usage: gitlanes {DUMP_FLAG} <repo-path> [limit]");
     let Some(repo) = rest.next().filter(|repo| !repo.trim().is_empty()) else {
         return Some(Err(usage));
     };
@@ -43,13 +43,9 @@ where
     let limit = match rest.next() {
         None => DEFAULT_LIMIT,
         Some(raw) => match raw.trim().parse::<usize>() {
-            Ok(0) => return Some(Err("limit은 1 이상이어야 합니다".to_string())),
+            Ok(0) => return Some(Err("limit must be 1 or more.".to_string())),
             Ok(limit) => limit,
-            Err(_) => {
-                return Some(Err(format!(
-                    "limit을 숫자로 읽지 못했습니다: {raw:?}\n{usage}"
-                )))
-            }
+            Err(_) => return Some(Err(format!("limit is not a number: {raw:?}\n{usage}"))),
         },
     };
 
@@ -127,7 +123,7 @@ pub fn run(request: &DumpRequest, out: &mut impl Write) -> Result<(), String> {
 }
 
 fn write_failed(e: std::io::Error) -> String {
-    format!("출력에 실패했습니다: {e}")
+    format!("Could not write output: {e}")
 }
 
 /// 문자 수 기준으로 자른다. 한글이 바이트 중간에서 잘리지 않게 하려면 바이트가 아니라 char여야 한다.
@@ -188,9 +184,9 @@ mod tests {
     #[test]
     fn 경로가_없으면_사용법을_알린다() {
         let err = from_args(args(&["--dump"])).unwrap().unwrap_err();
-        assert!(err.contains("사용법"), "{err}");
+        assert!(err.contains("Usage"), "{err}");
         let err = from_args(args(&["--dump", "   "])).unwrap().unwrap_err();
-        assert!(err.contains("사용법"), "{err}");
+        assert!(err.contains("Usage"), "{err}");
     }
 
     #[test]
@@ -198,12 +194,12 @@ mod tests {
         let err = from_args(args(&["--dump", "/r", "abc"]))
             .unwrap()
             .unwrap_err();
-        assert!(err.contains("limit을 숫자로 읽지 못했습니다"), "{err}");
+        assert!(err.contains("limit is not a number"), "{err}");
 
         let err = from_args(args(&["--dump", "/r", "0"]))
             .unwrap()
             .unwrap_err();
-        assert!(err.contains("1 이상"), "{err}");
+        assert!(err.contains("1 or more"), "{err}");
     }
 
     #[test]

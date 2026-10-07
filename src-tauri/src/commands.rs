@@ -77,17 +77,17 @@ const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
 #[tauri::command(async)]
 pub fn open_repo(path: String) -> Result<RepoInfo, String> {
     if path.trim().is_empty() {
-        return Err("저장소 경로가 비어 있습니다".to_string());
+        return Err("No repository path was given.".to_string());
     }
 
     let root = git::run(&path, &["rev-parse", "--show-toplevel"])
-        .map_err(|e| format!("git 저장소를 열지 못했습니다: {e}"))?
+        .map_err(|e| format!("Not a git repository: {e}"))?
         .trim()
         .to_string();
 
     if root.is_empty() {
         return Err(format!(
-            "작업 트리가 없는 저장소입니다(bare repository): {path}"
+            "This is a bare repository with no working tree: {path}"
         ));
     }
 
@@ -99,7 +99,7 @@ pub fn open_repo(path: String) -> Result<RepoInfo, String> {
         .unwrap_or_else(|| "HEAD".to_string());
 
     let head_sha = git::run(&root, &["rev-parse", "HEAD"])
-        .map_err(|_| format!("커밋이 아직 없는 저장소입니다: {root}"))?
+        .map_err(|_| format!("This repository has no commits yet: {root}"))?
         .trim()
         .to_string();
 
@@ -169,7 +169,7 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
                 ],
             );
             let log_result = log.join().unwrap_or_else(|_| {
-                Err("커밋 목록을 읽는 중 내부 오류가 발생했습니다".to_string())
+                Err("Internal error while reading the commit list.".to_string())
             });
             (log_result, outputs)
         })
@@ -239,7 +239,7 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
 /// git 호출은 for-each-ref 1회다.
 #[tauri::command(async)]
 pub fn list_refs(path: String) -> Result<Vec<RefEntry>, String> {
-    let out = git::run(&path, &REF_ARGS).map_err(|e| format!("ref 목록을 읽지 못했습니다: {e}"))?;
+    let out = git::run(&path, &REF_ARGS).map_err(|e| format!("Could not read refs: {e}"))?;
 
     Ok(parse_ref_entries(&out))
 }
@@ -301,7 +301,7 @@ pub fn search_commits(
             }
         },
     )
-    .map_err(|e| format!("커밋을 검색하지 못했습니다: {e}"))?;
+    .map_err(|e| format!("Could not search commits: {e}"))?;
 
     match failure {
         Some(message) => Err(message),
@@ -358,7 +358,7 @@ fn stream_commits(path: &str, args: &[&str], want: usize) -> Result<Vec<RawCommi
             }
         },
     )
-    .map_err(|e| format!("커밋 목록을 읽지 못했습니다: {e}"))?;
+    .map_err(|e| format!("Could not read the commit list: {e}"))?;
 
     match failure {
         Some(message) => Err(message),
@@ -386,7 +386,7 @@ pub fn get_repo_state(path: String) -> Result<RepoState, String> {
         <[_; 4]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
 
     // 저장소 자체가 아니면 for-each-ref가 실패한다. 폴링이 조용히 성공하면 안 된다
-    let ref_out = ref_out.map_err(|e| format!("저장소 상태를 읽지 못했습니다: {e}"))?;
+    let ref_out = ref_out.map_err(|e| format!("Could not read the repository state: {e}"))?;
     let head_sha = head_out.map(|s| s.trim().to_string()).unwrap_or_default();
     // load_graph와 같게, 실패하면 스태시가 없는 것으로 본다
     let stash_out = stash_out.unwrap_or_default();
@@ -472,7 +472,7 @@ pub fn get_commit_details(path: String, sha: String) -> Result<CommitDetails, St
     let sha = validate_rev(&sha)?;
 
     let meta_out = git::run(&path, &["show", "-s", META_FORMAT, sha.as_str()])
-        .map_err(|e| format!("커밋 정보를 읽지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Could not read the commit: {e}"))?;
     let meta = parse_commit_meta(&meta_out)?;
 
     let files = load_file_changes(&path, &meta.sha, meta.parents.len() > 1)?;
@@ -507,7 +507,7 @@ pub fn get_file_diff(
 ) -> Result<String, String> {
     let sha = validate_rev(&sha)?;
     if file.trim().is_empty() {
-        return Err("파일 경로가 비어 있습니다".to_string());
+        return Err("No file path was given.".to_string());
     }
 
     let parents = first_line_parents(&path, &sha)?;
@@ -547,7 +547,7 @@ pub fn get_file_diff(
     }
     args.push(file.as_str());
 
-    git::run(&path, &args).map_err(|e| format!("diff를 읽지 못했습니다: {e}"))
+    git::run(&path, &args).map_err(|e| format!("Could not read the diff: {e}"))
 }
 
 /// 커밋 시점의 파일 전문. `git show <sha>:<file>`이다.
@@ -567,7 +567,7 @@ pub fn get_file_content(path: String, sha: String, file: String) -> Result<Strin
         .map(|out| String::from_utf8_lossy(&out).trim().to_string())?;
     let size: usize = size
         .parse()
-        .map_err(|_| format!("파일 크기를 읽지 못했습니다: {size}"))?;
+        .map_err(|_| format!("Could not read the file size: {size}"))?;
     if size > MAX_FILE_BYTES {
         return Err("too large".to_string());
     }
@@ -600,9 +600,9 @@ pub fn get_wip_details(path: String) -> Result<WipDetails, String> {
     let [staged_out, unstaged_out, untracked_out] =
         <[_; 3]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
 
-    let staged = staged_out.map_err(|e| format!("staged 변경을 읽지 못했습니다: {e}"))?;
-    let unstaged = unstaged_out.map_err(|e| format!("unstaged 변경을 읽지 못했습니다: {e}"))?;
-    let untracked = untracked_out.map_err(|e| format!("untracked 목록을 읽지 못했습니다: {e}"))?;
+    let staged = staged_out.map_err(|e| format!("Could not read staged changes: {e}"))?;
+    let unstaged = unstaged_out.map_err(|e| format!("Could not read unstaged changes: {e}"))?;
+    let untracked = untracked_out.map_err(|e| format!("Could not read untracked files: {e}"))?;
 
     Ok(WipDetails {
         staged: parse_file_changes(&staged),
@@ -622,7 +622,7 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Wip
         // 추적되지 않는 파일은 인덱스에 없어 일반 diff로 안 나온다. 빈 파일과 비교해
         // 전체를 추가로 보여준다.
         "untracked" => &["diff", "--no-index"],
-        other => return Err(format!("알 수 없는 WIP 영역입니다: {other}")),
+        other => return Err(format!("Unknown change area: {other}")),
     };
     let mut args: Vec<&str> = PATCH_SOURCE_CONFIG_ARGS.to_vec();
     args.extend(head);
@@ -635,7 +635,7 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Wip
         // --no-index는 차이가 있으면 종료 코드가 1이라 run_bytes_allow_diff를 쓴다
         return git::run_bytes_allow_diff(&path, &args)
             .map(WipDiff::from_bytes)
-            .map_err(|e| format!("untracked diff를 읽지 못했습니다: {e}"));
+            .map_err(|e| format!("Could not read the untracked diff: {e}"));
     }
     // 스테이지된 rename은 새 경로만 넣으면 `-M`이 짝을 못 찾아 "새 파일 전체 추가"로 나온다.
     // 원 경로를 같이 넣어야 rename 헤더와 실제로 바뀐 줄만 담긴 hunk가 나온다.
@@ -654,7 +654,7 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Wip
     args.push(file.as_str());
     git::run_bytes(&path, &args)
         .map(WipDiff::from_bytes)
-        .map_err(|e| format!("{area} diff를 읽지 못했습니다: {e}"))
+        .map_err(|e| format!("Could not read the {area} diff: {e}"))
 }
 
 /// 워킹 트리의 현재 파일 내용. 커밋이 아니라 디스크를 읽는다.
@@ -664,13 +664,13 @@ pub fn get_wip_file_content(path: String, file: String) -> Result<String, String
 
     // 상한을 넘는 파일을 메모리에 올리지 않으려고 크기를 먼저 본다
     let size = std::fs::metadata(&target)
-        .map_err(|e| format!("파일 정보를 읽지 못했습니다: {e}"))?
+        .map_err(|e| format!("Could not read file info: {e}"))?
         .len();
     if size > MAX_FILE_BYTES as u64 {
         return Err("too large".to_string());
     }
 
-    decode_text(std::fs::read(&target).map_err(|e| format!("파일을 읽지 못했습니다: {e}"))?)
+    decode_text(std::fs::read(&target).map_err(|e| format!("Could not read the file: {e}"))?)
 }
 
 /// `ls-files -z` 출력을 FileChange 목록으로 바꾼다. 줄 수는 디스크에서 직접 센다.
@@ -718,19 +718,19 @@ fn count_lines(repo: &str, file: &str) -> u64 {
 /// 경로를 trim하지 않는다. ` a.txt`는 `a.txt`와 다른 파일이다(v0.15.1 H4와 같은 이유).
 fn resolve_in_repo(repo: &str, file: &str) -> Result<PathBuf, String> {
     if file.is_empty() {
-        return Err("파일 경로가 비어 있습니다".to_string());
+        return Err("No file path was given.".to_string());
     }
 
     let root = Path::new(repo)
         .canonicalize()
-        .map_err(|e| format!("저장소 경로를 확인하지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Could not resolve the repository path: {e}"))?;
     let target = root
         .join(file)
         .canonicalize()
-        .map_err(|_| format!("파일을 찾을 수 없습니다: {file}"))?;
+        .map_err(|_| format!("File not found: {file}"))?;
 
     if !target.starts_with(&root) {
-        return Err(format!("저장소 밖의 경로입니다: {file}"));
+        return Err(format!("Path is outside the repository: {file}"));
     }
     Ok(target)
 }
@@ -813,7 +813,7 @@ fn load_file_changes(path: &str, sha: &str, is_merge: bool) -> Result<Vec<FileCh
             ],
         )
     }
-    .map_err(|e| format!("변경 파일 목록을 읽지 못했습니다: {e}"))?;
+    .map_err(|e| format!("Could not read the changed files: {e}"))?;
 
     Ok(parse_file_changes(&out))
 }
@@ -821,7 +821,7 @@ fn load_file_changes(path: &str, sha: &str, is_merge: bool) -> Result<Vec<FileCh
 /// `git rev-list --parents -n 1`로 부모 목록만 얻는다.
 fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
     let out = git::run(path, &["rev-list", "--parents", "--max-count=1", sha])
-        .map_err(|e| format!("커밋을 찾지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Commit not found: {e}"))?;
     let mut tokens = out.split_whitespace();
     tokens.next(); // 첫 토큰은 커밋 자신
     Ok(tokens.map(str::to_string).collect())
@@ -833,10 +833,10 @@ fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
 /// 패치를 만들어 엉뚱한 파일에 적용한다(ops/run.rs `validate_paths`와 같은 이유).
 fn validate_pathspec(file: &str) -> Result<String, String> {
     if file.is_empty() {
-        return Err("파일 경로가 비어 있습니다".to_string());
+        return Err("No file path was given.".to_string());
     }
     if file.starts_with('-') {
-        return Err(format!("파일 경로 형식이 올바르지 않습니다: {file}"));
+        return Err(format!("Invalid file path: {file}"));
     }
     Ok(file.to_string())
 }
@@ -845,10 +845,10 @@ fn validate_pathspec(file: &str) -> Result<String, String> {
 fn validate_rev(sha: &str) -> Result<String, String> {
     let sha = sha.trim();
     if sha.is_empty() {
-        return Err("커밋 sha가 비어 있습니다".to_string());
+        return Err("No commit sha was given.".to_string());
     }
     if sha.starts_with('-') {
-        return Err(format!("커밋 sha 형식이 올바르지 않습니다: {sha}"));
+        return Err(format!("Invalid commit sha: {sha}"));
     }
     Ok(sha.to_string())
 }
@@ -1004,7 +1004,7 @@ mod integration_tests {
             .unwrap();
         if !out.status.success() {
             let err = open_repo(dir.to_string_lossy().into_owned()).unwrap_err();
-            assert!(err.contains("git 저장소를 열지 못했습니다"), "{err}");
+            assert!(err.contains("Not a git repository"), "{err}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1152,7 +1152,7 @@ mod integration_tests {
     fn 없는_커밋은_오류_메시지를_돌려준다() {
         let repo = fixture();
         let err = get_commit_details(repo.path(), "deadbeefdeadbeef".to_string()).unwrap_err();
-        assert!(err.contains("커밋 정보를 읽지 못했습니다"), "{err}");
+        assert!(err.contains("Could not read the commit"), "{err}");
     }
 
     #[test]
@@ -1457,7 +1457,7 @@ mod integration_tests {
     #[test]
     fn get_repo_state는_저장소가_아니면_오류다() {
         let err = get_repo_state("/definitely/not/a/repo/gitlanes".to_string()).unwrap_err();
-        assert!(err.contains("저장소 상태를 읽지 못했습니다"), "{err}");
+        assert!(err.contains("Could not read the repository state"), "{err}");
     }
 
     #[test]
@@ -1668,7 +1668,7 @@ mod integration_tests {
     #[test]
     fn list_refs는_저장소가_아니면_오류다() {
         let err = list_refs("/definitely/not/a/repo/gitlanes".to_string()).unwrap_err();
-        assert!(err.contains("ref 목록을 읽지 못했습니다"), "{err}");
+        assert!(err.contains("Could not read refs"), "{err}");
     }
 
     #[test]
@@ -2224,7 +2224,7 @@ mod integration_tests {
             // Linux는 파일 뒤의 `..`(keep.txt/..)를 ENOTDIR로 먼저 실패시키고 macOS realpath는
             // 통과시켜 prefix 검사에서 걸린다. 둘 다 안전한 거부이므로 어느 메시지든 허용한다
             assert!(
-                error.contains("저장소 밖의 경로") || error.contains("찾을 수 없습니다"),
+                error.contains("outside the repository") || error.contains("not found"),
                 "{candidate}: {error}"
             );
         }
@@ -2250,7 +2250,7 @@ mod integration_tests {
         std::os::unix::fs::symlink(&outside, format!("{}/escape.txt", repo.path())).unwrap();
 
         let error = get_wip_file_content(repo.path(), "escape.txt".to_string()).unwrap_err();
-        assert!(error.contains("저장소 밖의 경로"), "{error}");
+        assert!(error.contains("outside the repository"), "{error}");
 
         // 목록에는 올라오지만 줄 수는 셀 수 없어 0이다
         let wip = get_wip_details(repo.path()).unwrap();

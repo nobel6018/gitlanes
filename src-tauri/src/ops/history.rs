@@ -19,7 +19,7 @@ pub fn git_merge(
     if no_ff && squash {
         // --squash는 커밋을 만들지 않아서 --no-ff와 뜻이 겹치지 않고 git이 거절한다.
         // 조합을 UI에서 못 만들게 막았더라도 여기서 한 번 더 거른다.
-        return Err("--no-ff와 --squash는 함께 쓸 수 없습니다".to_string());
+        return Err("--no-ff and --squash cannot be used together.".to_string());
     }
 
     let mut args: Vec<&str> = vec!["merge", "--no-edit"];
@@ -117,7 +117,7 @@ pub fn git_reset(path: String, target: String, mode: String) -> Result<OpResult,
         "soft" => "--soft",
         "mixed" => "--mixed",
         "hard" => "--hard",
-        other => return Err(format!("알 수 없는 reset 모드입니다: {other}")),
+        other => return Err(format!("Unknown reset mode: {other}")),
     };
     let target = validate_commitish(&path, &target)?;
 
@@ -137,19 +137,24 @@ pub fn git_pending_action(path: String, kind: String, action: String) -> Result<
         "revert" => "revert",
         "am" => "am",
         // 충돌만 남은 상태는 이어가거나 되돌릴 작업이 없다. 파일을 해결하면 사라진다
-        "conflicts" => return Err("충돌만 남은 상태에는 이어갈 작업이 없습니다".to_string()),
-        other => return Err(format!("알 수 없는 진행 중 작업입니다: {other}")),
+        "conflicts" => {
+            return Err(
+                "Nothing to continue. Only conflicts are left; resolve them and commit."
+                    .to_string(),
+            )
+        }
+        other => return Err(format!("Unknown operation in progress: {other}")),
     };
     let flag = match action.as_str() {
         "continue" => "--continue",
         "abort" => "--abort",
         "skip" => {
             if subcommand == "merge" {
-                return Err("머지에는 skip이 없습니다".to_string());
+                return Err("A merge cannot be skipped. Abort it instead.".to_string());
             }
             "--skip"
         }
-        other => return Err(format!("알 수 없는 동작입니다: {other}")),
+        other => return Err(format!("Unknown action: {other}")),
     };
 
     let result = run_op(&path, &[subcommand, flag], LOCAL_TIMEOUT);
@@ -164,7 +169,7 @@ pub fn git_pending_action(path: String, kind: String, action: String) -> Result<
 /// 커밋 목록을 검증한다. 빈 목록은 git이 전체로 해석할 여지가 있어 먼저 막는다.
 fn validate_commitish_list(repo: &str, shas: &[String]) -> Result<Vec<String>, String> {
     if shas.is_empty() {
-        return Err("대상 커밋이 없습니다".to_string());
+        return Err("No commits were selected.".to_string());
     }
     shas.iter()
         .map(|sha| validate_commitish(repo, sha))
@@ -175,7 +180,7 @@ fn validate_commitish_list(repo: &str, shas: &[String]) -> Result<Vec<String>, S
 fn validate_mainline(mainline: Option<u32>) -> Result<Option<String>, String> {
     match mainline {
         None => Ok(None),
-        Some(0) => Err("mainline은 1부터 시작합니다".to_string()),
+        Some(0) => Err("Mainline parent numbers start at 1.".to_string()),
         Some(value) => Ok(Some(value.to_string())),
     }
 }

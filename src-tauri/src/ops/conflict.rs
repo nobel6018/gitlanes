@@ -108,7 +108,7 @@ pub fn git_resolve_with(path: String, file: String, side: String) -> Result<OpRe
     let flag = match side.as_str() {
         "ours" => "--ours",
         "theirs" => "--theirs",
-        other => return Err(format!("알 수 없는 쪽입니다: {other}")),
+        other => return Err(format!("Unknown conflict side: {other}")),
     };
     let file = validate_paths(&[file])?.remove(0);
 
@@ -173,7 +173,7 @@ pub fn get_conflict_side(path: String, file: String, side: String) -> Result<Str
         "base" => "1",
         "ours" => "2",
         "theirs" => "3",
-        other => return Err(format!("알 수 없는 쪽입니다: {other}")),
+        other => return Err(format!("Unknown conflict side: {other}")),
     };
     let file = validate_paths(&[file])?.remove(0);
     let spec = format!(":{stage}:{file}");

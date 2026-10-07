@@ -308,7 +308,7 @@ fn execute_blocking(
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
+        .map_err(|e| format!("Could not run git. Check that git is installed: {e}"))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -339,7 +339,7 @@ fn execute_blocking(
             Ok(None) => {}
             Err(error) => {
                 kill_tree(&mut child);
-                return Err(format!("git 종료를 기다리지 못했습니다: {error}"));
+                return Err(format!("Could not wait for git to exit: {error}"));
             }
         }
         if Instant::now() >= deadline {
@@ -487,7 +487,7 @@ pub fn run_chain(repo: &str, steps: &[Vec<&str>], timeout: Duration) -> Result<O
             break;
         }
     }
-    merged.ok_or_else(|| "실행할 명령이 없습니다".to_string())
+    merged.ok_or_else(|| "No command to run.".to_string())
 }
 
 fn join_output(first: &str, second: &str) -> String {
@@ -639,21 +639,21 @@ fn last_overwrite(line: &str) -> &str {
 pub fn validate_ref_name(repo: &str, name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("이름이 비어 있습니다".to_string());
+        return Err("Name is empty.".to_string());
     }
     if name.starts_with('-') {
-        return Err(format!("이름 형식이 올바르지 않습니다: {name}"));
+        return Err(format!("Invalid name: {name}"));
     }
 
     let expanded = git::run(repo, &["check-ref-format", "--branch", name])
-        .map_err(|_| format!("git이 허용하지 않는 이름입니다: {name}"))?;
+        .map_err(|_| format!("git does not allow this name: {name}"))?;
 
     // `--branch`는 `@{-1}`(직전 브랜치), `@{u}`(upstream)를 실제 이름으로 풀어 성공한다.
     // 확인 다이얼로그에는 `@{-1}`이 보이는데 git은 다른 브랜치를 지우게 된다.
     // 사용자가 적은 글자 그대로가 이름일 때만 받는다.
     if expanded.trim() != name {
         return Err(format!(
-            "다른 브랜치를 가리키는 표기는 쓸 수 없습니다: {name} → {}",
+            "Use the branch name itself, not a shorthand: {name} points to {}",
             expanded.trim()
         ));
     }
@@ -668,15 +668,15 @@ pub fn validate_ref_name(repo: &str, name: &str) -> Result<String, String> {
 pub fn validate_commitish(repo: &str, rev: &str) -> Result<String, String> {
     let rev = rev.trim();
     if rev.is_empty() {
-        return Err("대상 커밋이 비어 있습니다".to_string());
+        return Err("No target commit was given.".to_string());
     }
     if rev.starts_with('-') {
-        return Err(format!("대상 형식이 올바르지 않습니다: {rev}"));
+        return Err(format!("Invalid target: {rev}"));
     }
 
     let spec = format!("{rev}^{{commit}}");
     git::run(repo, &["rev-parse", "--verify", "--quiet", spec.as_str()])
-        .map_err(|_| format!("가리키는 커밋을 찾을 수 없습니다: {rev}"))?;
+        .map_err(|_| format!("Commit not found: {rev}"))?;
 
     Ok(rev.to_string())
 }
@@ -685,14 +685,14 @@ pub fn validate_commitish(repo: &str, rev: &str) -> Result<String, String> {
 pub fn validate_remote(repo: &str, remote: &str) -> Result<String, String> {
     let remote = remote.trim();
     if remote.is_empty() {
-        return Err("remote 이름이 비어 있습니다".to_string());
+        return Err("Remote name is empty.".to_string());
     }
     if remote.starts_with('-') {
-        return Err(format!("remote 이름 형식이 올바르지 않습니다: {remote}"));
+        return Err(format!("Invalid remote name: {remote}"));
     }
 
     if !remotes(repo).iter().any(|known| known == remote) {
-        return Err(format!("등록되지 않은 remote입니다: {remote}"));
+        return Err(format!("Unknown remote: {remote}"));
     }
     Ok(remote.to_string())
 }
@@ -709,7 +709,7 @@ pub fn validate_remote(repo: &str, remote: &str) -> Result<String, String> {
 pub fn validate_paths(files: &[String]) -> Result<Vec<String>, String> {
     if let Some(bad) = files.iter().find(|file| file.contains('\0')) {
         return Err(format!(
-            "경로에 NUL 문자가 있습니다: {}",
+            "Path contains a NUL character: {}",
             bad.replace('\0', "\\0")
         ));
     }
@@ -720,10 +720,10 @@ pub fn validate_paths(files: &[String]) -> Result<Vec<String>, String> {
         .collect();
 
     if cleaned.is_empty() {
-        return Err("대상 파일이 없습니다".to_string());
+        return Err("No files were selected.".to_string());
     }
     if let Some(bad) = cleaned.iter().find(|file| file.starts_with('-')) {
-        return Err(format!("경로 형식이 올바르지 않습니다: {bad}"));
+        return Err(format!("Invalid path: {bad}"));
     }
     Ok(cleaned)
 }

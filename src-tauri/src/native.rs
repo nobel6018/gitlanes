@@ -151,7 +151,7 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     let target = validate_path(&path)?;
     let dir = enclosing_dir(&target);
     spawn_first(&reveal_candidates(&target, &dir, Platform::current()))
-        .map_err(|reason| format!("파일관리자에서 열지 못했습니다: {reason}"))
+        .map_err(|reason| format!("Could not open in the file manager: {reason}"))
 }
 
 /// 기본 터미널을 해당 디렉토리에서 연다. 파일 경로가 오면 그 파일이 든 디렉토리를 쓴다.
@@ -161,7 +161,7 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
     let target = validate_path(&path)?;
     let dir = enclosing_dir(&target);
     spawn_first(&terminal_candidates(&dir, Platform::current()))
-        .map_err(|reason| format!("터미널을 열지 못했습니다: {reason}"))
+        .map_err(|reason| format!("Could not open a terminal: {reason}"))
 }
 
 /// File > Open Recent 서브메뉴를 다시 만든다.
@@ -186,13 +186,13 @@ pub fn set_recent_repos(app: tauri::AppHandle, paths: Vec<String>) -> Result<(),
 fn validate_path(path: &str) -> Result<String, String> {
     let path = path.trim();
     if path.is_empty() {
-        return Err("경로가 비어 있습니다".to_string());
+        return Err("No path was given.".to_string());
     }
     if path.starts_with('-') {
-        return Err(format!("경로 형식이 올바르지 않습니다: {path}"));
+        return Err(format!("Invalid path: {path}"));
     }
     if !Path::new(path).exists() {
-        return Err(format!("경로를 찾을 수 없습니다: {path}"));
+        return Err(format!("Path not found: {path}"));
     }
     Ok(path.to_string())
 }
@@ -214,7 +214,7 @@ fn enclosing_dir(target: &str) -> String {
 /// 자식을 기다리지 않는다. 후보들은 모두 창을 띄우고 곧 끝나거나(open, xdg-open)
 /// 앱이 사는 동안 계속 도는 터미널 프로세스라서 기다릴 것이 없다.
 fn spawn_first(candidates: &[Spawn]) -> Result<(), String> {
-    let mut last = "실행할 명령이 없습니다".to_string();
+    let mut last = "No command to run.".to_string();
 
     for candidate in candidates {
         match Command::new(candidate.program)
@@ -222,7 +222,7 @@ fn spawn_first(candidates: &[Spawn]) -> Result<(), String> {
             .spawn()
         {
             Ok(_) => return Ok(()),
-            Err(error) => last = format!("{} 실행 실패({error})", candidate.program),
+            Err(error) => last = format!("Could not run {} ({error})", candidate.program),
         }
     }
 

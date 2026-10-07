@@ -132,16 +132,16 @@ fn stash_moved(repo: &str, reference: &str, sha: Option<&str>) -> Option<OpResul
 fn validate_stash_ref(reference: &str) -> Result<String, String> {
     let reference = reference.trim();
     if reference.is_empty() {
-        return Err("스태시 참조가 비어 있습니다".to_string());
+        return Err("No stash was given.".to_string());
     }
 
     let index = reference
         .strip_prefix("stash@{")
         .and_then(|rest| rest.strip_suffix('}'))
-        .ok_or_else(|| format!("스태시 참조 형식이 올바르지 않습니다: {reference}"))?;
+        .ok_or_else(|| format!("Invalid stash reference: {reference}"))?;
 
     if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(format!("스태시 참조 형식이 올바르지 않습니다: {reference}"));
+        return Err(format!("Invalid stash reference: {reference}"));
     }
     Ok(reference.to_string())
 }

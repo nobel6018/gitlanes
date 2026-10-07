@@ -51,7 +51,7 @@ pub fn git_pull(
         // --no-rebase가 곧 merge다. --no-ff는 아니라서 ff가 가능하면 ff로 끝난다.
         "merge" => vec!["pull", "--no-rebase", "--no-edit"],
         "rebase" => vec!["pull", "--rebase"],
-        other => return Err(format!("알 수 없는 pull 모드입니다: {other}")),
+        other => return Err(format!("Unknown pull mode: {other}")),
     };
 
     // remote 없이 branch만 주면 git이 branch를 remote로 읽는다. 둘은 같이 온다.
@@ -64,7 +64,7 @@ pub fn git_pull(
         None => None,
     };
     if branch.is_some() && remote.is_none() {
-        return Err("브랜치를 지정하려면 remote도 함께 지정해야 합니다".to_string());
+        return Err("Choose a remote when choosing a branch.".to_string());
     }
     if let Some(remote) = remote.as_deref() {
         args.push(remote);
@@ -93,7 +93,7 @@ pub fn git_push(
     let branch = match branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
         Some(branch) => validate_ref_name(&path, branch)?,
         None => current_branch(&path)
-            .ok_or_else(|| "detached HEAD 상태에서는 푸시할 수 없습니다".to_string())?,
+            .ok_or_else(|| "Push needs a branch. You are on a detached HEAD.".to_string())?,
     };
 
     if force_with_lease {

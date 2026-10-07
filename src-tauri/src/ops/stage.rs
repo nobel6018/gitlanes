@@ -62,7 +62,7 @@ pub fn git_discard(path: String, files: Vec<String>, area: String) -> Result<OpR
             &["restore", "--source=HEAD", "--staged", "--worktree", "--"]
         }
         "all" => &["rm", "-q", "-f", "--"],
-        other => return Err(format!("알 수 없는 discard 범위입니다: {other}")),
+        other => return Err(format!("Unknown discard scope: {other}")),
     };
 
     let files = validate_paths(&files)?;
@@ -279,7 +279,7 @@ pub fn git_apply_patch(
 ) -> Result<OpResult, String> {
     let encoding = DiffEncoding::parse(&encoding)?;
     if patch.trim().is_empty() {
-        return Err("패치가 비어 있습니다".to_string());
+        return Err("The patch is empty.".to_string());
     }
 
     let mut args: Vec<&str> = vec!["apply", "--whitespace=nowarn"];
@@ -332,7 +332,7 @@ pub fn git_create_patch(
     out_dir: String,
 ) -> Result<OpResult, String> {
     if shas.is_empty() {
-        return Err("대상 커밋이 없습니다".to_string());
+        return Err("No commits were selected.".to_string());
     }
     let out_dir = validate_paths(&[out_dir])?.remove(0);
     let shas: Vec<String> = shas

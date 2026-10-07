@@ -98,7 +98,7 @@ pub fn git_delete_branch(
     let name = validate_ref_name(&path, &name)?;
     if current_branch(&path).as_deref() == Some(name.as_str()) {
         return Err(format!(
-            "현재 체크아웃된 브랜치는 삭제할 수 없습니다: {name}"
+            "Cannot delete the checked-out branch: {name}. Switch to another branch first."
         ));
     }
 
@@ -111,9 +111,9 @@ fn split_remote_ref(repo: &str, name: &str) -> Result<(String, String), String> 
     let name = validate_ref_name(repo, name)?;
     let (remote, branch) = name
         .split_once('/')
-        .ok_or_else(|| format!("원격 브랜치 형태가 아닙니다: {name}"))?;
+        .ok_or_else(|| format!("Not a remote branch: {name}"))?;
     if branch.is_empty() {
-        return Err(format!("원격 브랜치 형태가 아닙니다: {name}"));
+        return Err(format!("Not a remote branch: {name}"));
     }
     let remote = validate_remote(repo, remote)?;
     Ok((remote, branch.to_string()))
@@ -288,7 +288,7 @@ mod tests {
     fn 현재_브랜치_삭제는_호출_오류다() {
         let (_origin, repo) = remote_fixture();
         let error = git_delete_branch(repo.path(), "main".to_string(), false, false).unwrap_err();
-        assert!(error.contains("현재"), "{error}");
+        assert!(error.contains("checked-out branch"), "{error}");
     }
 
     #[test]
