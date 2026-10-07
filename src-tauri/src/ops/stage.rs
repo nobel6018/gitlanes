@@ -475,7 +475,8 @@ mod tests {
         repo.write("note*", "지울 파일\n");
         repo.write("note_draft.txt", "남겨야 할 초안\n");
 
-        let result = git_discard(repo.path(), vec!["note*".to_string()], "all".to_string()).unwrap();
+        let result =
+            git_discard(repo.path(), vec!["note*".to_string()], "all".to_string()).unwrap();
         assert!(result.ok, "{result:?}");
         assert!(!exists(&repo, "note*"));
         assert!(
@@ -597,7 +598,14 @@ mod tests {
 
         let patch = git::run(
             repo.path(),
-            &["diff", "-U3", "--src-prefix=a/", "--dst-prefix=b/", "--", "f.txt"],
+            &[
+                "diff",
+                "-U3",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--",
+                "f.txt",
+            ],
         )
         .unwrap();
 

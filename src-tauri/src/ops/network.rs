@@ -470,7 +470,10 @@ mod tests {
         }
 
         // upstream이 이미 있으면 -u를 붙이지 않는다
-        assert_eq!(push_args(None, "main", true, true, false, false, true), ["push"]);
+        assert_eq!(
+            push_args(None, "main", true, true, false, false, true),
+            ["push"]
+        );
         assert_eq!(
             push_args(None, "feature", false, true, false, false, true),
             ["push", "-u", "origin", "feature"]
