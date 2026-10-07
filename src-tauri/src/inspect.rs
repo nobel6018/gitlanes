@@ -552,22 +552,28 @@ mod tests {
         assert_eq!(entries[1].status, FileStatus::Modified);
     }
 
-    /// one: 1,2,3 / two: 2번 줄을 B로 바꾸고 4를 붙인다.
+    /// one: a,b,c / two: 2번 줄을 B로 바꾸고 d를 붙인다.
+    ///
+    /// 글자를 쓰는 이유: ignore-revs는 무시한 커밋의 줄을 비슷한 옛 줄에 넘기는데, `2`와 `B`처럼
+    /// 닮지 않은 줄은 넘기지 않는다(실측). 그러면 설정이 새어 들어와도 결과가 같아 검증이 안 된다.
     fn blame_fixture() -> (TempRepo, String, String) {
         let repo = TempRepo::init("gitlanes-blame");
-        repo.write("a.txt", "1\n2\n3\n");
+        repo.write("a.txt", "a\nb\nc\n");
         repo.git(&["add", "-A"]);
         repo.git(&["commit", "-qm", "one"]);
         let one = repo.rev("HEAD");
-        repo.write("a.txt", "1\nB\n3\n4\n");
+        repo.write("a.txt", "a\nB\nc\nd\n");
         repo.git(&["commit", "-qam", "two"]);
         let two = repo.rev("HEAD");
         (repo, one, two)
     }
 
     fn spans(result: &BlameResult) -> Vec<(String, u32, u32, bool)> {
-        result
-            .hunks
+        hunk_spans(&result.hunks)
+    }
+
+    fn hunk_spans(hunks: &[BlameHunk]) -> Vec<(String, u32, u32, bool)> {
+        hunks
             .iter()
             .map(|h| (h.sha.clone(), h.start_line, h.line_count, h.uncommitted))
             .collect()
@@ -576,12 +582,12 @@ mod tests {
     #[test]
     fn blame은_같은_커밋의_연속_줄을_구간으로_묶는다() {
         let (repo, one, two) = blame_fixture();
-        repo.write("a.txt", "1\nB\n3\n4\n5\n6\n");
+        repo.write("a.txt", "a\nB\nc\nd\ne\nf\n");
         repo.git(&["commit", "-qam", "three"]);
         let three = repo.rev("HEAD");
 
         let result = get_blame(repo.path(), "a.txt".into(), None).unwrap();
-        assert_eq!(result.lines, ["1", "B", "3", "4", "5", "6"]);
+        assert_eq!(result.lines, ["a", "B", "c", "d", "e", "f"]);
         assert_eq!(
             spans(&result),
             [
@@ -603,7 +609,7 @@ mod tests {
     #[test]
     fn 워킹트리_blame은_고친_줄을_uncommitted로_표시한다() {
         let (repo, one, two) = blame_fixture();
-        repo.write("a.txt", "1\nB\n3\nX\n");
+        repo.write("a.txt", "a\nB\nc\nX\n");
 
         let result = get_blame(repo.path(), "a.txt".into(), None).unwrap();
         let zero = "0".repeat(40);
@@ -620,7 +626,7 @@ mod tests {
 
         // rev를 주면 워킹트리 수정은 보이지 않는다
         let at_head = get_blame(repo.path(), "a.txt".into(), Some("HEAD".into())).unwrap();
-        assert_eq!(at_head.lines, ["1", "B", "3", "4"]);
+        assert_eq!(at_head.lines, ["a", "B", "c", "d"]);
         assert!(at_head.hunks.iter().all(|h| !h.uncommitted));
         assert_eq!(at_head.hunks[3].sha, two);
     }
@@ -645,6 +651,10 @@ mod tests {
         repo.write(".git/ignore-revs", &format!("{two}\n"));
         repo.git(&["config", "blame.ignoreRevsFile", ".git/ignore-revs"]);
         repo.git(&["config", "blame.markIgnoredLines", "true"]);
+        // 설정이 실제로 결과를 바꾸는 픽스처인지 먼저 확인한다
+        let raw = git::run(repo.path(), &["blame", "--porcelain", "--", "a.txt"]).unwrap();
+        assert_ne!(hunk_spans(&parse_blame_porcelain(&raw)), spans(&clean));
+
         let configured = get_blame(repo.path(), "a.txt".into(), None).unwrap();
         assert_eq!(spans(&configured), spans(&clean));
         assert_eq!(configured.hunks[1].sha, two);
