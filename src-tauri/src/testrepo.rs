@@ -33,6 +33,12 @@ impl TempRepo {
         repo.git(&["config", "user.name", "테스터"]);
         repo.git(&["config", "user.email", "tester@example.com"]);
         repo.git(&["config", "commit.gpgsign", "false"]);
+        // GitHub의 Windows 러너는 전역 core.autocrlf=true다. 그러면 git이 복원/체크아웃
+        // 때 "1\n"을 "1\r\n"으로 바꿔 써서, 파일 내용을 문자열로 비교하는 테스트가
+        // Windows에서만 깨진다. 제품 버그가 아니라 테스트 레포가 호스트 설정을 물려받은
+        // 것이라, 다른 config와 같은 이유로 레포 로컬에 못 박는다.
+        repo.git(&["config", "core.autocrlf", "false"]);
+        repo.git(&["config", "core.eol", "lf"]);
         repo
     }
 
@@ -59,6 +65,12 @@ impl TempRepo {
         repo.git(&["config", "user.name", "테스터"]);
         repo.git(&["config", "user.email", "tester@example.com"]);
         repo.git(&["config", "commit.gpgsign", "false"]);
+        // GitHub의 Windows 러너는 전역 core.autocrlf=true다. 그러면 git이 복원/체크아웃
+        // 때 "1\n"을 "1\r\n"으로 바꿔 써서, 파일 내용을 문자열로 비교하는 테스트가
+        // Windows에서만 깨진다. 제품 버그가 아니라 테스트 레포가 호스트 설정을 물려받은
+        // 것이라, 다른 config와 같은 이유로 레포 로컬에 못 박는다.
+        repo.git(&["config", "core.autocrlf", "false"]);
+        repo.git(&["config", "core.eol", "lf"]);
         repo
     }
 
