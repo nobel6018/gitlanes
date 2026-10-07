@@ -2259,6 +2259,9 @@ mod integration_tests {
     }
 
     /// v0.15.1 H4와 같은 원인. trim하면 ` a.txt`의 전문을 물었는데 `a.txt`를 읽는다.
+    // Windows는 파일명 끝의 공백을 잘라 버려 `a.txt `를 만들 수 없다(앞 공백은 가능하지만
+    // 이 테스트는 앞뒤를 함께 본다).
+    #[cfg(not(windows))]
     #[test]
     fn wip_전문은_앞뒤_공백이_있는_경로를_그대로_읽는다() {
         let repo = TempRepo::init("gitlanes-content-space");

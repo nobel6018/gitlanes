@@ -414,6 +414,9 @@ mod tests {
         repo
     }
 
+    // Windows는 파일명에 `*`, `?`를 쓸 수 없어 이 파일을 만들 수조차 없다. 그러니 glob 문자가
+    // 풀리는 사고도 Windows에서는 일어나지 않는다.
+    #[cfg(not(windows))]
     #[test]
     fn resolve_with는_glob_문자_파일명을_리터럴로_다룬다() {
         let repo = glob_conflicted("gitlanes-resolve-glob");

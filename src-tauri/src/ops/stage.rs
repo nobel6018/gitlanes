@@ -853,6 +853,8 @@ mod tests {
     }
 
     /// R-M7의 두 번째 재현. `-z` 없이 읽으면 git이 `"say\"hi\".txt"`로 C 인용해 판정이 어긋난다.
+    // Windows는 파일명에 `"`를 쓸 수 없어 이 파일을 만들 수조차 없다.
+    #[cfg(not(windows))]
     #[test]
     fn discard는_따옴표가_든_untracked_파일을_지운다() {
         let repo = dirty();
