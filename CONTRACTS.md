@@ -883,3 +883,39 @@ Rust 의존성은 이미 `Cargo.lock`에 있는 크레이트(`libc` 등)를 직�
 ## 공통 규칙
 - 각 수정에 "수정 전 실패, 수정 후 통과" 테스트. Rust는 TempRepo 실레포, 프론트 로직은 Node 24 직접 실행 또는 test:patch
 - 보고는 `~/leedo/gitlanes-audit-2026-10/handoff-<패키지>.md` (`/tmp` 금지)
+
+---
+
+# v0.16.1 - 남은 작은 버그 + 안 쓰던 기능 연결
+
+> 2026-10-07. Windows 테스트 3개 수정(감독이 함), 오류 메시지 영어 통일, 비UTF-8 부분 스테이징, 리베이스 메뉴 로딩 상태,
+> 3-way 충돌 비교 화면, 커밋 템플릿.
+
+## 테스트 픽스처 규칙 (Windows 정식 지원 전까지, 모든 패키지)
+
+CI는 macOS에서만 돌고 Windows는 릴리스 때 처음 테스트된다. v0.15.0, v0.15.1, v0.16.0이 모두 이 이유로 Windows 빌드를 놓쳤다.
+**Windows에서 만들 수 없는 픽스처를 쓰는 테스트는 처음부터 `#[cfg(not(windows))]`를 붙이고 이유를 한 줄 적는다.**
+
+- 파일명 금지 문자: `* ? " < > : |`, 그리고 이름 끝의 공백과 마침표(Windows가 잘라 버린다)
+- 줄바꿈: 내용을 바이트로 비교하면 `core.autocrlf`에 흔들린다. TempRepo는 `autocrlf=false`로 고정돼 있다
+- 경로 구분자 `\`, 대소문자 무시 파일시스템, 실행 권한 비트
+
+같은 수정을 Windows에서도 지킬 수 있는 다른 픽스처(예: `[`는 허용)가 있으면 그쪽 테스트를 함께 둔다.
+
+## 계약 변경 (types.ts, 감독이 반영함)
+
+- `get_wip_file_diff -> WipDiff { text, encoding: "utf8" | "latin1" }` (기존 string에서 바뀜). 내용이 UTF-8이 아니면 latin1로 디코딩
+- `git_apply_patch(path, patch, cached, reverse, encoding)`. latin1이면 Rust가 각 글자(0~255)를 바이트로 되돌려 stdin에 쓴다. 255를 넘는 글자가 있으면 Err
+- 프론트 `RepoActions.applyPatch`는 5번째 **선택 인자** `encoding?`을 받는다(기본 "utf8"). DiffPanel은 `diffEncoding?` **선택 prop**을 받는다. 두 UI 패키지가 서로를 기다리지 않게 둘 다 선택으로 둔다
+
+## 소유권
+
+| 패키지 | 소유 파일 | 항목 |
+|---|---|---|
+| rust16 | `src-tauri/**` | 사용자에게 보이는 오류 문구 영어 통일(Err 문자열, 우리가 만드는 stderr), `WipDiff` 반환, `git_apply_patch` encoding |
+| ui16-a | `src/shell/{api,actions}.ts`, `src/shell/{RepoWorkspace,ConflictPanel,CommitBox,devApp}.tsx`, 신규 `src/shell/ConflictCompare.tsx`, 신규 `src/shell/conflict.css` | `WipDiff` 배선, 리베이스 메뉴 로딩 상태, 3-way 충돌 비교 화면, 커밋 템플릿 |
+| ui16-b | `src/shell/hunks.ts`, `src/shell/DiffPanel.tsx`, `tests/**` | latin1 diff로 부분 스테이징 허용, test:patch의 비UTF-8 skip 해제 |
+
+동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지.
+Rust 패키지는 하나라 공유 target 문제는 없지만, 감독도 같은 target을 쓰니 rust16은 `/Users/levit/leedo/target-rust16`을 쓴다.
+보고: `~/leedo/gitlanes-audit-2026-10/handoff-<패키지>.md`. 세션이 자주 끊기니 **단계마다 커밋**한다(`wip:` 접두 가능).
