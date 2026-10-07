@@ -495,6 +495,74 @@ pub struct UndoEntry {
     pub reset_mode: Option<ResetMode>,
 }
 
+/// 비교 결과와 파일 히스토리에 쓰는 커밋 요약 (v0.18).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSummary {
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+    pub author: String,
+    /// unix seconds
+    pub timestamp: i64,
+}
+
+/// `get_file_history`의 한 항목. types.ts에서 `CommitSummary`를 확장하므로 펼쳐서 내보낸다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHistoryEntry {
+    #[serde(flatten)]
+    pub commit: CommitSummary,
+    pub author_email: String,
+    /// 이 커밋 시점의 경로
+    pub path: String,
+    /// 이 커밋에서 rename됐으면 원래 경로
+    pub old_path: Option<String>,
+    pub status: FileStatus,
+}
+
+/// blame의 연속 구간. 같은 커밋이 이어지는 줄을 하나로 묶는다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlameHunk {
+    pub sha: String,
+    pub short_sha: String,
+    pub author: String,
+    pub author_email: String,
+    /// unix seconds
+    pub timestamp: i64,
+    pub summary: String,
+    /// 결과 파일 기준 시작 줄 (1부터)
+    pub start_line: u32,
+    pub line_count: u32,
+    /// 아직 커밋되지 않은 줄(워킹트리 blame에서만)
+    pub uncommitted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlameResult {
+    /// 파일 내용을 줄 단위로 (줄바꿈 제외)
+    pub lines: Vec<String>,
+    pub hunks: Vec<BlameHunk>,
+}
+
+/// `compare_refs` 결과. 파일 목록은 세 점(`base...head`) diff다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareResult {
+    pub base: String,
+    pub head: String,
+    /// 공통 조상. 관계없는 히스토리면 None
+    pub merge_base: Option<String>,
+    /// head에만 있는 커밋 (`base..head`), 최신이 먼저
+    pub only_in_head: Vec<CommitSummary>,
+    /// base에만 있는 커밋 (`head..base`), 최신이 먼저
+    pub only_in_base: Vec<CommitSummary>,
+    pub truncated: bool,
+    pub files: Vec<FileChange>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -40,7 +40,7 @@ const STASH_SHA_ARGS: [&str; 3] = ["stash", "list", "--format=%H"];
 /// 사용자 설정 `diff.noprefix=true`면 헤더가 `--- src/app.txt`로 와서, 프론트가 만든 패치를
 /// `git apply`(-p1)가 `app.txt`로 읽고 **루트의 다른 파일**에 적용한다. `diff.mnemonicPrefix`도
 /// `c/` `w/` 같은 접두로 바꾼다. 프론트가 파일 헤더를 파싱하므로 표시용 커밋 diff에도 건다.
-const DIFF_PREFIX_ARGS: [&str; 2] = ["--src-prefix=a/", "--dst-prefix=b/"];
+pub(crate) const DIFF_PREFIX_ARGS: [&str; 2] = ["--src-prefix=a/", "--dst-prefix=b/"];
 
 /// 패치의 원료가 되는 WIP diff의 형식. 사용자 git 설정이 새어 들어오지 않게 전부 명시한다.
 ///
@@ -71,7 +71,7 @@ const PATCH_SOURCE_CONFIG_ARGS: [&str; 2] = ["-c", "diff.suppressBlankEmpty=fals
 
 /// `get_file_content`의 상한. 넘으면 내용을 읽지 않고 거절한다.
 /// 뷰어가 한 화면에 올릴 수 있는 크기를 한참 넘고, 문법 강조도 의미가 없어진다.
-const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
 
 /// 저장소를 검증하고 루트 경로, 현재 브랜치, HEAD sha를 돌려준다.
 #[tauri::command(async)]
@@ -535,19 +535,28 @@ pub fn get_file_diff(
     };
 
     args.extend(DIFF_PREFIX_ARGS);
+    push_file_pathspecs(&mut args, &file, old_file.as_deref());
+
+    git::run(&path, &args).map_err(|e| format!("Could not read the diff: {e}"))
+}
+
+/// `--` 뒤에 파일 pathspec을 붙인다. 커밋 diff와 비교 diff(`get_compare_file_diff`)가 함께 쓴다.
+///
+/// rename/copy는 원본 경로도 pathspec에 걸어야 한다. 새 경로만 걸면 rename 원본이
+/// 필터에서 빠져 git이 rename을 못 찾고 "new file"로 보여준다.
+pub(crate) fn push_file_pathspecs<'a>(
+    args: &mut Vec<&'a str>,
+    file: &'a str,
+    old_file: Option<&'a str>,
+) {
     args.push("--");
-    // rename/copy는 원본 경로도 pathspec에 걸어야 한다. 새 경로만 걸면 rename 원본이
-    // 필터에서 빠져 git이 rename을 못 찾고 "new file"로 보여준다.
     if let Some(old) = old_file
-        .as_deref()
         .map(str::trim)
         .filter(|old| !old.is_empty() && *old != file)
     {
         args.push(old);
     }
-    args.push(file.as_str());
-
-    git::run(&path, &args).map_err(|e| format!("Could not read the diff: {e}"))
+    args.push(file);
 }
 
 /// 커밋 시점의 파일 전문. `git show <sha>:<file>`이다.
@@ -716,7 +725,7 @@ fn count_lines(repo: &str, file: &str) -> u64 {
 /// 검사에서 막힌다.
 ///
 /// 경로를 trim하지 않는다. ` a.txt`는 `a.txt`와 다른 파일이다(v0.15.1 H4와 같은 이유).
-fn resolve_in_repo(repo: &str, file: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_in_repo(repo: &str, file: &str) -> Result<PathBuf, String> {
     if file.is_empty() {
         return Err("No file path was given.".to_string());
     }
@@ -739,7 +748,7 @@ fn resolve_in_repo(repo: &str, file: &str) -> Result<PathBuf, String> {
 ///
 /// NUL이 있으면 git이 바이너리로 보는 것과 같은 기준으로 거절하고, NUL이 없어도 UTF-8이
 /// 아니면(latin-1 등) 화면에 올릴 수 없어 같이 거절한다.
-fn decode_text(bytes: Vec<u8>) -> Result<String, String> {
+pub(crate) fn decode_text(bytes: Vec<u8>) -> Result<String, String> {
     if bytes.len() > MAX_FILE_BYTES {
         return Err("too large".to_string());
     }
@@ -831,7 +840,7 @@ fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
 ///
 /// trim하지 않는다. ` a.txt`의 wip diff를 물었는데 `a.txt`의 diff가 오면, 프론트는 그걸로
 /// 패치를 만들어 엉뚱한 파일에 적용한다(ops/run.rs `validate_paths`와 같은 이유).
-fn validate_pathspec(file: &str) -> Result<String, String> {
+pub(crate) fn validate_pathspec(file: &str) -> Result<String, String> {
     if file.is_empty() {
         return Err("No file path was given.".to_string());
     }
@@ -842,7 +851,7 @@ fn validate_pathspec(file: &str) -> Result<String, String> {
 }
 
 /// rev 문자열이 옵션으로 해석되지 않도록 막는다.
-fn validate_rev(sha: &str) -> Result<String, String> {
+pub(crate) fn validate_rev(sha: &str) -> Result<String, String> {
     let sha = sha.trim();
     if sha.is_empty() {
         return Err("No commit sha was given.".to_string());
