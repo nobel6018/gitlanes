@@ -41,6 +41,9 @@ jobs:
       - name: Patch engine test
         run: npm run test:patch
 
+      - name: Multi-select test
+        run: npm run test:multi
+
       - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
