@@ -121,10 +121,18 @@ export interface RepoActions {
   // 충돌
   resolveWith(file: string, side: "ours" | "theirs"): Promise<void>;
   markResolved(files: string[]): Promise<void>;
+  /**
+   * 자동 fetch (v0.17 1번). 쓰기와 같은 직렬 큐로 돌지만 토스트도 busy도 없다.
+   * 큐에 다른 쓰기가 있으면 이번 주기는 건너뛴다("skipped")
+   */
+  autoFetch(): Promise<AutoFetchResult>;
   // 공통
   /** 쓰기 작업이 진행 중인가 (버튼 비활성화용) */
   busy: boolean;
 }
+
+/** 자동 fetch 한 번의 결과. 툴바 표시와 다음 주기를 정하는 데 쓴다 */
+export type AutoFetchResult = "ok" | "skipped" | "needsAuth" | "failed";
 
 export interface UseRepoActionsOptions {
   repoPath: string;
@@ -148,6 +156,11 @@ export interface UseRepoActionsOptions {
    * 확인창이 떠 있는 동안은 올리지 않는다(아직 아무것도 쓰지 않았다)
    */
   writing?: { current: number };
+  /**
+   * 사용자가 누른 Fetch가 성공했을 때 (v0.17). 멈춰 있던 자동 fetch를 다시 켜고
+   * 마지막 fetch 시각을 갱신한다. repoPath는 그 fetch를 시작한 레포다
+   */
+  onFetched?: (repoPath: string) => void;
 }
 
 /** 확인 문구에 쓰는 진행 중 작업 이름 */
@@ -203,6 +216,8 @@ interface RunSpec {
   failure: string;
   confirm?: ConfirmSpec;
   call: () => Promise<OpResult>;
+  /** 성공했을 때 토스트와 새로고침 사이에 부른다 */
+  onSuccess?: () => void;
 }
 
 export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
@@ -303,6 +318,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         if (spec.success !== null) {
           o.toast({ message: label(spec.success), tone: "success" }, startPath);
         }
+        spec.onSuccess?.();
         await refresh();
       } catch (err) {
         // command 자체가 reject 된 경우(인자 검증 실패 Err(String))도 여기로 온다
@@ -507,6 +523,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
               o?.allRemotes ?? false,
               o?.tags ?? false,
             ),
+          onSuccess: () => ref.current.onFetched?.(path),
         }),
 
       pull: (mode) =>
@@ -845,7 +862,37 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           call: () => api.gitMarkResolved(path, files),
         }),
 
+      // 사용자 작업이 아니라서 run을 거치지 않는다. 토스트, busy, 확인창이 모두 필요 없고
+      // 실패도 결과값으로만 돌려준다. 그래도 큐와 writing은 같이 써서 폴링과 쓰기에 겹치지 않는다
+      autoFetch: async () => {
+        if (queued.current > 0) {
+          return "skipped";
+        }
+        const writing = ref.current.writing;
+        if (writing !== undefined) {
+          writing.current += 1;
+        }
+        try {
+          const result = await enqueue(() => api.gitFetch(path, null, false, true, false));
+          if (!result.ok) {
+            return result.needsAuth ? "needsAuth" : "failed";
+          }
+          // 기다리는 사이 탭이 다른 레포로 바뀌었으면 그 화면을 새로고침할 이유가 없다
+          // 새로고침 실패는 fetch 실패가 아니다. 다음 폴링이 다시 읽는다
+          if (ref.current.repoPath === path && queued.current === 0) {
+            await ref.current.refreshAll().catch(() => undefined);
+          }
+          return "ok";
+        } catch {
+          return "failed";
+        } finally {
+          if (writing !== undefined) {
+            writing.current -= 1;
+          }
+        }
+      },
+
       busy: busyCount > 0,
     };
-  }, [repoPath, run, busyCount]);
+  }, [repoPath, run, enqueue, busyCount]);
 }

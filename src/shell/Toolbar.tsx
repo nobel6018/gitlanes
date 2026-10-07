@@ -36,6 +36,46 @@ export interface ToolbarActions {
   busy: boolean;
 }
 
+/**
+ * 자동 fetch 상태 (v0.17 1번). RepoWorkspace가 레포별로 들고 있다가 내려준다.
+ * paused가 null이 아니면 Fetch 버튼에 경고 표시를 단다
+ */
+export interface FetchStatus {
+  /** 마지막으로 성공한 fetch(수동이든 자동이든) 시각, ms. 아직 없으면 null */
+  lastFetchedAt: number | null;
+  /** "needsAuth"는 자동 fetch가 멈춘 상태, "failing"은 3번 연속 실패해 표시만 하는 상태 */
+  paused: "needsAuth" | "failing" | null;
+}
+
+/** "just now", "3 min ago", "2 h ago". 툴팁 한 줄용이라 거칠게 접는다 */
+function agoLabel(at: number, now: number): string {
+  const minutes = Math.floor((now - at) / 60_000);
+  if (minutes < 1) {
+    return "just now";
+  }
+  if (minutes < 60) {
+    return `${minutes} min ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours} h ago`;
+  }
+  return `${Math.floor(hours / 24)} d ago`;
+}
+
+function fetchTitle(status: FetchStatus | null | undefined, now: number): string {
+  const lines = [withKbd("Fetch from origin", "Mod+Shift+F")];
+  if (status?.lastFetchedAt != null) {
+    lines.push(`Fetched ${agoLabel(status.lastFetchedAt, now)}`);
+  }
+  if (status?.paused === "needsAuth") {
+    lines.push("Auto-fetch paused: sign-in needed. A manual fetch that succeeds turns it back on.");
+  } else if (status?.paused === "failing") {
+    lines.push("Auto-fetch failed 3 times in a row. Run Fetch to see the error.");
+  }
+  return lines.join("\n");
+}
+
 const PULL_MODE_KEY = "gitlanes.pullMode";
 
 const PULL_MODES: { mode: PullMode; label: string; hint: string }[] = [
@@ -104,6 +144,8 @@ interface SplitButtonProps {
   busy?: boolean;
   /** 라벨 오른쪽 배지 (↑3 ↓1 등) */
   badge?: ReactNode;
+  /** 본체에 마우스가 올라왔을 때. 툴팁 문구를 그 시점 기준으로 다시 만들 때 쓴다 */
+  onHover?: () => void;
 }
 
 /**
@@ -119,6 +161,7 @@ function SplitButton({
   disabled,
   busy,
   badge,
+  onHover,
 }: SplitButtonProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -156,6 +199,7 @@ function SplitButton({
         className={hasMenu ? "act-main" : "act-main solo"}
         title={title}
         disabled={disabled === true}
+        onMouseEnter={onHover}
         onClick={() => {
           if (onDefault !== undefined) {
             onDefault();
@@ -322,6 +366,8 @@ export interface ToolbarProps {
   onCreateBranch?: () => void;
   /** Stash 드롭다운의 "Stash changes..." (메시지 입력 다이얼로그) */
   onOpenStashDialog?: () => void;
+  /** 자동 fetch 상태. Fetch 버튼 툴팁과 경고 표시에 쓴다 (v0.17) */
+  fetchStatus?: FetchStatus | null;
 }
 
 /** 액션 그룹이 글자를 접는 임계 폭. 이 아래로는 아이콘만 남는다 */
@@ -350,9 +396,12 @@ export function Toolbar({
   onCreateBranch,
   onOpenStashDialog,
   latestStashSha,
+  fetchStatus,
 }: ToolbarProps) {
   const headerRef = useRef<HTMLElement | null>(null);
   const [compact, setCompact] = useState(false);
+  /** "Fetched 3 min ago"의 기준 시각. 툴바는 자주 다시 그려지지 않아 마우스를 올릴 때 갱신한다 */
+  const [hoverNow, setHoverNow] = useState(() => Date.now());
   const [pullMode, setPullMode] = useState<PullMode>(readPullMode);
 
   // 툴바 폭을 직접 재서 액션 라벨을 접는다. 미디어 쿼리로는 사이드바 폭 변화를 못 잡는다
@@ -434,9 +483,24 @@ export function Toolbar({
           <SplitButton
             label="Fetch"
             icon={ICON_SYNC}
-            title={withKbd("Fetch from origin", "Mod+Shift+F")}
+            title={fetchTitle(fetchStatus, hoverNow)}
+            onHover={() => setHoverNow(Date.now())}
             busy={busy}
             disabled={busy}
+            badge={
+              fetchStatus?.paused != null ? (
+                <span
+                  className="act-badge warn"
+                  aria-label={
+                    fetchStatus.paused === "needsAuth"
+                      ? "Auto-fetch paused: sign-in needed"
+                      : "Auto-fetch is failing"
+                  }
+                >
+                  !
+                </span>
+              ) : undefined
+            }
             onDefault={() => run(actions.fetch())}
             menu={[
               {

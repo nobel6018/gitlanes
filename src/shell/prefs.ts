@@ -1,6 +1,7 @@
 // Preferences(⌘,) 설정 저장소. 값의 형태는 ui-panels의 PrefValues 계약을 따르고,
 // 항목마다 별도 localStorage 키에 저장한다 (기존 키를 그대로 이어 쓰기 위함).
-import type { PrefValues } from "./Preferences";
+import { AUTO_FETCH_CHOICES } from "./Preferences";
+import type { AutoFetchMinutes, PrefValues } from "./Preferences";
 
 const KEYS = {
   showTags: "gitlanes.showTags",
@@ -8,6 +9,7 @@ const KEYS = {
   hoverHighlight: "gitlanes.hoverHighlight",
   autoUpdateCheck: "gitlanes.autoUpdateCheck",
   zoom: "gitlanes.zoom",
+  autoFetchMinutes: "gitlanes.autoFetchMinutes",
 } as const;
 
 export const DEFAULT_PREFS: PrefValues = {
@@ -16,6 +18,7 @@ export const DEFAULT_PREFS: PrefValues = {
   hoverHighlight: true,
   autoUpdateCheck: true,
   zoom: 1,
+  autoFetchMinutes: 5,
 };
 
 /** 웹뷰 줌 범위와 단계 (⌘=/⌘- 와 Preferences 슬라이더가 공유) */
@@ -37,6 +40,13 @@ export function clampZoom(level: number): number {
   return Math.round(bounded * 100) / 100;
 }
 
+/** 저장값이 선택지에 없으면(손으로 고쳤거나 옛 버전) 기본값으로 돌린다 */
+function toAutoFetchMinutes(raw: string | null): AutoFetchMinutes {
+  const parsed = raw === null ? Number.NaN : Number(raw);
+  const hit = AUTO_FETCH_CHOICES.find((choice) => choice === parsed);
+  return hit ?? DEFAULT_PREFS.autoFetchMinutes;
+}
+
 function readFlag(key: string, fallback: boolean): boolean {
   try {
     const raw = localStorage.getItem(key);
@@ -52,6 +62,7 @@ function readFlag(key: string, fallback: boolean): boolean {
 export function readPrefs(): PrefValues {
   let zoom = DEFAULT_PREFS.zoom;
   let dateMode = DEFAULT_PREFS.dateMode;
+  let autoFetchMinutes = DEFAULT_PREFS.autoFetchMinutes;
   try {
     const rawZoom = localStorage.getItem(KEYS.zoom);
     if (rawZoom !== null) {
@@ -59,6 +70,7 @@ export function readPrefs(): PrefValues {
       zoom = Number.isFinite(parsed) ? clampZoom(parsed) : DEFAULT_PREFS.zoom;
     }
     dateMode = localStorage.getItem(KEYS.dateMode) === "relative" ? "relative" : "absolute";
+    autoFetchMinutes = toAutoFetchMinutes(localStorage.getItem(KEYS.autoFetchMinutes));
   } catch {
     // localStorage를 못 읽으면 기본값
   }
@@ -68,6 +80,7 @@ export function readPrefs(): PrefValues {
     hoverHighlight: readFlag(KEYS.hoverHighlight, DEFAULT_PREFS.hoverHighlight),
     autoUpdateCheck: readFlag(KEYS.autoUpdateCheck, DEFAULT_PREFS.autoUpdateCheck),
     zoom,
+    autoFetchMinutes,
   };
 }
 
@@ -88,6 +101,9 @@ export function writePrefs(patch: Partial<PrefValues>): void {
     }
     if (patch.zoom !== undefined) {
       localStorage.setItem(KEYS.zoom, String(patch.zoom));
+    }
+    if (patch.autoFetchMinutes !== undefined) {
+      localStorage.setItem(KEYS.autoFetchMinutes, String(patch.autoFetchMinutes));
     }
   } catch {
     // 저장 실패는 무시 (이번 세션에만 적용)
