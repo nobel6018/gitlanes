@@ -1464,9 +1464,10 @@ export function RepoWorkspace({
   undoTopRef.current = undoTop;
 
   /**
-   * 툴바 Undo와 ⌘Z. 맨 위 항목을 먼저 스택에서 빼고 실행한다. 실패하면(그 사이 다른 작업으로
-   * 상태가 달라졌다) 액션 계층이 이유를 토스트로 띄우고, 항목은 다시 넣지 않는다.
-   * 같은 항목을 다시 눌러도 같은 이유로 거절될 뿐이다
+   * 툴바 Undo와 ⌘Z. 맨 위 항목을 먼저 스택에서 빼고 실행한다(연타로 같은 항목이 두 번 나가지 않게).
+   * 결과는 액션 계층이 토스트로 알린다. 그 사이 다른 작업이 있어 거절됐으면(stale) 버리고,
+   * git이 거절했으면(failed, 워킹트리 충돌 등) 상태가 그대로라 다시 올려 둔다.
+   * 그 사이 새 항목이 쌓였다면 이 항목은 어차피 stale이라 다시 올리지 않는다
    */
   const doUndo = useCallback(() => {
     const entry = undoTopRef.current;
@@ -1474,13 +1475,27 @@ export function RepoWorkspace({
     if (entry === null || path === undefined || actions.busy) {
       return;
     }
-    setUndoStack((prev) =>
-      prev !== null && prev.path === path && prev.entries[prev.entries.length - 1] === entry
-        ? { path, entries: prev.entries.slice(0, -1) }
-        : prev,
-    );
-    runRepoCommand("undo", () => fire(actions.undo(entry)));
-  }, [actions, fire, runRepoCommand]);
+    let remaining = -1;
+    setUndoStack((prev) => {
+      if (prev === null || prev.path !== path || prev.entries[prev.entries.length - 1] !== entry) {
+        return prev;
+      }
+      remaining = prev.entries.length - 1;
+      return { path, entries: prev.entries.slice(0, -1) };
+    });
+    runRepoCommand("undo", () => {
+      void actions.undo(entry).then((result) => {
+        if (result !== "failed") {
+          return;
+        }
+        setUndoStack((prev) =>
+          prev !== null && prev.path === path && prev.entries.length === remaining
+            ? { path, entries: [...prev.entries, entry] }
+            : prev,
+        );
+      });
+    });
+  }, [actions, runRepoCommand]);
 
   /**
    * ⌘Enter(Commit). 커밋 메시지는 CommitBox(ui-wip)가 들고 있어 여기서 바로 커밋할 수 없다.

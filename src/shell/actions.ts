@@ -133,13 +133,19 @@ export interface RepoActions {
   autoFetch(): Promise<AutoFetchResult>;
   /**
    * 기록해 둔 작업을 되돌린다 (v0.17 2번). 확인 없이 실행하고 결과를 토스트로 알린다.
-   * 상태가 그 사이 바뀌어 Rust가 거절하면 reject한다. 호출 측은 성공이든 실패든 그 항목을 버린다
+   * 실패해도 reject하지 않고 결과로 돌려준다. 호출 측이 그 항목을 스택에 둘지 정한다
+   * - "done": 되돌렸다. 항목을 버린다
+   * - "stale": 그 사이 다른 작업이 있어 Rust가 git을 실행하지 않았다. 다시 해도 안 되니 버린다
+   * - "failed": git이 거절했다(워킹트리 충돌 등). 상태는 그대로라 정리 후 다시 할 수 있게 남긴다
    */
-  undo(entry: UndoEntry): Promise<void>;
+  undo(entry: UndoEntry): Promise<UndoResult>;
   // 공통
   /** 쓰기 작업이 진행 중인가 (버튼 비활성화용) */
   busy: boolean;
 }
+
+/** 되돌리기 한 번의 결과. RepoActions.undo 참고 */
+export type UndoResult = "done" | "stale" | "failed";
 
 /** 자동 fetch 한 번의 결과. 툴바 표시와 다음 주기를 정하는 데 쓴다 */
 export type AutoFetchResult = "ok" | "skipped" | "needsAuth" | "failed";
@@ -255,6 +261,10 @@ interface RunSpec {
   call: () => Promise<OpResult>;
   /** 성공했을 때 토스트와 새로고침 사이에 부른다 */
   onSuccess?: () => void;
+  /** ok=false 결과를 받았을 때 토스트 전에 부른다 */
+  onFailure?: (result: OpResult) => void;
+  /** 인증 문제가 아닌 작업. 실패 토스트에 터미널 핸드오프 버튼을 달지 않는다 */
+  noAuthHandoff?: boolean;
   /**
    * 되돌릴 수 있는 작업이면 채운다. command 전후로 get_ref_snapshot을 찍어 UndoEntry를 만든다.
    * 스냅샷은 command와 같은 큐 항목 안에서 찍어 다른 쓰기가 사이에 끼지 않게 한다
@@ -359,6 +369,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }
 
         if (!result.ok) {
+          spec.onFailure?.(result);
           const detail = (result.stderr.trim() || result.stdout.trim() || "").slice(0, 2000);
           // stderr는 message에 이어붙이지 않고 따로 넘긴다. 토스트가 접히는 영역에
           // 등폭으로 원문을 보존해야 사용자가 git 메시지를 그대로 읽고 복사한다.
@@ -370,7 +381,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
               copyable: true,
               stderr: detail === "" ? undefined : detail,
               command: result.command,
-              needsAuth: result.needsAuth,
+              needsAuth: spec.noAuthHandoff === true ? false : result.needsAuth,
               // 터미널로 넘겨도 같은 credential helper가 같은 계정을 내놓는다. needsAuth와 별개로 싣는다
               deniedAccount: result.deniedAccount ?? undefined,
             },
@@ -956,12 +967,25 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }),
 
       // ── 되돌리기 ─────────────────────────────────────────
-      undo: (entry) =>
-        exec({
-          success: entry.label.replace(/^Undo /, "Undid "),
-          failure: `Could not ${entry.label.charAt(0).toLowerCase()}${entry.label.slice(1)}`,
-          call: () => api.gitUndo(path, entry),
-        }),
+      undo: async (entry) => {
+        let outcome: UndoResult = "done";
+        try {
+          await exec({
+            success: entry.label.replace(/^Undo /, "Undid "),
+            failure: `Could not ${entry.label.charAt(0).toLowerCase()}${entry.label.slice(1)}`,
+            noAuthHandoff: true,
+            // 상태 불일치 거절은 git을 실행하지 않아 command가 비어 온다. 문구로 가르지 않는다
+            onFailure: (result) => {
+              outcome = result.command.length === 0 ? "stale" : "failed";
+            },
+            call: () => api.gitUndo(path, entry),
+          });
+        } catch {
+          // command 자체가 reject 된 경우(onFailure를 거치지 않는다)는 상태를 모르니 남겨 둔다
+          return outcome === "done" ? "failed" : outcome;
+        }
+        return outcome;
+      },
 
       // 사용자 작업이 아니라서 run을 거치지 않는다. 토스트, busy, 확인창이 모두 필요 없고
       // 실패도 결과값으로만 돌려준다. 그래도 큐와 writing은 같이 써서 폴링과 쓰기에 겹치지 않는다

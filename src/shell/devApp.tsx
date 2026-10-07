@@ -697,7 +697,8 @@ function installForcedUpdate(): void {
 //   ?rebaseSlow=3000  get_rebase_steps만 그 밀리초만큼 늦춘다 (메뉴 로딩 상태 검증)
 //   ?template=1       get_commit_template이 # 주석 줄이 섞인 템플릿을 돌려준다
 //   ?latin1=1         get_wip_file_diff가 encoding:"latin1"을 돌려준다 (git_apply_patch 로그로 전달 확인)
-//   ?fail=undo        git_undo가 "상태가 바뀌었다"며 거절한다 (항목이 스택에서 빠지고 이유 토스트)
+//   ?fail=undo        git_undo가 git 실패로 끝난다 (command 있음, 항목이 스택에 남는다)
+//   ?undo=stale       git_undo가 상태 불일치로 거절한다 (command 빈 배열, 항목이 스택에서 빠진다)
 //   ?fail=fetch&auth=1  자동 fetch가 인증 실패로 멈춘다 (Fetch 버튼의 ! 표시)
 //   자동 fetch는 Preferences > General에서 1분으로 두면 15초 틱 안에 첫 fetch가 돈다
 //
@@ -1581,13 +1582,22 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
             : entry.kind === "reset"
               ? ["reset", `--${entry.resetMode ?? "mixed"}`, entry.before.headSha]
               : ["update-ref", "--stdin"];
-      // 실제 Rust처럼 이 작업이 바꾼 ref가 그 뒤 움직였으면 거절한다. mock은 HEAD만 본다
+      // 실제 Rust처럼 이 작업이 바꾼 ref가 그 뒤 움직였으면 git을 실행하지 않고 거절한다(command 빈 배열).
+      // mock은 HEAD만 본다
       const moved = (entry.kind === "commit" || entry.kind === "amend") && entry.after.headSha !== mockHeadSha();
-      if (shouldFail(cmd) || moved) {
-        return fail(
-          command,
-          `Can't undo: main moved since then (now at ${mockHeadSha().slice(0, 7)}). Nothing was changed.`,
-        );
+      if (PARAMS.get("undo") === "stale" || moved) {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "The repository changed since this action. Undo is no longer safe.",
+          conflicts: [],
+          command: [],
+          needsAuth: false,
+          deniedAccount: null,
+        };
+      }
+      if (shouldFail(cmd)) {
+        return fail(command, "error: Your local changes to the following files would be overwritten by checkout:\n\tsrc/graph/canvas.ts");
       }
       if (entry.kind === "commit" && extraRows.length > 0) {
         extraRows.shift();
