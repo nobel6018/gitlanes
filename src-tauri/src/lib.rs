@@ -6,6 +6,7 @@ mod blocking;
 mod commands;
 mod dump;
 mod git;
+mod inspect;
 mod layout;
 #[cfg(desktop)]
 mod menu;
@@ -147,6 +148,11 @@ pub fn run() {
         // 되돌리기
         ops::undo::get_ref_snapshot,
         ops::undo::git_undo,
+        // 히스토리 탐색 (v0.18, 읽기 전용)
+        inspect::get_file_history,
+        inspect::get_blame,
+        inspect::compare_refs,
+        inspect::get_compare_file_diff,
     ]);
 
     // RunEvent를 받으려면 build + run으로 나눠야 한다. 앱이 닫힐 때 남은 셸을 죽인다.

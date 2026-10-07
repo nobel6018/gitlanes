@@ -1,7 +1,7 @@
 {
   "name": "gitlanes",
   "private": true,
-  "version": "0.17.0",
+  "version": "0.18.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test:patch": "node tests/patch-engine.test.mts",
-    "test:multi": "node tests/multi-select.test.mts"
+    "test:multi": "node tests/multi-select.test.mts",
+    "test:history": "node tests/history-model.test.mts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

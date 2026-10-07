@@ -1,0 +1,342 @@
+/* 파일 히스토리, blame, 비교 (v0.18). 상세 패널 자리와 diff 영역 어느 쪽에도 놓인다 */
+
+.hp-root {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-content);
+}
+
+.hp-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--border-1);
+  background: var(--bg-toolbar);
+}
+
+.hp-kind {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.hp-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hp-path .path-base {
+  color: var(--fg-1);
+  font-weight: 600;
+}
+
+.hp-count {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.hp-message {
+  padding: 16px 12px;
+  color: var(--fg-2);
+}
+
+.hp-error {
+  color: var(--deleted);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ---------- 커밋 목록 (히스토리, 비교 공용) ---------- */
+
+.hp-list {
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+  outline: none;
+}
+
+.hp-commit {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hp-commit:hover {
+  background: var(--hover-bg);
+}
+
+.hp-commit.kb-focus {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.hp-list:focus-visible .hp-commit.kb-focus {
+  background: var(--hover-bg);
+}
+
+.hp-commit.selected {
+  background: var(--accent-soft);
+}
+
+.hp-sha {
+  grid-row: span 3;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--link);
+}
+
+.hp-subject,
+.hp-meta,
+.hp-rename {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.hp-subject {
+  color: var(--fg-1);
+}
+
+.hp-meta {
+  display: flex;
+  gap: 8px;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.hp-author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hp-date {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.hp-rename {
+  color: var(--modified);
+  font-size: 11px;
+}
+
+/* ---------- 비교 ---------- */
+
+.cp-refs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cp-ref {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cp-arrow {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+}
+
+.cp-body {
+  min-height: 0;
+}
+
+.cp-notice {
+  margin: 8px 12px 0;
+  padding: 6px 9px;
+  border: 1px solid var(--modified);
+  border-radius: 4px;
+  color: var(--modified);
+  font-size: 12px;
+}
+
+.cp-section {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.cp-section-title {
+  margin: 0;
+  padding: 2px 12px 4px;
+  color: var(--fg-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.cp-n {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  text-transform: none;
+}
+
+.cp-none {
+  padding: 2px 12px 4px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.cp-more {
+  padding: 4px 12px;
+  color: var(--fg-2);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.cp-files {
+  padding: 0 8px;
+}
+
+/* ---------- blame ---------- */
+
+.bl-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.bl-body:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.bl-flow {
+  min-width: max-content;
+}
+
+/* 한 줄. 높이는 BlameView의 LINE_HEIGHT(20px)와 일치해야 한다 */
+.bl-line {
+  display: flex;
+  align-items: stretch;
+  height: 20px;
+  line-height: 20px;
+  min-width: 100%;
+  white-space: pre;
+}
+
+/* 구간 경계에 옅은 선. 첫 줄은 위가 머리라 긋지 않는다 */
+.bl-line.bl-start {
+  box-shadow: inset 0 1px 0 var(--border-1);
+}
+
+/* 거터는 가로 스크롤해도 왼쪽에 붙어 있다. sticky라 배경이 불투명해야 코드가 비치지 않는다 */
+.bl-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: 0 0 250px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 10px;
+  border-right: 1px solid var(--border-1);
+  background-color: var(--bg-content);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  color: var(--fg-2);
+  user-select: none;
+  -webkit-user-select: none;
+  /* 나이 막대. 단계별 투명도는 아래 .bl-age-* 가 --bl-age로 준다 */
+  background-image: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--link) calc(var(--bl-age, 0) * 100%), transparent) 0 3px,
+    transparent 3px
+  );
+}
+
+.bl-line.bl-odd .bl-gutter,
+.bl-line.bl-odd {
+  /* 구간 줄무늬. sticky 거터가 덮어도 비치지 않게 불투명한 혼합색을 쓴다 */
+  background-color: color-mix(in srgb, var(--fg-1) 4%, var(--bg-content));
+}
+
+.bl-line.bl-hover,
+.bl-line.bl-hover .bl-gutter {
+  background-color: color-mix(in srgb, var(--accent) 24%, var(--bg-content));
+}
+
+.bl-gutter.bl-jump {
+  cursor: pointer;
+}
+
+/* 최근일수록 진하고 오래될수록 옅다 (--link 기반) */
+.bl-age-0 { --bl-age: 1; }
+.bl-age-1 { --bl-age: 0.75; }
+.bl-age-2 { --bl-age: 0.52; }
+.bl-age-3 { --bl-age: 0.34; }
+.bl-age-4 { --bl-age: 0.2; }
+
+.bl-age-0 .bl-info { opacity: 1; }
+.bl-age-1 .bl-info { opacity: 0.92; }
+.bl-age-2 .bl-info { opacity: 0.82; }
+.bl-age-3 .bl-info { opacity: 0.72; }
+.bl-age-4 .bl-info { opacity: 0.62; }
+
+.bl-gutter.bl-uncommitted {
+  background-image: linear-gradient(to right, var(--modified) 0 3px, transparent 3px);
+}
+
+.bl-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.bl-info-wip {
+  color: var(--modified);
+  font-style: italic;
+}
+
+.bl-sha {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--link);
+}
+
+.bl-author {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-1);
+}
+
+.bl-date {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.bl-line .dp-no {
+  padding-left: 6px;
+}

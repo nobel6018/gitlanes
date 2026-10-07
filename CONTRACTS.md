@@ -991,3 +991,65 @@ export interface MultiCommitPanelProps {
 
 동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지. rust17은 `/Users/levit/leedo/target-rust17`.
 **세션이 자주 끊긴다. 단계마다 커밋한다.** 추가 지시를 받으면 끝났을 때 한 줄로 알린다.
+
+---
+
+# v0.18.0 - 파일 히스토리, blame, 비교
+
+> 2026-10-07. 감사 기능 공백 4, 5번(서브모듈 제외). 전부 읽기 전용이다. 테스트 픽스처 규칙(v0.16.1 절) 적용.
+
+## 화면
+
+- **파일 히스토리**: DiffPanel 머리에 "History" 버튼(커밋 diff와 WIP diff 모두). 그 파일을 바꾼 커밋 목록(rename 따라감). 항목을 누르면 그 커밋에서의 그 파일 diff
+- **blame**: DiffPanel 머리에 "Blame" 버튼. 줄마다 왼쪽에 커밋(짧은 sha, 작성자, 상대 시각)을 구간 단위로 표시. 구간을 누르면 그래프에서 그 커밋으로 이동. WIP 파일은 워킹트리 기준(커밋 안 된 줄 표시)
+- **비교**: 사이드바 브랜치 우클릭 "Compare with current branch", 그래프 다중 선택이 정확히 2개일 때 "Compare these commits". 비교 화면은 양쪽에만 있는 커밋 목록 두 개와 바뀐 파일 목록. 파일을 누르면 세 점 diff
+- 히스토리, blame, 비교 화면은 상세 패널 자리(오른쪽) 또는 diff 영역(가운데)에 뜬다. 배치는 ui18-a가 기존 패널 흐름에 맞춰 정한다
+
+## 공개 API (ui18-b 부품, ui18-a 배선)
+
+```ts
+// src/shell/FileHistoryPanel.tsx
+export interface FileHistoryPanelProps {
+  file: string;
+  entries: FileHistoryEntry[] | null;   // null이면 로딩
+  error: string | null;
+  selectedSha: string | null;
+  onSelect(entry: FileHistoryEntry): void;
+  onClose(): void;
+}
+// src/shell/BlameView.tsx
+export interface BlameViewProps {
+  file: string;
+  blame: BlameResult | null;            // null이면 로딩
+  error: string | null;
+  dateMode: "absolute" | "relative";
+  onJumpToCommit(sha: string): void;    // uncommitted 구간은 부르지 않는다
+  onClose(): void;
+}
+// src/shell/ComparePanel.tsx
+export interface ComparePanelProps {
+  baseLabel: string;                    // "main", "a1b2c3d" 같은 표시용
+  headLabel: string;
+  result: CompareResult | null;         // null이면 로딩
+  error: string | null;
+  openFilePath: string | null;
+  onOpenFile(file: FileChange): void;
+  onSelectCommit(sha: string): void;
+  onSwap(): void;                       // base와 head 맞바꾸기
+  onClose(): void;
+}
+// src/shell/DiffPanel.tsx 에 선택 prop 추가
+onShowHistory?: () => void;   // 있으면 머리에 History 버튼
+onShowBlame?: () => void;     // 있으면 머리에 Blame 버튼
+```
+
+## 소유권
+
+| 패키지 | 소유 파일 | 항목 |
+|---|---|---|
+| rust18 | `src-tauri/**` | `get_file_history`, `get_blame`, `compare_refs`, `get_compare_file_diff` |
+| ui18-b | 신규 `src/shell/{FileHistoryPanel,BlameView,ComparePanel}.tsx`, 신규 `src/shell/history.css`, `src/shell/DiffPanel.tsx` | 위 부품과 DiffPanel 버튼 |
+| ui18-a | `src/shell/{RepoWorkspace,BranchSidebar,SidebarContextMenu,devApp}.tsx`, `src/shell/api.ts` | 배선, 화면 전환, 메뉴, mock |
+
+동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. rust18은 `/Users/levit/leedo/target-rust18`.
+**세션이 자주 끊긴다. 단계마다 커밋하고, 추가 지시는 끝나면 한 줄로 알린다.**
