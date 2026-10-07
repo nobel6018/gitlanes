@@ -389,9 +389,25 @@ function swapPrefix(path: string, from: "a/" | "b/", to: "a/" | "b/"): string {
  * 2. "old mode"/"new mode" (audit-patch L1). 남기면 hunk 하나만 stage해도 chmod까지 stage된다.
  *    모드 변경은 파일 단위 stage에서만 다루므로(git add -p가 모드를 따로 묻는 것과 같은 이유) 늘 뺀다.
  *    빼면 git apply는 대상의 현재 모드를 유지한다.
+ * 3. rename 헤더 (audit-patch M2 후속). staged diff는 원 경로를 pathspec에 함께 넣어 rename으로 나온다
+ *    (commands.rs get_wip_file_diff). git apply 2.50으로 실험한 결과:
+ *    - 역방향 rename 헤더 + 일부 줄: 고른 줄과 함께 rename까지 되돌린다(--cached면 "MD old.txt"가 되고
+ *      new.txt가 인덱스에서 빠진다). 사용자는 줄만 내렸는데 파일 이동이 풀린다
+ *    - 헤더를 "diff --git a/<새경로> b/<새경로>", "--- a/<새경로>", "+++ b/<새경로>"로 바꾸고
+ *      "similarity index", "rename from/to", "index" 줄을 빼면 rename은 남고 고른 줄만 내려간다.
+ *      워킹트리 대상(discard)도 같다
+ *    - 정방향 rename 헤더 + 일부 줄: rename과 고른 줄만 stage된다. 같은 재작성은 "new.txt: does not exist
+ *      in index"로 거절된다(적용 대상 쪽에 새 경로가 아직 없다). new file 정방향 부분 stage와 같은 이유로 그대로 둔다.
+ *      앱의 unstaged diff에는 rename이 나오지 않으므로 방어용이다
+ *    모든 변경 줄을 고른 역방향은 rename까지 되돌린다. 파일 단위 unstage(원 경로까지 인덱스로 되돌리는
+ *    ops/stage.rs with_rename_sources)와 같은 결과라 원본 헤더를 둔다.
+ *    copy 헤더는 오지 않는다. diff에 -C가 없고 staged_renames도 R만 짝짓는다.
  */
 function partialFileHeader(fileHeader: string[], reverse: boolean, wholeFile: boolean): string[] {
   const header = fileHeader.filter((line) => !line.startsWith("old mode ") && !line.startsWith("new mode "));
+  if (reverse && !wholeFile && header.some((line) => line.startsWith("rename from "))) {
+    return renameToModification(header);
+  }
   const isNew = header.some((line) => line.startsWith("new file mode "));
   const isDeleted = header.some((line) => line.startsWith("deleted file mode "));
   // 정방향은 new 쪽, 역방향은 old 쪽이 결과가 된다. 그 쪽이 /dev/null인데 내용이 남는 경우만 고친다
@@ -412,6 +428,33 @@ function partialFileHeader(fileHeader: string[], reverse: boolean, wholeFile: bo
       }
       if (line === "+++ /dev/null" && oldPath !== undefined) {
         return `+++ ${swapPrefix(oldPath, "a/", "b/")}`;
+      }
+      return line;
+    });
+}
+
+/** rename 헤더를 새 경로끼리의 일반 수정 헤더로 바꾼다. 근거는 partialFileHeader 주석 3번 */
+function renameToModification(header: string[]): string[] {
+  const newPath = header.find((line) => line.startsWith("+++ "))?.slice(4);
+  if (newPath === undefined) {
+    return header;
+  }
+  const oldSide = swapPrefix(newPath, "b/", "a/");
+  return header
+    .filter(
+      (line) =>
+        !line.startsWith("similarity index ") &&
+        !line.startsWith("dissimilarity index ") &&
+        !line.startsWith("rename from ") &&
+        !line.startsWith("rename to ") &&
+        !line.startsWith("index "),
+    )
+    .map((line) => {
+      if (line.startsWith("diff --git ")) {
+        return `diff --git ${oldSide} ${newPath}`;
+      }
+      if (line.startsWith("--- ")) {
+        return `--- ${oldSide}`;
       }
       return line;
     });
