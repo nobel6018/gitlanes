@@ -1,4 +1,4 @@
-// 쓰기 작업 UI 검증 하네스. GraphView의 드롭 타깃, 진행 중 표시, WIP 배지를
+// 쓰기 작업 UI 검증 하네스. GraphView의 드롭 타깃, 진행 중 표시, WIP 배지, 다중 선택을
 // Tauri 없이 눈으로 확인한다. 배포 번들에서는 참조가 없어 트리셰이킹으로 빠진다.
 //
 // dev-mock.html에 연결하려면 src/devMock.tsx(감독 소유)에서 한 줄만 바꾼다:
@@ -39,6 +39,22 @@ export function GraphDemo({ rowCount = 3000 }: { rowCount?: number }) {
   const [pinDrop, setPinDrop] = useState(false);
   const [pinPending, setPinPending] = useState(true);
   const [lastDrop, setLastDrop] = useState("(아직 없음)");
+  /** 다중 선택. shell이 쥘 값을 하네스가 직접 쥔다 */
+  const [multi, setMulti] = useState<string[]>([]);
+  const [lastMenu, setLastMenu] = useState("(아직 없음)");
+
+  const presetMulti = useCallback(() => {
+    setSelected(scenario.multiPrimarySha);
+    setMulti(scenario.multiShas);
+  }, [scenario]);
+
+  const handleContextMenu = useCallback(
+    (sha: string) => {
+      // 셸이 메뉴를 고르는 기준과 같다. 다중 선택 안의 행이면 N개용 메뉴
+      setLastMenu(multi.includes(sha) ? `${multi.length} commits` : sha.slice(0, 8));
+    },
+    [multi],
+  );
 
   const startDrag = useCallback(
     (event: DragEvent<HTMLSpanElement>) => {
@@ -78,6 +94,12 @@ export function GraphDemo({ rowCount = 3000 }: { rowCount?: number }) {
           {" pendingSha"}
         </label>
         <span style={{ color: "var(--fg-2)" }}>{`drop: ${lastDrop}`}</span>
+        <button type="button" onClick={presetMulti}>
+          다중 선택 예시
+        </button>
+        <span style={{ color: "var(--fg-2)" }}>
+          {`multi: ${multi.length} | primary: ${selected ? selected.slice(0, 8) : "-"} | menu: ${lastMenu}`}
+        </span>
       </div>
       <GraphView
         data={scenario.data}
@@ -92,6 +114,9 @@ export function GraphDemo({ rowCount = 3000 }: { rowCount?: number }) {
         onRowDrop={handleDrop}
         dropTargetSha={dropTargetSha}
         pendingSha={pinPending ? scenario.pendingSha : null}
+        selectedShas={multi}
+        onSelectionChange={setMulti}
+        onRowContextMenu={handleContextMenu}
       />
     </div>
   );
