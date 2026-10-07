@@ -117,8 +117,11 @@ pub fn git_clean(path: String, paths: Vec<String>) -> Result<OpResult, String> {
 /// 패치는 **stdin으로** 넘긴다. 임시 파일을 쓰면 경로 인코딩, 권한, 정리 실패가 전부
 /// 새로운 실패 지점이 된다.
 ///
-/// `--unidiff-zero`는 프론트가 재구성한 패치에 문맥 줄이 0개일 수 있어서 필요하다.
-/// git은 문맥 0인 패치를 기본적으로 거부한다(적용 위치를 추정할 수 없다고 본다).
+/// `--unidiff-zero`는 쓰지 않는다. 그 옵션은 context 없는 패치를 받으려고 git의 위치
+/// 검증("뒤쪽 context가 없는 hunk는 파일 끝에서만 맞는다")을 끈다. 그러면 낡은 diff로 같은
+/// hunk를 두 번 stage할 때 파일 끝/앞 삽입이 거절되지 않고 줄이 중복된다. 원료 diff를
+/// `-U3`으로 고정했으므로(commands.rs `PATCH_SOURCE_DIFF_ARGS`) 엔진이 만드는 패치에는
+/// context가 남고, 이 옵션이 필요 없다.
 /// `--whitespace=nowarn`은 원본에 이미 있던 공백 문제로 스테이징이 실패하지 않게 한다.
 #[tauri::command]
 pub fn git_apply_patch(
@@ -131,7 +134,7 @@ pub fn git_apply_patch(
         return Err("패치가 비어 있습니다".to_string());
     }
 
-    let mut args: Vec<&str> = vec!["apply", "--unidiff-zero", "--whitespace=nowarn"];
+    let mut args: Vec<&str> = vec!["apply", "--whitespace=nowarn"];
     if cached {
         args.push("--cached");
     }
@@ -579,6 +582,32 @@ mod tests {
         assert!(git::run(repo.path(), &["diff", "--cached"])
             .unwrap()
             .is_empty());
+    }
+
+    /// 낡은 diff로 같은 hunk를 두 번 stage하는 상황. 파일 끝 삽입은 뒤쪽 context가 없어서
+    /// `--unidiff-zero`가 "파일 끝에서만 맞는다" 검사를 끄면 두 번째도 성공해 줄이 중복된다.
+    #[test]
+    fn 파일_끝_삽입_패치를_두_번_적용하면_두_번째는_거절된다() {
+        let repo = TempRepo::init("gitlanes-apply-twice");
+        let base: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+        repo.write("f.txt", &base);
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("f.txt", &format!("{base}NEW\n"));
+
+        let patch = git::run(
+            repo.path(),
+            &["diff", "-U3", "--src-prefix=a/", "--dst-prefix=b/", "--", "f.txt"],
+        )
+        .unwrap();
+
+        let first = git_apply_patch(repo.path(), patch.clone(), true, false).unwrap();
+        assert!(first.ok, "{first:?}");
+        let second = git_apply_patch(repo.path(), patch, true, false).unwrap();
+        assert!(!second.ok, "이미 적용된 패치가 또 적용됐다: {second:?}");
+
+        let index = git::run(repo.path(), &["show", ":f.txt"]).unwrap();
+        assert_eq!(index, format!("{base}NEW\n"), "인덱스에 줄이 중복됐다");
     }
 
     #[test]
