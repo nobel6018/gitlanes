@@ -43,8 +43,9 @@ export function lineKey(hunkIndex: number, lineIndex: number): string {
 export function parseUnifiedDiff(diff: string): ParsedDiff {
   const fileHeader: string[] = [];
   const hunks: Hunk[] = [];
-  const normalized = diff.replace(/\r\n/g, "\n");
-  const raw = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+  // "\n"으로만 나눈다. CRLF로 커밋된 파일의 "\r"은 줄 구분자가 아니라 줄 내용이라
+  // 지우면 재구성한 패치가 실제 파일과 맞지 않는다 (core.autocrlf=true면 diff에 "\r"이 애초에 없다)
+  const raw = diff.endsWith("\n") ? diff.slice(0, -1) : diff;
   if (raw === "") {
     return { fileHeader, hunks };
   }
@@ -86,6 +87,16 @@ export function parseUnifiedDiff(diff: string): ParsedDiff {
 /** 해당 hunk에 고를 수 있는 줄(+ 또는 -)이 하나라도 있는가 */
 export function hunkHasChanges(hunk: Hunk): boolean {
   return hunk.lines.some((line) => line.kind === "add" || line.kind === "del");
+}
+
+/**
+ * diff 원문이 손실 디코딩을 거쳤는가 (UTF-8이 아닌 바이트가 U+FFFD로 바뀌었는가).
+ * Rust가 diff를 String::from_utf8_lossy로 넘기므로 EUC-KR, CP949, Latin-1 파일은 원래 바이트를 잃는다.
+ * 그대로 패치를 만들면 깨진 바이트가 stage되므로 호출 측은 부분 패치를 막아야 한다 (audit-patch H4).
+ * 파일에 원래 U+FFFD가 들어 있어도 true가 되지만, 막는 쪽으로 틀리므로 안전하다
+ */
+export function hasLossyDecoding(diff: string): boolean {
+  return diff.includes("�");
 }
 
 /** hunk 안에서 선택된 +/- 줄 수 */
@@ -155,9 +166,18 @@ interface Emitted {
   marker: string;
 }
 
-function formatRange(start: number, count: number): string {
-  // count가 0이면 start는 "이 줄 다음에"를 뜻한다. git이 쓰는 표기를 그대로 따른다
-  return `${start},${count}`;
+/**
+ * 범위 표기의 start를 "범위 앞에 놓인 줄 수"(0-기준 위치)로 바꾼다.
+ * git 표기에서 count가 0인 쪽의 start는 "이 줄 다음"이고, 1 이상이면 "이 줄부터"다.
+ * 그래서 count가 0과 비0 사이를 오가면 start를 그대로 옮겨 쓸 수 없다 (audit-patch H1)
+ */
+function linesBefore(start: number, count: number): number {
+  return count === 0 ? start : start - 1;
+}
+
+/** linesBefore의 역. 위치와 count로 git 표기의 "start,count"를 만든다 */
+function formatRange(before: number, count: number): string {
+  return `${count === 0 ? before : before + 1},${count}`;
 }
 
 function lastIndexWhere(body: Emitted[], test: (entry: Emitted) => boolean): number {
@@ -286,10 +306,14 @@ function buildHunk(
 
   // 패치가 실제로 붙는 쪽(정방향은 old, 역방향은 new)의 위치는 원본 그대로 써야 한다.
   // 반대쪽만 앞선 hunk들이 만든 줄 수 변화를 반영해 다시 센다.
-  const oldStart = reverse ? hunk.newStart - offset : hunk.oldStart;
-  const newStart = reverse ? hunk.newStart : hunk.oldStart + offset;
+  // 위치는 0-기준으로 옮기고 출력할 때만 count에 맞춰 git 표기로 바꾼다
+  const anchorBefore = reverse
+    ? linesBefore(hunk.newStart, hunk.newLines)
+    : linesBefore(hunk.oldStart, hunk.oldLines);
+  const oldBefore = reverse ? anchorBefore - offset : anchorBefore;
+  const newBefore = reverse ? anchorBefore : anchorBefore + offset;
   const section = hunk.header.replace(HUNK_RE, "");
-  const header = `@@ -${formatRange(oldStart, oldCount)} +${formatRange(newStart, newCount)} @@${section}`;
+  const header = `@@ -${formatRange(oldBefore, oldCount)} +${formatRange(newBefore, newCount)} @@${section}`;
 
   return { lines: [header, ...lines], oldCount, newCount };
 }
