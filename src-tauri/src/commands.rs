@@ -50,6 +50,7 @@ const DIFF_PREFIX_ARGS: [&str; 2] = ["--src-prefix=a/", "--dst-prefix=b/"];
 /// - `--no-ext-diff`: `diff.external`이면 unified diff가 아닌 출력이 온다
 ///
 /// 프론트 테스트 하네스(tests/)가 같은 인자로 diff를 만든다. 바꾸면 하네스도 같이 바꾼다.
+/// 서브커맨드 뒤에 붙는다. 서브커맨드 앞에 붙는 설정 덮어쓰기는 [`PATCH_SOURCE_CONFIG_ARGS`].
 const PATCH_SOURCE_DIFF_ARGS: [&str; 6] = [
     "--no-color",
     "-U3",
@@ -58,6 +59,13 @@ const PATCH_SOURCE_DIFF_ARGS: [&str; 6] = [
     "--no-textconv",
     "--no-ext-diff",
 ];
+
+/// 패치 원료 diff에서 옵션으로 끌 수 없는 사용자 설정을 덮는다. `-c`는 git 전역 옵션이라
+/// **서브커맨드(`diff`) 앞**에 둬야 한다.
+///
+/// - `diff.suppressBlankEmpty=false`: 켜져 있으면 빈 context 줄이 `" "`가 아니라 `""`로
+///   나온다. 프론트 hunk 파서는 첫 글자로 줄 종류를 가르므로 빈 줄을 잘못 읽는다
+const PATCH_SOURCE_CONFIG_ARGS: [&str; 2] = ["-c", "diff.suppressBlankEmpty=false"];
 
 /// `get_file_content`의 상한. 넘으면 내용을 읽지 않고 거절한다.
 /// 뷰어가 한 화면에 올릴 수 있는 크기를 한참 넘고, 문법 강조도 의미가 없어진다.
@@ -596,7 +604,8 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Str
         "untracked" => &["diff", "--no-index"],
         other => return Err(format!("알 수 없는 WIP 영역입니다: {other}")),
     };
-    let mut args: Vec<&str> = head.to_vec();
+    let mut args: Vec<&str> = PATCH_SOURCE_CONFIG_ARGS.to_vec();
+    args.extend(head);
     args.extend(PATCH_SOURCE_DIFF_ARGS);
     args.push("--");
 
@@ -1970,6 +1979,10 @@ mod integration_tests {
             ]
         );
         assert_eq!(DIFF_PREFIX_ARGS, ["--src-prefix=a/", "--dst-prefix=b/"]);
+        assert_eq!(
+            PATCH_SOURCE_CONFIG_ARGS,
+            ["-c", "diff.suppressBlankEmpty=false"]
+        );
     }
 
     #[test]
@@ -2006,6 +2019,30 @@ mod integration_tests {
         )
         .unwrap();
         assert_patch_source(&untracked, "untracked");
+    }
+
+    /// `diff.suppressBlankEmpty=true`면 빈 context 줄이 `" "`가 아니라 `""`로 나온다.
+    /// 프론트 hunk 파서는 첫 글자로 줄 종류를 가르므로 접두 공백이 있어야 한다.
+    #[test]
+    fn wip_diff의_빈_context_줄은_공백_접두를_유지한다() {
+        let repo = TempRepo::init("gitlanes-blank-context");
+        repo.git(&["config", "diff.suppressBlankEmpty", "true"]);
+        repo.write("f.txt", "a\n\nb\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("f.txt", "a\n\nB\n");
+
+        let unstaged =
+            get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string()).unwrap();
+        assert!(
+            unstaged.contains("\n a\n \n-b\n+B\n"),
+            "빈 context 줄의 공백 접두가 사라졌다:\n{unstaged:?}"
+        );
+
+        repo.git(&["add", "f.txt"]);
+        let staged =
+            get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string()).unwrap();
+        assert!(staged.contains("\n a\n \n-b\n+B\n"), "{staged:?}");
     }
 
     #[test]
