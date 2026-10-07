@@ -17,10 +17,18 @@ pub fn git_stage(path: String, files: Vec<String>) -> Result<OpResult, String> {
 }
 
 /// 인덱스에서 내린다. 워킹 트리는 건드리지 않는다.
+///
+/// 스테이지된 rename은 새 경로만 와도 원 경로를 함께 내린다([`with_rename_sources`]).
+/// 첫 커밋 전에는 `restore --staged`가 기준으로 삼을 HEAD가 없어 `rm --cached`로 내린다.
 #[tauri::command(async)]
 pub fn git_unstage(path: String, files: Vec<String>) -> Result<OpResult, String> {
-    let files = validate_paths(&files)?;
-    let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
+    let files = with_rename_sources(&path, validate_paths(&files)?);
+    let head: &[&str] = if head_exists(&path) {
+        &["restore", "--staged", "--"]
+    } else {
+        &["rm", "--cached", "-q", "--"]
+    };
+    let mut args: Vec<&str> = head.to_vec();
     args.extend(files.iter().map(String::as_str));
     run_op(&path, &args, LOCAL_TIMEOUT)
 }
@@ -44,16 +52,31 @@ pub fn git_unstage(path: String, files: Vec<String>) -> Result<OpResult, String>
 #[tauri::command(async)]
 pub fn git_discard(path: String, files: Vec<String>, area: String) -> Result<OpResult, String> {
     // `--source` 없이 쓰면 git이 인덱스를 기준으로 삼는다. 그게 "worktree"의 정의다.
+    // 첫 커밋 전의 "all"은 기준인 HEAD가 비어 있다. 그때 추적 파일은 전부 새로 add한 파일이고,
+    // HEAD가 있는 레포에서 새로 add한 파일을 "all"로 버리면 인덱스와 워킹 트리에서
+    // 사라진다. `rm -f`가 같은 결과를 낸다. 스테이지한 내용이 blob으로 남아
+    // `git fsck --lost-found`로 찾을 수 있는 것도 같다.
     let restore: &[&str] = match area.as_str() {
         "worktree" => &["restore", "--worktree", "--"],
-        "all" => &["restore", "--source=HEAD", "--staged", "--worktree", "--"],
+        "all" if head_exists(&path) => {
+            &["restore", "--source=HEAD", "--staged", "--worktree", "--"]
+        }
+        "all" => &["rm", "-q", "-f", "--"],
         other => return Err(format!("알 수 없는 discard 범위입니다: {other}")),
     };
 
     let files = validate_paths(&files)?;
-    let untracked = untracked_set(&path);
+    // rename의 원 경로는 "all"에서만 함께 되돌린다. "worktree"는 인덱스가 기준이라 스테이지된
+    // rename 자체는 건드리지 않는 것이 맞다.
+    let files = if area == "all" {
+        with_rename_sources(&path, files)
+    } else {
+        files
+    };
+    let untracked = Untracked::of(&path);
     let (fresh, tracked): (Vec<&String>, Vec<&String>) =
-        files.iter().partition(|file| untracked.contains(*file));
+        files.iter().partition(|file| untracked.contains(file));
+    reject_submodules(&path, &tracked)?;
 
     let mut steps: Vec<Vec<&str>> = Vec::new();
     if !tracked.is_empty() {
@@ -70,20 +93,140 @@ pub fn git_discard(path: String, files: Vec<String>, area: String) -> Result<OpR
     super::run::run_chain(&path, &steps, LOCAL_TIMEOUT)
 }
 
-/// 추적되지 않는 파일 경로 집합. `git_discard`가 되돌릴지 지울지 가르는 데 쓴다.
+/// 추적되지 않는 경로. `git_discard`가 되돌릴지 지울지 가르는 데 쓴다.
 ///
 /// `-z`로 받아 `\0`로만 나눈다. 줄 단위로 읽고 trim하면 ` a.txt`가 `a.txt`로 바뀌어
 /// untracked 판정에서 빠지고, clean 대신 restore로 가서 아무것도 안 지운 채 성공한다.
-/// 개행이 든 파일 이름도 `-z`여야 한 덩어리로 온다.
-fn untracked_set(repo: &str) -> std::collections::HashSet<String> {
-    git::run(repo, &["ls-files", "-z", "--others", "--exclude-standard"])
-        .map(|out| {
-            out.split('\0')
-                .filter(|path| !path.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+/// 개행이나 따옴표가 든 파일 이름도 `-z`여야 C 인용 없이 그대로 온다.
+///
+/// `--directory`는 status가 `?? newdir/`로 접어 보여 주는 디렉토리를 같은 모양으로 받으려고
+/// 붙인다. 그러면 펼친 경로(`newdir/x.txt`)는 목록에 없으니, 접힌 디렉토리 아래 경로도
+/// untracked로 본다. WIP 목록(`get_wip_details`)은 펼친 경로를 넘기므로 두 모양을 다 받는다.
+struct Untracked {
+    entries: std::collections::HashSet<String>,
+    dirs: Vec<String>,
+}
+
+impl Untracked {
+    fn of(repo: &str) -> Self {
+        let out = git::run(
+            repo,
+            &[
+                "ls-files",
+                "-z",
+                "--others",
+                "--exclude-standard",
+                "--directory",
+                "--no-empty-directory",
+            ],
+        )
+        .unwrap_or_default();
+        let entries: std::collections::HashSet<String> = out
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+        let dirs = entries
+            .iter()
+            .filter(|path| path.ends_with('/'))
+            .cloned()
+            .collect();
+        Self { entries, dirs }
+    }
+
+    fn contains(&self, file: &str) -> bool {
+        self.entries.contains(file)
+            || self.entries.contains(&format!("{file}/"))
+            || self.dirs.iter().any(|dir| file.starts_with(dir.as_str()))
+    }
+}
+
+/// 첫 커밋 전(unborn HEAD)이면 false.
+pub(crate) fn head_exists(repo: &str) -> bool {
+    git::run(repo, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok()
+}
+
+/// 스테이지된 rename 쌍 `(원 경로, 새 경로)`. WIP 목록과 같은 `diff --cached -M`으로 짝을 찾는다.
+///
+/// 인덱스 전체를 본다. pathspec으로 좁히면 짝의 한쪽이 빠져 rename으로 잡히지 않는다.
+pub(crate) fn staged_renames(repo: &str) -> Vec<(String, String)> {
+    let Ok(out) = git::run(
+        repo,
+        &[
+            "diff",
+            "--cached",
+            "-M",
+            "--name-status",
+            "--no-ext-diff",
+            "-z",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    let mut fields = out.split('\0');
+    let mut pairs = Vec::new();
+    while let Some(status) = fields.next() {
+        if status.is_empty() {
+            continue;
+        }
+        // R와 C 뒤에는 경로가 둘(원, 새), 나머지는 하나다
+        if status.starts_with('R') || status.starts_with('C') {
+            let (Some(old), Some(new)) = (fields.next(), fields.next()) else {
+                break;
+            };
+            // copy는 원 경로가 그대로 살아 있어 함께 되돌릴 대상이 아니다
+            if status.starts_with('R') {
+                pairs.push((old.to_string(), new.to_string()));
+            }
+        } else {
+            fields.next();
+        }
+    }
+    pairs
+}
+
+/// rename의 한쪽만 와도 다른 쪽을 덧붙인다. 프론트는 rename 행에서 새 경로만 넘긴다.
+///
+/// 새 경로만 내리면 인덱스에 원 경로의 삭제(`D old.txt`)가 남는다. 사용자는 전부 내린 줄
+/// 아는데 그 파일 삭제가 다음 커밋에 실린다.
+fn with_rename_sources(repo: &str, files: Vec<String>) -> Vec<String> {
+    let mut files = files;
+    for (old, new) in staged_renames(repo) {
+        let has_old = files.contains(&old);
+        let has_new = files.contains(&new);
+        if has_new && !has_old {
+            files.push(old);
+        } else if has_old && !has_new {
+            files.push(new);
+        }
+    }
+    files
+}
+
+/// 서브모듈 경로가 섞여 있으면 아무것도 하지 않고 거절한다.
+///
+/// `restore`는 상위 레포의 gitlink만 보고 서브모듈 안의 체크아웃은 건드리지 않는다.
+/// 그래서 0으로 끝나는데 화면의 ` M sub`는 그대로라, 성공 토스트가 사실과 다르다.
+/// 서브모듈 안을 되돌리는 일은 서브모듈의 HEAD와 브랜치를 움직이는 별개 작업이라
+/// discard 확인 다이얼로그 하나로 맡기지 않는다.
+fn reject_submodules(repo: &str, tracked: &[&String]) -> Result<(), String> {
+    if tracked.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<&str> = vec!["ls-files", "-z", "--stage", "--"];
+    args.extend(tracked.iter().map(|file| file.as_str()));
+    let out = git::run(repo, &args).unwrap_or_default();
+    // 한 항목은 "<mode> <sha> <stage>\t<path>"다. gitlink의 mode가 160000이다
+    let submodule = out
+        .split('\0')
+        .filter(|entry| entry.starts_with("160000 "))
+        .find_map(|entry| entry.split_once('\t').map(|(_, path)| path.to_string()));
+    match submodule {
+        Some(path) => Err(format!(
+            "Discarding changes in a submodule is not supported: {path}. Run `git submodule update --init -- {path}` in the terminal to return it to the recorded commit."
+        )),
+        None => Ok(()),
+    }
 }
 
 #[tauri::command(async)]
@@ -669,5 +812,191 @@ mod tests {
         let out = format!("{}/out", repo.path());
         assert!(git_create_patch(repo.path(), vec![], out.clone()).is_err());
         assert!(git_create_patch(repo.path(), vec!["없는커밋".to_string()], out).is_err());
+    }
+
+    fn status_of(repo: &TempRepo) -> String {
+        git::run(repo.path(), &["status", "--porcelain"]).unwrap()
+    }
+
+    /// R-M7. status는 안의 파일을 펼치지 않고 `?? newdir/`로 접어 준다. UI가 그 경로를 넘긴다.
+    #[test]
+    fn discard는_추적_안_된_디렉토리를_지운다() {
+        let repo = dirty();
+        repo.write("newdir/x.txt", "x\n");
+        repo.write("newdir/deep/y.txt", "y\n");
+
+        let result = git_discard(
+            repo.path(),
+            vec!["newdir/".to_string()],
+            "worktree".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(!exists(&repo, "newdir"), "추적 안 된 디렉토리가 남았다");
+        assert!(
+            exists(&repo, "fresh.txt"),
+            "고르지 않은 untracked까지 지웠다"
+        );
+
+        // 펼친 목록(`ls-files --others`)에서 고른 안쪽 파일도 untracked로 판정한다
+        repo.write("newdir/x.txt", "x\n");
+        repo.write("newdir/keep.txt", "keep\n");
+        let inner = git_discard(
+            repo.path(),
+            vec!["newdir/x.txt".to_string()],
+            "all".to_string(),
+        )
+        .unwrap();
+        assert!(inner.ok, "{inner:?}");
+        assert!(!exists(&repo, "newdir/x.txt"));
+        assert!(exists(&repo, "newdir/keep.txt"));
+    }
+
+    /// R-M7의 두 번째 재현. `-z` 없이 읽으면 git이 `"say\"hi\".txt"`로 C 인용해 판정이 어긋난다.
+    #[test]
+    fn discard는_따옴표가_든_untracked_파일을_지운다() {
+        let repo = dirty();
+        repo.write("say\"hi\".txt", "q\n");
+
+        let result = git_discard(
+            repo.path(),
+            vec!["say\"hi\".txt".to_string()],
+            "all".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(!exists(&repo, "say\"hi\".txt"));
+    }
+
+    fn renamed() -> TempRepo {
+        let repo = dirty();
+        repo.git(&["checkout", "-q", "--", "a.txt"]);
+        repo.git(&["mv", "b.txt", "renamed.txt"]);
+        assert!(status_of(&repo).contains("R  b.txt -> renamed.txt"));
+        repo
+    }
+
+    /// R-M8. 프론트는 rename 행에서 새 경로만 넘긴다. 원 경로의 삭제가 인덱스에 남으면 안 된다.
+    #[test]
+    fn rename을_unstage하면_원_경로도_인덱스로_돌아온다() {
+        let repo = renamed();
+
+        let result = git_unstage(repo.path(), vec!["renamed.txt".to_string()]).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(
+            staged_files(&repo).is_empty(),
+            "원 경로의 삭제가 스테이지에 남았다: {}",
+            status_of(&repo)
+        );
+        // 워킹 트리는 그대로다. 옮긴 파일은 untracked, 원 경로는 워킹 트리에서만 지워진 상태다
+        assert!(exists(&repo, "renamed.txt"));
+        assert!(!exists(&repo, "b.txt"));
+    }
+
+    #[test]
+    fn rename을_discard_all하면_원_경로가_되살아난다() {
+        let repo = renamed();
+
+        let result = git_discard(
+            repo.path(),
+            vec!["renamed.txt".to_string()],
+            "all".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(exists(&repo, "b.txt"), "원 경로가 되살아나지 않았다");
+        assert_eq!(read(&repo, "b.txt"), "b\n");
+        assert!(!exists(&repo, "renamed.txt"));
+        assert_eq!(status_of(&repo), "?? fresh.txt\n");
+    }
+
+    fn unborn() -> TempRepo {
+        let repo = TempRepo::init("gitlanes-unborn");
+        repo.write("a.txt", "a\n");
+        repo.write("b.txt", "b\n");
+        repo.git(&["add", "-A"]);
+        repo
+    }
+
+    /// R-M9. 새 레포를 만들고 add한 직후 파일 하나를 내리는 가장 흔한 동작이다.
+    #[test]
+    fn 첫_커밋_전에도_파일_단위로_unstage한다() {
+        let repo = unborn();
+
+        let result = git_unstage(repo.path(), vec!["b.txt".to_string()]).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(staged_files(&repo), ["a.txt"]);
+        assert!(exists(&repo, "b.txt"), "unstage가 워킹 트리를 건드렸다");
+    }
+
+    /// 첫 커밋 전의 추적 파일은 전부 "새로 추가된 파일"이다. HEAD가 있는 레포에서 새로 add한
+    /// 파일을 discard(all)하면 인덱스와 워킹 트리에서 사라진다. 같은 결과를 낸다.
+    #[test]
+    fn 첫_커밋_전에도_discard_all이_된다() {
+        let repo = unborn();
+        repo.write("c.txt", "untracked\n");
+
+        let result = git_discard(
+            repo.path(),
+            vec!["b.txt".to_string(), "c.txt".to_string()],
+            "all".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(staged_files(&repo), ["a.txt"]);
+        assert!(!exists(&repo, "b.txt"));
+        assert!(!exists(&repo, "c.txt"));
+        assert!(exists(&repo, "a.txt"));
+    }
+
+    /// R-L9. `restore`는 서브모듈 안을 건드리지 않고 0으로 끝난다. 성공 토스트가 사실과 다르다.
+    #[test]
+    fn 서브모듈_discard는_지원하지_않는다고_거절한다() {
+        let inner = TempRepo::init("gitlanes-sub-inner");
+        inner.write("s.txt", "1\n");
+        inner.git(&["add", "-A"]);
+        inner.git(&["commit", "-qm", "inner"]);
+
+        let repo = dirty();
+        repo.git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            inner.path().as_str(),
+            "sub",
+        ]);
+        repo.git(&["commit", "-qm", "sub"]);
+
+        let sub_path = format!("{}/sub", repo.path());
+        std::fs::write(format!("{sub_path}/s.txt"), "2\n").unwrap();
+        let committed = std::process::Command::new("git")
+            .current_dir(&sub_path)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qam",
+                "moved",
+            ])
+            .status()
+            .unwrap();
+        assert!(committed.success());
+        assert!(status_of(&repo).contains(" M sub"), "{}", status_of(&repo));
+
+        for area in ["worktree", "all"] {
+            let error = git_discard(
+                repo.path(),
+                vec!["a.txt".to_string(), "sub".to_string()],
+                area.to_string(),
+            )
+            .unwrap_err();
+            assert!(error.contains("submodule"), "{error}");
+        }
+        // 섞여 온 다른 경로도 건드리지 않는다
+        assert_eq!(read(&repo, "a.txt"), "changed\n");
     }
 }
