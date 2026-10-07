@@ -9,12 +9,12 @@ use crate::git;
 use crate::layout::assign_lanes;
 use crate::model::{
     short_sha, CommitDetails, CommitRow, FileChange, FileStatus, GraphData, RefEntry, RefInfo,
-    RepoInfo, RepoState, SearchMatch, Signature, WipDetails,
+    RepoInfo, RepoState, SearchMatch, Signature, WipDetails, WipInfo,
 };
 use crate::parse::{
     graph_token, parse_commit_meta, parse_file_changes, parse_log_record, parse_ref_entries,
-    parse_refs, parse_stashes, parse_status, RawCommit, LOG_FORMAT, META_FORMAT, RECORD_SEPARATOR,
-    STASH_FORMAT,
+    parse_refs, parse_stashes, parse_status, Fnv, RawCommit, LOG_FORMAT, META_FORMAT,
+    RECORD_SEPARATOR, STASH_FORMAT,
 };
 use crate::remote::normalize_remote_url;
 use crate::search::Matcher;
@@ -179,7 +179,7 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
     let token = graph_token(&ref_entries, &head_sha);
 
     // status가 실패해도(잠긴 인덱스 등) 그래프는 보여준다
-    let wip = status_out.ok().and_then(|out| parse_status(&out));
+    let wip = status_out.ok().and_then(|out| wip_of(&path, &out));
 
     // 스태시가 없거나 명령이 실패하면 빈 배열이다
     let stashes = stash_out.map(|out| parse_stashes(&out)).unwrap_or_default();
@@ -366,8 +366,75 @@ pub fn get_repo_state(path: String) -> Result<RepoState, String> {
 
     Ok(RepoState {
         graph_token: graph_token(&parse_ref_entries(&ref_out), &head_sha),
-        wip: status_out.ok().and_then(|out| parse_status(&out)),
+        wip: status_out.ok().and_then(|out| wip_of(&path, &out)),
     })
+}
+
+/// `git status --porcelain -z` 출력에서 WIP 요약과 내용 지문을 만든다.
+fn wip_of(root: &str, status: &str) -> Option<WipInfo> {
+    parse_status(status, |paths| {
+        content_token(Path::new(root), status, paths)
+    })
+}
+
+/// WIP 내용 지문. `get_repo_state`가 5초마다 부르므로 diff를 해시하지 않는다.
+///
+/// 섞는 것은 세 가지다.
+/// 1. status 출력 원문: 파일이 들고 나거나 상태 글자(` M` → `MM`)가 바뀌면 달라진다
+/// 2. 각 경로의 (mtime 나노초, 크기): status가 그대로인 채 이미 수정된 파일의 내용만 바뀐
+///    경우를 잡는다. 삭제돼 metadata를 못 읽으면 그 사실 자체를 값으로 섞는다
+/// 3. 인덱스 파일의 (mtime, 크기): 터미널에서 다른 hunk를 stage해 인덱스만 바뀌고 status는
+///    `MM` 그대로인 경우를 잡는다. 이게 없으면 staged diff가 낡은 채로 남는다
+///
+/// 비용은 변경 파일 수만큼의 `lstat`이다. 파일 내용은 읽지 않는다.
+///
+/// 한계: 접힌 untracked 디렉토리(`?? sub/`)는 디렉토리 metadata만 본다. 안에 파일이 생기거나
+/// 지워지면 바뀌지만, 안의 파일 내용만 고치면 바뀌지 않는다. 같은 크기로 같은 mtime 틱 안에
+/// 두 번 고친 경우도 못 잡는다(파일 시스템 시간 해상도의 한계).
+fn content_token(root: &Path, status: &str, paths: &[&str]) -> String {
+    let mut hash = Fnv::new();
+    hash.absorb(status.as_bytes());
+    hash.absorb(b"\x1e");
+    for path in paths {
+        hash.absorb(path.as_bytes());
+        hash.absorb(b"\x1f");
+        absorb_stat(&mut hash, &root.join(path));
+    }
+    hash.absorb(b"index\x1f");
+    match index_file(root) {
+        Some(index) => absorb_stat(&mut hash, &index),
+        None => hash.absorb(b"-"),
+    }
+    hash.hex()
+}
+
+/// 심볼릭 링크는 따라가지 않는다. git이 추적하는 것도 링크 자체다.
+fn absorb_stat(hash: &mut Fnv, path: &Path) {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |since| since.as_nanos());
+            hash.absorb(&mtime.to_le_bytes());
+            hash.absorb(&meta.len().to_le_bytes());
+        }
+        Err(_) => hash.absorb(b"missing"),
+    }
+}
+
+/// 이 워크트리의 인덱스 파일. git을 부르지 않고 `.git`만 본다(폴링 비용).
+///
+/// 링크된 워크트리나 서브모듈에서는 `.git`이 `gitdir: <경로>` 한 줄짜리 파일이다.
+fn index_file(root: &Path) -> Option<PathBuf> {
+    let dot_git = root.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git.join("index"));
+    }
+    let pointer = std::fs::read_to_string(&dot_git).ok()?;
+    let gitdir = pointer.trim_end().strip_prefix("gitdir: ")?;
+    Some(root.join(gitdir).join("index"))
 }
 
 /// 커밋 메타데이터와 변경 파일 목록을 돌려준다. git 호출은 2회다.
@@ -1805,7 +1872,11 @@ mod integration_tests {
         repo.git(&["config", "diff.context", "0"]);
         repo.git(&["config", "diff.noprefix", "true"]);
         repo.git(&["config", "diff.mnemonicPrefix", "true"]);
-        repo.git(&["config", "diff.mask.textconv", "sed s/secret=.*/secret=***/"]);
+        repo.git(&[
+            "config",
+            "diff.mask.textconv",
+            "sed s/secret=.*/secret=***/",
+        ]);
         repo.write(".gitattributes", "*.txt diff=mask\n");
         let base: String = (1..=10).map(|i| format!("l{i}\n")).collect();
         repo.write("f.txt", &base);
@@ -1828,8 +1899,59 @@ mod integration_tests {
 
     fn assert_patch_source(diff: &str, area: &str) {
         assert!(diff.contains("+++ b/"), "[{area}] b/ 접두가 없다:\n{diff}");
-        assert!(diff.contains("+secret=2"), "[{area}] textconv 결과가 섞였다:\n{diff}");
-        assert!(!diff.contains("***"), "[{area}] textconv 결과가 섞였다:\n{diff}");
+        assert!(
+            diff.contains("+secret=2"),
+            "[{area}] textconv 결과가 섞였다:\n{diff}"
+        );
+        assert!(
+            !diff.contains("***"),
+            "[{area}] textconv 결과가 섞였다:\n{diff}"
+        );
+    }
+
+    fn polled_wip(repo: &TempRepo) -> WipInfo {
+        get_repo_state(repo.path())
+            .unwrap()
+            .wip
+            .expect("변경이 있다")
+    }
+
+    /// 파일 수가 그대로여도 내용이 바뀌면 폴링이 알아채야 한다. 못 알아채면 프론트는 낡은
+    /// diff로 hunk를 stage한다.
+    #[test]
+    fn wip_지문은_status가_같아도_내용이_바뀌면_달라진다() {
+        let repo = TempRepo::init("gitlanes-wip-token");
+        repo.write("a.txt", "1\n");
+        repo.write("b.txt", "b\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("a.txt", "2\n");
+
+        let first = polled_wip(&repo);
+        assert_eq!(
+            first,
+            polled_wip(&repo),
+            "아무것도 안 바꿨는데 지문이 달라졌다"
+        );
+
+        // 이미 수정된 파일의 내용만 바꾼다. status는 여전히 " M a.txt"다
+        repo.write("a.txt", "22\n");
+        let edited = polled_wip(&repo);
+        assert_eq!(edited.changed_files, first.changed_files);
+        assert_ne!(edited, first, "내용이 바뀌었는데 지문이 같다");
+        assert_eq!(edited, polled_wip(&repo));
+
+        // 인덱스만 바뀌는 경우(터미널에서 다른 내용을 stage). 워킹 트리는 그대로고
+        // status도 MM 그대로다
+        repo.git(&["add", "a.txt"]);
+        repo.write("a.txt", "333\n");
+        let staged = polled_wip(&repo);
+        let other_blob = repo.rev("HEAD:b.txt");
+        let cacheinfo = format!("100644,{other_blob},a.txt");
+        repo.git(&["update-index", "--cacheinfo", cacheinfo.as_str()]);
+        let restaged = polled_wip(&repo);
+        assert_eq!(restaged.staged_files, staged.staged_files);
+        assert_ne!(restaged, staged, "인덱스 내용이 바뀌었는데 지문이 같다");
     }
 
     /// 프론트 패치 하네스가 이 인자를 그대로 흉내 낸다. 어긋나면 하네스가 검증하는 diff와
@@ -1860,8 +1982,14 @@ mod integration_tests {
         assert_patch_source(&unstaged, "unstaged");
         assert!(unstaged.contains("--- a/f.txt"), "{unstaged}");
         // l5 앞뒤로 context 3줄씩: l2..l4, l6..l8
-        assert!(unstaged.contains("@@ -2,7 +2,7 @@"), "context가 3줄이 아니다:\n{unstaged}");
-        assert!(unstaged.contains(" l2\n") && unstaged.contains(" l8\n"), "{unstaged}");
+        assert!(
+            unstaged.contains("@@ -2,7 +2,7 @@"),
+            "context가 3줄이 아니다:\n{unstaged}"
+        );
+        assert!(
+            unstaged.contains(" l2\n") && unstaged.contains(" l8\n"),
+            "{unstaged}"
+        );
 
         repo.git(&["add", "f.txt"]);
         let staged =
@@ -1905,7 +2033,10 @@ mod integration_tests {
         let diff =
             get_wip_file_diff(repo.path(), " a.txt".to_string(), "unstaged".to_string()).unwrap();
         assert!(diff.contains("+공백 있는 쪽"), "{diff}");
-        assert!(!diff.contains("공백 없는 쪽"), "trim으로 다른 파일의 diff가 왔다:\n{diff}");
+        assert!(
+            !diff.contains("공백 없는 쪽"),
+            "trim으로 다른 파일의 diff가 왔다:\n{diff}"
+        );
     }
 
     #[test]

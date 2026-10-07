@@ -73,7 +73,7 @@ pub struct CommitRow {
 }
 
 /// 미커밋 변경 요약. `git status --porcelain`의 항목을 센다.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WipInfo {
     /// staged + unstaged + untracked를 파일 단위로 중복 제거한 수
@@ -88,6 +88,12 @@ pub struct WipInfo {
     /// 프론트는 unstaged를 `changedFiles - stagedFiles`로 계산하므로 앞의 두 필드의
     /// 의미는 바꾸지 않는다.
     pub untracked_files: usize,
+    /// 변경 파일들의 내용 지문(v0.15.1). 파일 수가 같아도 내용이 바뀌면 달라진다.
+    ///
+    /// 프론트는 이 값이 바뀌면 열린 WIP diff를 다시 읽는다. 낡은 diff로 hunk를 stage하는
+    /// 사고를 막는 장치다. 값 자체에 의미는 없고 같은지만 비교한다.
+    /// 5초 폴링마다 계산하므로 diff를 해시하지 않는다. 계산 방식은 commands.rs `content_token`.
+    pub content_token: String,
 }
 
 /// 스태시 항목. 그래프에서 base 커밋 위에 의사 행으로 표시한다.
@@ -409,10 +415,11 @@ mod tests {
             changed_files: 7,
             staged_files: 4,
             untracked_files: 2,
+            content_token: "0123abcd".into(),
         };
         assert_eq!(
             serde_json::to_string(&wip).unwrap(),
-            r#"{"changedFiles":7,"stagedFiles":4,"untrackedFiles":2}"#
+            r#"{"changedFiles":7,"stagedFiles":4,"untrackedFiles":2,"contentToken":"0123abcd"}"#
         );
 
         let entry = RefEntry {
@@ -444,11 +451,12 @@ mod tests {
                 changed_files: 2,
                 staged_files: 1,
                 untracked_files: 0,
+                content_token: "t".into(),
             }),
         };
         assert_eq!(
             serde_json::to_string(&state).unwrap(),
-            r#"{"graphToken":"deadbeef","wip":{"changedFiles":2,"stagedFiles":1,"untrackedFiles":0}}"#
+            r#"{"graphToken":"deadbeef","wip":{"changedFiles":2,"stagedFiles":1,"untrackedFiles":0,"contentToken":"t"}}"#
         );
 
         let clean = RepoState {
