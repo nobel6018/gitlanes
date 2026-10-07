@@ -86,7 +86,7 @@ export function ComparePanel({
       <div className="panel-scroll cp-body">
         {result.mergeBase === null && (
           <div className="cp-notice" role="note">
-            These histories are unrelated: {baseLabel} and {headLabel} have no common ancestor.
+            These histories are unrelated: {baseLabel} and {headLabel} have no common ancestor. Changed files compare the two trees directly.
           </div>
         )}
         <CommitList
