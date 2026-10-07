@@ -9,7 +9,7 @@ use crate::git;
 use crate::layout::assign_lanes;
 use crate::model::{
     short_sha, CommitDetails, CommitRow, FileChange, FileStatus, GraphData, RefEntry, RefInfo,
-    RepoInfo, RepoState, SearchMatch, Signature, WipDetails, WipInfo,
+    RepoInfo, RepoState, SearchMatch, Signature, WipDetails, WipDiff, WipInfo,
 };
 use crate::parse::{
     graph_token, parse_commit_meta, parse_file_changes, parse_log_record, parse_ref_entries,
@@ -613,7 +613,7 @@ pub fn get_wip_details(path: String) -> Result<WipDetails, String> {
 
 /// WIP 파일 하나의 unified diff. `area`는 `WipArea`("staged"/"unstaged"/"untracked").
 #[tauri::command(async)]
-pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<String, String> {
+pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<WipDiff, String> {
     let file = validate_pathspec(&file)?;
 
     let head: &[&str] = match area.as_str() {
@@ -632,8 +632,9 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Str
     if area == "untracked" {
         args.push("/dev/null");
         args.push(file.as_str());
-        // --no-index는 차이가 있으면 종료 코드가 1이라 run_allow_diff를 쓴다
-        return git::run_allow_diff(&path, &args)
+        // --no-index는 차이가 있으면 종료 코드가 1이라 run_bytes_allow_diff를 쓴다
+        return git::run_bytes_allow_diff(&path, &args)
+            .map(WipDiff::from_bytes)
             .map_err(|e| format!("untracked diff를 읽지 못했습니다: {e}"));
     }
     // 스테이지된 rename은 새 경로만 넣으면 `-M`이 짝을 못 찾아 "새 파일 전체 추가"로 나온다.
@@ -651,7 +652,9 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Str
         args.push(old);
     }
     args.push(file.as_str());
-    git::run(&path, &args).map_err(|e| format!("{area} diff를 읽지 못했습니다: {e}"))
+    git::run_bytes(&path, &args)
+        .map(WipDiff::from_bytes)
+        .map_err(|e| format!("{area} diff를 읽지 못했습니다: {e}"))
 }
 
 /// 워킹 트리의 현재 파일 내용. 커밋이 아니라 디스크를 읽는다.
@@ -922,7 +925,7 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::model::{FileStatus, RefKind};
+    use crate::model::{DiffEncoding, FileStatus, RefKind};
     use crate::testrepo::TempRepo;
     use std::process::Command;
 
@@ -1914,17 +1917,22 @@ mod integration_tests {
     fn wip_diff는_area마다_다른_명령을_쓴다() {
         let repo = wip_fixture();
 
-        let staged =
-            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string()).unwrap();
+        let staged = get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert!(staged.contains("+staged"), "{staged}");
 
         // 같은 파일이라도 unstaged 영역에는 변경이 없다
         let unstaged_of_staged =
-            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "unstaged".to_string()).unwrap();
+            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "unstaged".to_string())
+                .unwrap()
+                .text;
         assert!(unstaged_of_staged.is_empty(), "{unstaged_of_staged}");
 
         let unstaged =
-            get_wip_file_diff(repo.path(), "keep.txt".to_string(), "unstaged".to_string()).unwrap();
+            get_wip_file_diff(repo.path(), "keep.txt".to_string(), "unstaged".to_string())
+                .unwrap()
+                .text;
         assert!(unstaged.contains("+4"), "{unstaged}");
         assert!(unstaged.contains("keep.txt"), "{unstaged}");
     }
@@ -1938,7 +1946,8 @@ mod integration_tests {
             "fresh.txt".to_string(),
             "untracked".to_string(),
         )
-        .unwrap();
+        .unwrap()
+        .text;
         assert!(diff.contains("fresh.txt"), "{diff}");
         assert!(diff.contains("+a"), "{diff}");
         assert!(diff.contains("+b"), "{diff}");
@@ -1959,7 +1968,8 @@ mod integration_tests {
             "pages/[id].tsx".to_string(),
             "unstaged".to_string(),
         )
-        .unwrap();
+        .unwrap()
+        .text;
         assert!(diff.contains("+id 수정"), "{diff}");
         assert!(
             !diff.contains("pages/i.tsx"),
@@ -2083,8 +2093,9 @@ mod integration_tests {
         let repo = hostile_diff_config();
         repo.write("f.txt", &with_secret());
 
-        let unstaged =
-            get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string()).unwrap();
+        let unstaged = get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string())
+            .unwrap()
+            .text;
         assert_patch_source(&unstaged, "unstaged");
         assert!(unstaged.contains("--- a/f.txt"), "{unstaged}");
         // l5 앞뒤로 context 3줄씩: l2..l4, l6..l8
@@ -2098,8 +2109,9 @@ mod integration_tests {
         );
 
         repo.git(&["add", "f.txt"]);
-        let staged =
-            get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string()).unwrap();
+        let staged = get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert_patch_source(&staged, "staged");
         assert!(staged.contains("--- a/f.txt"), "{staged}");
         assert!(staged.contains("@@ -2,7 +2,7 @@"), "{staged}");
@@ -2110,7 +2122,8 @@ mod integration_tests {
             "fresh.txt".to_string(),
             "untracked".to_string(),
         )
-        .unwrap();
+        .unwrap()
+        .text;
         assert_patch_source(&untracked, "untracked");
     }
 
@@ -2125,16 +2138,18 @@ mod integration_tests {
         repo.git(&["commit", "-qm", "base"]);
         repo.write("f.txt", "a\n\nB\n");
 
-        let unstaged =
-            get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string()).unwrap();
+        let unstaged = get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string())
+            .unwrap()
+            .text;
         assert!(
             unstaged.contains("\n a\n \n-b\n+B\n"),
             "빈 context 줄의 공백 접두가 사라졌다:\n{unstaged:?}"
         );
 
         repo.git(&["add", "f.txt"]);
-        let staged =
-            get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string()).unwrap();
+        let staged = get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert!(staged.contains("\n a\n \n-b\n+B\n"), "{staged:?}");
     }
 
@@ -2160,8 +2175,9 @@ mod integration_tests {
         repo.write("a.txt", "공백 없는 쪽\n");
         repo.write(" a.txt", "공백 있는 쪽\n");
 
-        let diff =
-            get_wip_file_diff(repo.path(), " a.txt".to_string(), "unstaged".to_string()).unwrap();
+        let diff = get_wip_file_diff(repo.path(), " a.txt".to_string(), "unstaged".to_string())
+            .unwrap()
+            .text;
         assert!(diff.contains("+공백 있는 쪽"), "{diff}");
         assert!(
             !diff.contains("공백 없는 쪽"),
@@ -2296,8 +2312,9 @@ mod integration_tests {
         repo.write("other.txt", "other 수정\n");
         repo.git(&["add", "-A"]);
 
-        let diff =
-            get_wip_file_diff(repo.path(), "new.txt".to_string(), "staged".to_string()).unwrap();
+        let diff = get_wip_file_diff(repo.path(), "new.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert!(diff.contains("rename from old.txt"), "{diff}");
         assert!(diff.contains("rename to new.txt"), "{diff}");
         assert!(!diff.contains("new file mode"), "{diff}");
@@ -2308,7 +2325,9 @@ mod integration_tests {
         assert!(diff.starts_with("diff --git a/old.txt b/new.txt"), "{diff}");
 
         // 이 diff를 통째로 reverse 적용하면 rename과 수정이 함께 인덱스에서 내려간다
-        let undone = crate::ops::stage::git_apply_patch(repo.path(), diff, true, true).unwrap();
+        let undone =
+            crate::ops::stage::git_apply_patch(repo.path(), diff, true, true, "utf8".to_string())
+                .unwrap();
         assert!(undone.ok, "{undone:?}");
         let staged = git::run(repo.path(), &["diff", "--cached", "--name-only"]).unwrap();
         assert_eq!(staged, "other.txt\n");
@@ -2318,8 +2337,113 @@ mod integration_tests {
     #[test]
     fn rename이_아닌_staged_diff는_그대로다() {
         let repo = wip_fixture();
-        let diff =
-            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string()).unwrap();
+        let diff = get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert!(diff.starts_with("diff --git a/mod.txt b/mod.txt"), "{diff}");
+    }
+
+    /// EUC-KR("한글")과 Latin-1("café") 바이트가 섞인, UTF-8이 아닌 파일. 위아래 두 hunk가 나온다.
+    /// 파일명은 ASCII다. 비UTF-8 파일명은 APFS(macOS)와 NTFS(Windows) 모두 만들 수 없어 쓰지 않는다
+    fn non_utf8_base() -> Vec<u8> {
+        let mut base = Vec::new();
+        for i in 1..=20 {
+            base.extend_from_slice(format!("line {i} ").as_bytes());
+            base.extend_from_slice(b"\xc7\xd1\xb1\xdb caf\xe9\n");
+        }
+        base
+    }
+
+    #[test]
+    fn 비utf8_파일의_hunk를_스테이지하면_원래_바이트가_인덱스에_들어간다() {
+        let repo = TempRepo::init("gitlanes-wip-latin1");
+        let base = non_utf8_base();
+        repo.write_bytes("euc.txt", &base);
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+
+        let top = b"line 2 \xc7\xd1\xb1\xdb caf\xe9\n";
+        let top_changed = b"line 2 \xbc\xf6\xc1\xa4 na\xefve\n";
+        let bottom = b"line 19 \xc7\xd1\xb1\xdb caf\xe9\n";
+        let bottom_changed = b"line 19 \xff\xfe\n";
+        let replace = |src: &[u8], from: &[u8], to: &[u8]| -> Vec<u8> {
+            let at = src.windows(from.len()).position(|w| w == from).unwrap();
+            [&src[..at], to, &src[at + from.len()..]].concat()
+        };
+        let staged_expected = replace(&base, top, top_changed);
+        repo.write_bytes(
+            "euc.txt",
+            &replace(&staged_expected, bottom, bottom_changed),
+        );
+
+        let diff =
+            get_wip_file_diff(repo.path(), "euc.txt".to_string(), "unstaged".to_string()).unwrap();
+        assert_eq!(diff.encoding, DiffEncoding::Latin1);
+        let diff = diff.text;
+        let hunks: Vec<&str> = diff.split("\n@@").collect();
+        assert_eq!(hunks.len(), 3, "hunk 두 개를 기대했다:\n{diff}");
+        let patch = format!("{}\n@@{}", hunks[0], hunks[1]);
+
+        let result = crate::ops::stage::git_apply_patch(
+            repo.path(),
+            patch,
+            true,
+            false,
+            "latin1".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        let index = git::run_bytes(repo.path(), &["show", ":euc.txt"]).unwrap();
+        assert_eq!(index, staged_expected, "인덱스 바이트가 원본과 다르다");
+
+        // 스테이지된 쪽 diff도 latin1이고, reverse로 내리면 인덱스가 base로 돌아간다
+        let staged =
+            get_wip_file_diff(repo.path(), "euc.txt".to_string(), "staged".to_string()).unwrap();
+        assert_eq!(staged.encoding, DiffEncoding::Latin1);
+        let undone = crate::ops::stage::git_apply_patch(
+            repo.path(),
+            staged.text,
+            true,
+            true,
+            "latin1".to_string(),
+        )
+        .unwrap();
+        assert!(undone.ok, "{undone:?}");
+        let index = git::run_bytes(repo.path(), &["show", ":euc.txt"]).unwrap();
+        assert_eq!(index, base);
+    }
+
+    #[test]
+    fn 비utf8_untracked_파일의_diff는_latin1로_바이트를_보존한다() {
+        let repo = wip_fixture();
+        repo.write_bytes("new-euc.txt", b"\xc7\xd1\xb1\xdb\n");
+        let diff = get_wip_file_diff(
+            repo.path(),
+            "new-euc.txt".to_string(),
+            "untracked".to_string(),
+        )
+        .unwrap();
+        assert_eq!(diff.encoding, DiffEncoding::Latin1);
+        assert!(
+            diff.text.contains("+\u{c7}\u{d1}\u{b1}\u{db}\n"),
+            "{:?}",
+            diff.text
+        );
+    }
+
+    #[test]
+    fn utf8_파일의_diff는_utf8로_온다() {
+        let repo = wip_fixture();
+        let diff =
+            get_wip_file_diff(repo.path(), "keep.txt".to_string(), "unstaged".to_string()).unwrap();
+        assert_eq!(diff.encoding, DiffEncoding::Utf8);
+        assert!(diff.text.contains("+4"), "{}", diff.text);
+        let untracked = get_wip_file_diff(
+            repo.path(),
+            "fresh.txt".to_string(),
+            "untracked".to_string(),
+        )
+        .unwrap();
+        assert_eq!(untracked.encoding, DiffEncoding::Utf8);
     }
 }

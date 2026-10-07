@@ -364,6 +364,68 @@ pub struct WipDetails {
     pub untracked: Vec<FileChange>,
 }
 
+/// diff 텍스트를 바이트에서 문자열로 바꾼 방식. 패치를 다시 바이트로 되돌릴 때 같은 값을 쓴다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffEncoding {
+    Utf8,
+    /// 바이트 하나가 글자 하나(U+0000~U+00FF). 어떤 바이트열이든 손실 없이 왕복한다
+    Latin1,
+}
+
+impl DiffEncoding {
+    /// 프론트가 보낸 encoding 인자. 모르는 값은 Err다
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "utf8" => Ok(Self::Utf8),
+            "latin1" => Ok(Self::Latin1),
+            other => Err(format!("Unknown patch encoding: {other}")),
+        }
+    }
+
+    /// 패치 문자열을 git에 넘길 바이트로 되돌린다. latin1에서 255를 넘는 글자는 Err다
+    pub fn encode(self, text: String) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Utf8 => Ok(text.into_bytes()),
+            Self::Latin1 => text
+                .chars()
+                .map(|c| u8::try_from(u32::from(c)).ok())
+                .collect::<Option<Vec<u8>>>()
+                .ok_or_else(|| {
+                    "The patch has characters outside Latin-1. Reload the diff and try again."
+                        .to_string()
+                }),
+        }
+    }
+}
+
+/// `get_wip_file_diff` 응답 (v0.16.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WipDiff {
+    pub text: String,
+    pub encoding: DiffEncoding,
+}
+
+impl WipDiff {
+    /// UTF-8로 유효하면 그대로, 아니면 바이트마다 한 글자로 바꾼다(latin1).
+    ///
+    /// lossy 변환은 잘못된 바이트를 U+FFFD로 바꿔서, 그 diff로 만든 패치의 context가
+    /// 원본과 맞지 않아 `git apply`가 거절한다.
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        match String::from_utf8(bytes) {
+            Ok(text) => Self {
+                text,
+                encoding: DiffEncoding::Utf8,
+            },
+            Err(err) => Self {
+                text: err.into_bytes().into_iter().map(char::from).collect(),
+                encoding: DiffEncoding::Latin1,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Signature {
@@ -417,6 +479,36 @@ mod tests {
         for (status, expected) in all {
             assert_eq!(serde_json::to_string(&status).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn wip_diff는_인코딩을_소문자로_보낸다() {
+        let utf8 = WipDiff::from_bytes("한글\n".as_bytes().to_vec());
+        assert_eq!(
+            serde_json::to_string(&utf8).unwrap(),
+            r#"{"text":"한글\n","encoding":"utf8"}"#
+        );
+        let latin1 = WipDiff::from_bytes(vec![b'a', 0xe9, 0xff]);
+        assert_eq!(
+            serde_json::to_string(&latin1).unwrap(),
+            r#"{"text":"aéÿ","encoding":"latin1"}"#
+        );
+    }
+
+    #[test]
+    fn latin1은_모든_바이트가_왕복한다() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        let diff = WipDiff::from_bytes(bytes.clone());
+        assert_eq!(diff.encoding, DiffEncoding::Latin1);
+        assert_eq!(diff.encoding.encode(diff.text).unwrap(), bytes);
+    }
+
+    #[test]
+    fn latin1로_되돌릴_수_없는_글자는_err다() {
+        assert!(DiffEncoding::Latin1.encode("한".to_string()).is_err());
+        assert!(DiffEncoding::Latin1.encode("\u{100}".to_string()).is_err());
+        assert!(DiffEncoding::parse("euc-kr").is_err());
+        assert_eq!(DiffEncoding::parse("utf8").unwrap(), DiffEncoding::Utf8);
     }
 
     #[test]

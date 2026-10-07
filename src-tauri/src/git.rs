@@ -123,11 +123,12 @@ fn timeout_message<S: AsRef<OsStr>>(args: &[S], timeout: Duration) -> String {
     )
 }
 
-/// git을 실행해 stdout을 돌려주되, 종료 코드 1을 성공으로 본다.
+/// git을 실행해 stdout을 바이트 그대로 돌려주되, 종료 코드 1을 성공으로 본다.
 ///
 /// `git diff --no-index`는 두 파일이 다르면 1로 끝난다. 그게 정상 결과라서 [`run`]의
 /// 실패 판정(성공 아니면 오류)을 그대로 쓸 수 없다. 2 이상만 실제 오류로 본다.
-pub fn run_allow_diff<P, S>(repo: P, args: &[S]) -> Result<String, String>
+/// diff 본문의 인코딩을 호출자가 판정하도록 lossy 변환은 하지 않는다.
+pub fn run_bytes_allow_diff<P, S>(repo: P, args: &[S]) -> Result<Vec<u8>, String>
 where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
@@ -136,7 +137,7 @@ where
     if !matches!(output.code, Some(0 | 1)) {
         return Err(failure_message(&output.stderr));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }
 
 /// 설치된 git의 (major, minor). 읽지 못하면 None.
@@ -592,7 +593,9 @@ mod tests {
         repo.write("x.txt", "a\n");
         repo.write("y.txt", "b\n");
         let diff =
-            run_allow_diff(repo.path(), &["diff", "--no-index", "--", "x.txt", "y.txt"]).unwrap();
+            run_bytes_allow_diff(repo.path(), &["diff", "--no-index", "--", "x.txt", "y.txt"])
+                .unwrap();
+        let diff = String::from_utf8(diff).unwrap();
         assert!(diff.contains("-a") && diff.contains("+b"), "{diff}");
         // 실패는 stderr가 오류가 된다
         let err = run(repo.path(), &["rev-parse", "--verify", "nope"]).unwrap_err();
