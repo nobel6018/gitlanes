@@ -1,10 +1,13 @@
 // Tauri command 래퍼. 시그니처는 CONTRACTS.md 동결 계약을 따른다.
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BlameResult,
   CommitDetails,
+  CompareResult,
   CommitOptions,
   ConflictFile,
   DiscardArea,
+  FileHistoryEntry,
   GraphData,
   OpResult,
   PendingKind,
@@ -536,6 +539,44 @@ export function getRefSnapshot(path: string): Promise<RefSnapshot> {
  */
 export function gitUndo(path: string, entry: UndoEntry): Promise<OpResult> {
   return invoke<OpResult>("git_undo", { path, entry });
+}
+
+// ── 파일 히스토리, blame, 비교 (v0.18, 읽기 전용) ───────────
+
+/** 그 파일을 바꾼 커밋들(최신이 먼저, rename 따라감). rev가 null이면 HEAD부터 */
+export function getFileHistory(
+  path: string,
+  file: string,
+  rev: string | null,
+  limit: number,
+): Promise<FileHistoryEntry[]> {
+  return invoke<FileHistoryEntry[]>("get_file_history", { path, file, rev, limit });
+}
+
+/** rev가 null이면 워킹트리 기준(커밋 안 된 줄은 uncommitted). 바이너리 Err("binary"), 5MB 초과 Err("too large") */
+export function getBlame(path: string, file: string, rev: string | null): Promise<BlameResult> {
+  return invoke<BlameResult>("get_blame", { path, file, rev });
+}
+
+/** base와 head 양쪽에만 있는 커밋과 세 점(base...head) 파일 목록 */
+export function compareRefs(
+  path: string,
+  base: string,
+  head: string,
+  limit: number,
+): Promise<CompareResult> {
+  return invoke<CompareResult>("compare_refs", { path, base, head, limit });
+}
+
+/** base...head 세 점 diff 중 한 파일. 형식은 getFileDiff와 같다 */
+export function getCompareFileDiff(
+  path: string,
+  base: string,
+  head: string,
+  file: string,
+  oldFile: string | null,
+): Promise<string> {
+  return invoke<string>("get_compare_file_diff", { path, base, head, file, oldFile });
 }
 
 // ── 내장 터미널 (인증 핸드오프) ─────────────────────────────
