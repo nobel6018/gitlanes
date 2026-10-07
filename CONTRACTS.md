@@ -851,3 +851,35 @@ command가 메인 스레드를 떠나면 IPC가 동시에 돈다. 폴링이 쓰�
 
 동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm 의존성 금지.
 Rust 의존성은 이미 `Cargo.lock`에 있는 크레이트(`libc` 등)를 직접 의존으로 올리는 것만 허용한다.
+
+---
+
+# v0.16.0 - 감사 Medium/Low 일괄 수정
+
+> 2026-10-07 감사(`~/leedo/gitlanes-audit-2026-10/`)의 남은 Medium/Low. 기능 추가 없음.
+> 보고서 ID: `R-` audit-rust.md, `S-` audit-state.md, `P-` audit-patch.md. 각 항목의 재현과 수정 방향은 보고서에 있다.
+
+## 계약 변경 (types.ts, 감독이 반영함)
+
+- `OpResult.deniedAccount: string | null`. HTTPS 403의 `denied to <계정>`에서 뽑는다
+- `PendingKind`에 `"am"`, `"conflicts"` 추가. `"conflicts"`는 이어갈 작업 없이 충돌만 남은 상태(squash 머지, stash pop/apply 충돌). 해결 UI는 보이고 continue/abort/skip은 숨긴다
+- `git_stash_apply/drop/branch`에 `sha: string | null`. 오면 실행 직전 `rev-parse <ref>`와 비교하고 다르면 ok=false
+
+낙진(리터럴 생성처): Rust `ops/run.rs`(OpResult), `ops/sync.rs`(PendingKind) / TS `devApp.tsx`, `ConflictPanel.tsx`, `actions.ts`. 전부 아래 소유자에게 있다.
+
+## 소유권과 범위
+
+| 패키지 | 소유 파일 | 항목 |
+|---|---|---|
+| v16-history | `src-tauri/src/ops/{history,interactive,conflict,sync}.rs`, `src-tauri/src/model.rs`의 **PendingKind만** | R-M1 reword 유실, R-M2 범위 밖 커밋, R-M4 squash/stash 충돌 → `"conflicts"`, R-M5 cherry-pick/revert 범위 도중 커밋, R-M6 삭제/수정 충돌, R-L6 `git am` → `"am"`, S-M4의 Rust 쪽(인터랙티브 리베이스 `--autostash`), conflict 해결용 checkout이 post-checkout 훅에 `GIT_LITERAL_PATHSPECS`를 상속하는 문제 |
+| v16-paths | `src-tauri/src/ops/{stage,stash,commit,branch,tag,worktree,remote}.rs`, `src-tauri/src/commands.rs` | R-M7 untracked 디렉토리와 따옴표 파일명, R-M8 rename 반쪽 처리, R-M9 unborn HEAD, R-L1 루트 커밋 undo, R-L9 서브모듈 discard, R-L10 스태시 sha 확인, P-M2 staged rename diff(Rust가 rename 원 경로를 찾아 diff에 넣는다), `resolve_in_repo` trim |
+| v16-exec | `src-tauri/src/ops/{run,network,mod}.rs`, `src-tauri/src/git.rs`, `src-tauri/src/blocking.rs`, `src-tauri/src/model.rs`의 **OpResult만**, `src-tauri/Cargo.toml` | R-M3 사용자 `core.sshCommand` 존중, R-L2 needsAuth를 네트워크 명령에만, R-L3 403 → `deniedAccount`, R-L4 출력 머리와 꼬리 보존, R-L5 `\r` 진행 표시 정리, R-L8 `@{-1}`, git 읽기 경로 타임아웃(프로세스 그룹 kill 재사용) |
+| v16-ui-a | `src/shell/{actions,api}.ts`, `src/shell/{RepoWorkspace,Toast,ConflictPanel,RebaseEditor,Toolbar,BranchSidebar,SidebarContextMenu,devApp}.tsx` | S-M4 리베이스 에디터 실패 시 재오픈, S-L1 Continue 더블클릭, S-L2 토스트 타이머 리셋, 오류 토스트가 성공 토스트에 밀려 사라지는 문제, `quoteArg`의 zsh `=` 접두, `deniedAccount` 힌트 표시, 스태시 sha 배선, 새 PendingKind 표시 |
+| v16-ui-b | `src/shell/{CommitBox,WipDetailPanel,DiffPanel}.tsx`, `src/shell/hunks.ts`, `tests/**`, `tsconfig*.json` | S-M3 amend 초안 유실, S-L3 다중 discard 취소 시 선택 유지, S-L4 커밋 중 입력 유실, P-M1 new/deleted 파일 부분 스테이징, P-L1 chmod 동반 스테이징, 해당 test:patch skip 해제, `tests/`를 타입 검사 범위에 포함 |
+
+`model.rs`는 v16-history와 v16-exec가 **서로 다른 구조체만** 고친다. 다른 블록이라 머지가 겹치지 않는다.
+동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`(scripts 포함). 새 npm/Rust 다운로드 금지.
+
+## 공통 규칙
+- 각 수정에 "수정 전 실패, 수정 후 통과" 테스트. Rust는 TempRepo 실레포, 프론트 로직은 Node 24 직접 실행 또는 test:patch
+- 보고는 `~/leedo/gitlanes-audit-2026-10/handoff-<패키지>.md` (`/tmp` 금지)
