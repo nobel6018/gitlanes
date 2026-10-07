@@ -764,3 +764,36 @@ ui-hub는 각 메서드에서 다음을 한다: 확인이 필요하면 다이얼
 
 ## README / 문구
 "읽기 전용 뷰어" 문구를 전부 걷어낸다. 웰컴 화면, README, 릴리스 노트 모두. (감독이 처리)
+
+---
+
+# v0.15.1 - 데이터 손실 차단 + 패치 엔진 고정
+
+> 2026-10-07 감사 결과(보고서: `~/leedo/gitlanes-audit-2026-10/`)에서 데이터 손실과 조용한 오적용 계열만 고친다.
+> 기능 추가 없음. Windows CI는 추가하지 않는다(사용자 결정, Windows 정식 지원 때 추가).
+
+## 계약 변경
+
+- `WipInfo.contentToken: string` 추가. 변경 파일들의 내용 지문. `GraphData.wip`과 `RepoState.wip` 양쪽에 실린다.
+  rust는 매 `get_repo_state` 호출이 싸게 끝나도록 만든다(전체 diff를 해시하지 말 것. `status` 목록 + 각 경로의 mtime과 size 정도).
+  프론트는 이 값이 바뀌면 열린 WIP diff와 WIP 상세를 다시 읽는다.
+
+## 원칙: 사용자의 git 설정이 우리 명령에 새어 들어오지 않게 한다
+
+감사에서 나온 High의 다수가 같은 원인이다. 우리가 파싱하거나 그대로 되먹이는 출력, 그리고 경로 인자의 해석은
+사용자 설정에 기대지 않고 명시한다.
+
+- 경로 인자는 glob이 아니라 리터럴이다: 모든 git 실행에 `GIT_LITERAL_PATHSPECS=1`
+- 패치의 원료가 되는 diff는 형식을 고정한다: `-U3 --src-prefix=a/ --dst-prefix=b/ --no-textconv --no-ext-diff`
+- `git apply`는 위치 검증을 끄지 않는다: `--unidiff-zero` 제거
+- ref를 받는 checkout은 `--`로 경로 해석을 막는다
+
+## 소유권
+
+| 패키지 | 소유 파일 | 완료 기준 |
+|---|---|---|
+| fix-rust | `src-tauri/**` | `cargo test` + `cargo clippy --all-targets -- -D warnings` |
+| fix-ui | `src/shell/actions.ts`, `src/shell/RepoWorkspace.tsx`, `src/shell/Terminal.tsx`, `src/shell/devApp.tsx` | `npm run build` |
+| fix-patch | `src/shell/hunks.ts`, `src/shell/DiffPanel.tsx`, 신규 `tests/**`, `package.json`(scripts만), `.github/workflows/ci.yml` | `npm run build` + `npm run test:patch` |
+
+동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`. 새 npm 의존성 금지(테스트는 Node 내장 기능만 쓴다).
