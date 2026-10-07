@@ -71,6 +71,8 @@ import type { MenuItem } from "./ContextMenu";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { DiffPanel } from "./DiffPanel";
 import { RebaseEditor } from "./RebaseEditor";
+import { MultiCommitPanel } from "./MultiCommitPanel";
+import { markSquash, orderNewestFirst, orderOldestFirst, squashBase } from "./multiSelect";
 import { parseRefDrag } from "./dnd";
 import type { RefDragPayload } from "./dnd";
 import type { SidebarDialogKind, SidebarDialogTarget } from "./SidebarContextMenu";
@@ -450,6 +452,11 @@ export function RepoWorkspace({
   const [graphLoading, setGraphLoading] = useState(false);
   const [opening, setOpening] = useState(false);
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
+  /**
+   * 그래프 다중 선택 (v0.17 3번). 비어 있거나 하나뿐이면 지금까지의 단일 선택 화면이다.
+   * selectedSha는 그대로 "주 선택"이다
+   */
+  const [selectedShas, setSelectedShas] = useState<string[]>([]);
   const [scrollTarget, setScrollTarget] = useState<ScrollTarget | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readFlag(SIDEBAR_KEY, true));
   const [query, setQuery] = useState("");
@@ -785,6 +792,7 @@ export function RepoWorkspace({
         }
         addRecent(info.path);
         setSelectedSha(null);
+        setSelectedShas([]);
         setScrollTarget(null);
         setQuery("");
         lastQuery.current = "";
@@ -1647,7 +1655,11 @@ export function RepoWorkspace({
    * base가 HEAD의 조상이 아니거나 범위에 머지 커밋이 있으면 Err이고, 에디터를 열지 않고 이유를 알린다
    */
   const openRebaseEditor = useCallback(
-    async (sha: string) => {
+    async (
+      sha: string,
+      // 다중 선택 Squash가 목록을 받은 뒤 squash 표시를 붙인다. 문제가 있으면 { error }로 멈춘다
+      prepare?: (steps: RebaseStep[]) => { steps: RebaseStep[] } | { error: string },
+    ) => {
       const path = repoRef.current?.path;
       if (path === undefined || rebaseLoadingRef.current) {
         return;
@@ -1685,6 +1697,14 @@ export function RepoWorkspace({
       if (steps.length === 0) {
         showError("There are no commits above this one to rebase.");
         return;
+      }
+      if (prepare !== undefined) {
+        const prepared = prepare(steps);
+        if ("error" in prepared) {
+          showError(prepared.error);
+          return;
+        }
+        steps = prepared.steps;
       }
       setRebase({ base: sha, steps });
     },
@@ -2049,6 +2069,78 @@ export function RepoWorkspace({
   const openPathRef = useRef(openPath);
   openPathRef.current = openPath;
 
+  /**
+   * 다중 선택된 커밋 행(그래프 순서, 최신이 위). 그래프가 다시 읽혀 사라진 sha는 빠진다.
+   * 둘 이상일 때만 다중 선택 화면이다
+   */
+  const multiRows = useMemo(() => {
+    if (selectedShas.length < 2) {
+      return [];
+    }
+    const wanted = new Set(selectedShas);
+    const rows = data.rows.filter((row) => wanted.has(row.sha));
+    return rows.length < 2 ? [] : rows;
+  }, [selectedShas, data.rows]);
+  const multiActive = multiRows.length >= 2;
+
+  const clearMultiSelection = useCallback(() => setSelectedShas([]), []);
+
+  /** 그래프 밖(필터 목록)에서 고른 단일 선택. 다중 선택은 일반 클릭처럼 풀린다 */
+  const selectSingle = useCallback((sha: string | null) => {
+    setSelectedShas([]);
+    setSelectedSha(sha);
+  }, []);
+
+  const multiShas = useMemo(() => multiRows.map((row) => row.sha), [multiRows]);
+
+  /** git cherry-pick은 인자 순서대로 적용한다. 원래 순서를 지키려면 오래된 것부터 */
+  const cherryPickSelected = useCallback(() => {
+    fire(actions.cherryPick(orderOldestFirst(multiShas, data.rows), false));
+  }, [actions, fire, multiShas, data.rows]);
+
+  /** 되돌리기는 최신부터 해야 뒤 커밋이 앞 커밋 위에서 만든 변경과 부딪히지 않는다 */
+  const revertSelected = useCallback(() => {
+    fire(actions.revert(orderNewestFirst(multiShas, data.rows), false));
+  }, [actions, fire, multiShas, data.rows]);
+
+  /**
+   * 가장 오래된 선택의 부모를 base로 리베이스 목록을 읽고, 선택이 그 안에서 연속이면
+   * 가장 오래된 것은 pick, 나머지는 squash로 표시해 에디터를 연다. 실행은 사용자가 에디터에서 한다
+   */
+  const squashSelected = useCallback(() => {
+    const base = squashBase(multiShas, data.rows);
+    if (base === null) {
+      showError(
+        "Can't squash these commits: the parent of the oldest one is not loaded or it is the root commit.",
+      );
+      return;
+    }
+    const shas = multiShas;
+    void openRebaseEditor(base, (steps) => markSquash(steps, shas));
+  }, [multiShas, data.rows, showError, openRebaseEditor]);
+
+  /** 폴더를 고르면 선택한 커밋마다 .patch 파일을 만든다. 번호가 커밋 순서를 따르게 오래된 것부터 */
+  const createPatchesForSelected = useCallback(() => {
+    const shas = orderOldestFirst(multiShas, data.rows);
+    void pickDirectory().then((dir) => {
+      if (dir !== null) {
+        fire(actions.createPatch(shas, dir));
+      }
+    });
+  }, [multiShas, data.rows, pickDirectory, actions, fire]);
+
+  /** 그래프 순서(최신이 위) 그대로 한 줄에 하나씩 */
+  const copySelectedShas = useCallback(() => {
+    const text = multiShas.join("\n");
+    void copyText(text).then((ok) => {
+      if (ok) {
+        showToast(`Copied ${multiShas.length} shas`, "info");
+        return;
+      }
+      showError("Could not copy to the clipboard.");
+    });
+  }, [multiShas, showToast, showError]);
+
   /** 우클릭한 행의 메시지. 커밋이면 subject, 스태시면 스태시 메시지 */
   const menuMessage = useMemo(() => {
     if (menu === null || menu.kind !== "commit") {
@@ -2134,6 +2226,39 @@ export function RepoWorkspace({
       return copyPathItems;
     }
     const sha = menu.sha;
+    // 다중 선택 안의 행을 우클릭하면 선택 전체에 대한 메뉴다. 밖의 행이면 그 행 하나의 메뉴다
+    if (multiActive && multiShas.includes(sha)) {
+      const n = multiShas.length;
+      return [
+        {
+          label: `Cherry-pick ${n} commits`,
+          title: "Applies them oldest first on top of the current branch",
+          disabled: actions.busy,
+          onSelect: cherryPickSelected,
+        },
+        {
+          label: `Revert ${n} commits`,
+          title: "Creates revert commits, newest first",
+          disabled: actions.busy,
+          onSelect: revertSelected,
+        },
+        {
+          label: `Squash ${n} commits\u2026`,
+          title: rebaseLoading
+            ? "Still reading the commits for the previous request"
+            : "Opens the interactive rebase editor with these commits marked to squash",
+          disabled: actions.busy || rebaseLoading,
+          onSelect: squashSelected,
+        },
+        {
+          label: "Create patch files\u2026",
+          separatorBefore: true,
+          disabled: actions.busy,
+          onSelect: createPatchesForSelected,
+        },
+        { label: "Copy SHAs", onSelect: copySelectedShas },
+      ];
+    }
     // WIP 의사 행과 스태시 행은 진짜 커밋이 아니라 쓰기 대상이 될 수 없다
     const isCommit = sha !== WIP_SHA && data.rows.some((row) => row.sha === sha);
     const label = shortSha(sha);
@@ -2249,6 +2374,13 @@ export function RepoWorkspace({
     openNewTagPrompt,
     openRebaseEditor,
     rebaseLoading,
+    multiActive,
+    multiShas,
+    cherryPickSelected,
+    revertSelected,
+    squashSelected,
+    createPatchesForSelected,
+    copySelectedShas,
   ]);
 
   const previewWidth = useCallback((name: "sidebar" | "detail", width: number) => {
@@ -2952,7 +3084,7 @@ export function RepoWorkspace({
               rows={filteredRows}
               query={query}
               selectedSha={selectedSha}
-              onSelect={setSelectedSha}
+              onSelect={selectSingle}
               total={filterTotal}
               hasMore={data.hasMore}
               onLoadMore={handleLoadMore}
@@ -2966,6 +3098,8 @@ export function RepoWorkspace({
               pendingSha={syncState?.pending == null ? null : repo.headSha}
               selectedSha={selectedSha}
               onSelect={setSelectedSha}
+              selectedShas={selectedShas}
+              onSelectionChange={setSelectedShas}
               onLoadMore={handleLoadMore}
               loading={graphLoading}
               showTags={prefs.showTags}
@@ -2979,7 +3113,7 @@ export function RepoWorkspace({
             />
           )}
         </div>
-        {selectedSha !== null && (
+        {(selectedSha !== null || multiActive) && (
           <SplitHandle
             label="상세 패널 폭 조절"
             getWidth={() => layout.detail}
@@ -2991,7 +3125,19 @@ export function RepoWorkspace({
             onReset={() => resetWidth("detail")}
           />
         )}
-        {isWipSelected && (
+        {multiActive && (
+          <MultiCommitPanel
+            rows={multiRows}
+            busy={actions.busy}
+            onCherryPick={cherryPickSelected}
+            onRevert={revertSelected}
+            onSquash={squashSelected}
+            onCreatePatch={createPatchesForSelected}
+            onCopyShas={copySelectedShas}
+            onClear={clearMultiSelection}
+          />
+        )}
+        {!multiActive && isWipSelected && (
           <WipDetailPanel
             actions={actions}
             repoPath={repo.path}
@@ -3006,7 +3152,7 @@ export function RepoWorkspace({
             }
           />
         )}
-        {selectedSha !== null && !isWipSelected && (
+        {!multiActive && selectedSha !== null && !isWipSelected && (
           <CommitDetailPanel
             key={selectedSha}
             repoPath={repo.path}

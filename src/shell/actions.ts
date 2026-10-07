@@ -95,6 +95,8 @@ export interface RepoActions {
   rebaseInteractive(base: string, steps: RebaseStep[]): Promise<void>;
   cherryPick(shas: string[], noCommit: boolean): Promise<void>;
   revert(shas: string[], noCommit: boolean): Promise<void>;
+  /** git format-patch로 shas를 outDir에 .patch 파일로 쓴다. shas는 오래된 것부터 (v0.17) */
+  createPatch(shas: string[], outDir: string): Promise<void>;
   reset(target: string, mode: "soft" | "mixed" | "hard"): Promise<void>;
   pendingAction(action: "continue" | "abort" | "skip"): Promise<void>;
   // 태그 / 스태시 / remote / 워크트리
@@ -673,6 +675,13 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           success: `Reverted ${shas.length === 1 ? "1 commit" : `${shas.length} commits`}`,
           failure: "Revert failed",
           call: () => api.gitRevert(path, shas, noCommit, null),
+        }),
+
+      createPatch: (shas, outDir) =>
+        exec({
+          success: `Saved ${shas.length === 1 ? "1 patch file" : `${shas.length} patch files`} to ${basename(outDir)}`,
+          failure: "Creating patch files failed",
+          call: () => api.gitCreatePatch(path, shas, outDir),
         }),
 
       reset: (target, mode) =>
