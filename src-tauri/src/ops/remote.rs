@@ -8,7 +8,7 @@ use crate::model::{OpResult, RemoteInfo};
 use super::run::{run_op, validate_remote, LOCAL_TIMEOUT};
 
 /// 등록된 remote 목록. fetch/push URL이 다른 경우가 있어 둘 다 싣는다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_remotes(path: String) -> Result<Vec<RemoteInfo>, String> {
     let raw = git::run(&path, &["remote", "-v"])?;
     Ok(parse_remotes(&raw))
@@ -66,7 +66,7 @@ fn parse_remotes(raw: &str) -> Vec<RemoteInfo> {
         .collect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_add_remote(path: String, name: String, url: String) -> Result<OpResult, String> {
     let name = validate_new_remote_name(&name)?;
     let url = validate_url(&url)?;
@@ -77,13 +77,13 @@ pub fn git_add_remote(path: String, name: String, url: String) -> Result<OpResul
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_remove_remote(path: String, name: String) -> Result<OpResult, String> {
     let name = validate_remote(&path, &name)?;
     run_op(&path, &["remote", "remove", name.as_str()], LOCAL_TIMEOUT)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_rename_remote(path: String, from: String, to: String) -> Result<OpResult, String> {
     let from = validate_remote(&path, &from)?;
     let to = validate_new_remote_name(&to)?;
@@ -94,7 +94,7 @@ pub fn git_rename_remote(path: String, from: String, to: String) -> Result<OpRes
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_set_remote_url(path: String, name: String, url: String) -> Result<OpResult, String> {
     let name = validate_remote(&path, &name)?;
     let url = validate_url(&url)?;

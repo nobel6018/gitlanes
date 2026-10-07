@@ -8,7 +8,7 @@ use crate::model::{OpResult, WorktreeInfo};
 use super::run::{run_op, validate_paths, validate_ref_name, LOCAL_TIMEOUT};
 
 /// 이 저장소에 딸린 워크트리 목록.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
     let raw = git::run(&path, &["worktree", "list", "--porcelain"])?;
     let mut entries = parse_worktrees(&raw);
@@ -91,7 +91,7 @@ fn parse_worktrees(raw: &str) -> Vec<WorktreeInfo> {
 }
 
 /// `create_branch`가 켜져 있으면 새 브랜치를 만들며 워크트리를 연다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_add_worktree(
     path: String,
     dir: String,
@@ -111,7 +111,7 @@ pub fn git_add_worktree(
 }
 
 /// 워크트리를 걷어낸다. 안에 변경이 남아 있으면 `force` 없이는 git이 거절한다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_remove_worktree(path: String, dir: String, force: bool) -> Result<OpResult, String> {
     let dir = validate_paths(&[dir])?.remove(0);
 

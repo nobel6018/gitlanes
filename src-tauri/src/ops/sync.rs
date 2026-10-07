@@ -10,7 +10,7 @@ use crate::model::{PendingKind, PendingOp, SyncState};
 use super::run::{collect_conflicts, git_dir};
 
 /// 현재 브랜치의 upstream 대비 상태. 폴링에서 5초마다 불려서 네 호출을 병렬로 돈다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_sync_state(path: String) -> Result<SyncState, String> {
     const BRANCH_ARGS: [&str; 4] = ["symbolic-ref", "--short", "-q", "HEAD"];
     const UPSTREAM_ARGS: [&str; 4] = ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"];

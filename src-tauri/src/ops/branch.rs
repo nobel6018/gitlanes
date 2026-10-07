@@ -17,7 +17,7 @@ use super::run::{
 /// 모든 checkout 인자 끝에 `--`를 붙인다. 없으면 git은 ref를 못 찾았을 때 같은 이름의
 /// **경로**를 인덱스에서 복원한다. 다른 창에서 `docs` 브랜치를 지운 뒤 낡은 사이드바에서
 /// 누르면 `docs/` 아래 수정이 사라지고 `ok=true`라 성공 토스트까지 뜬다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_checkout(path: String, target: String, create_local: bool) -> Result<OpResult, String> {
     let target = validate_ref_name(&path, &target)?;
 
@@ -44,7 +44,7 @@ pub fn git_checkout(path: String, target: String, create_local: bool) -> Result<
     run_op(&path, &["checkout", target.as_str(), "--"], LOCAL_TIMEOUT)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_create_branch(
     path: String,
     name: String,
@@ -78,7 +78,7 @@ pub fn git_create_branch(
 }
 
 /// `remote=false`면 로컬 브랜치, `true`면 `origin/foo` 형태를 받아 원격에서 지운다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_delete_branch(
     path: String,
     name: String,
@@ -119,7 +119,7 @@ fn split_remote_ref(repo: &str, name: &str) -> Result<(String, String), String> 
     Ok((remote, branch.to_string()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_rename_branch(path: String, from: String, to: String) -> Result<OpResult, String> {
     let from = validate_ref_name(&path, &from)?;
     let to = validate_ref_name(&path, &to)?;
@@ -131,7 +131,7 @@ pub fn git_rename_branch(path: String, from: String, to: String) -> Result<OpRes
 }
 
 /// `upstream`이 None이면 추적을 끊는다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_set_upstream(
     path: String,
     branch: String,

@@ -14,6 +14,7 @@ import type {
   RefEntry,
   RemoteInfo,
   RepoInfo,
+  RepoState,
   SearchMatch,
   SyncState,
   WipArea,
@@ -170,7 +171,7 @@ function sameConflicts(a: ConflictFile[], b: ConflictFile[]): boolean {
 }
 
 /**
- * WIP 행의 모양(파일 수 배지)이 같은가. 다르면 그래프까지 다시 읽는다.
+ * WIP 행의 모양(파일 수 배지)이 같은가.
  * untrackedFiles는 v0.18 이전 rust가 안 채웠을 수 있어 없으면 0으로 본다
  */
 function sameWip(a: WipInfo | null, b: WipInfo | null): boolean {
@@ -192,6 +193,14 @@ function sameWip(a: WipInfo | null, b: WipInfo | null): boolean {
 function wipContentToken(wip: WipInfo | null): string | null {
   return wip?.contentToken ?? null;
 }
+
+/** 배지와 내용 지문까지 같으면 data.wip을 바꿀 이유가 없다 (GraphView의 의사 행 재계산을 피한다) */
+function sameWipInfo(a: WipInfo | null, b: WipInfo | null): boolean {
+  return sameWip(a, b) && wipContentToken(a) === wipContentToken(b);
+}
+
+/** fileTextCache 키 중 워킹 트리 파일(WIP 행)의 접두. 커밋 sha 키는 내용이 바뀔 수 없다 */
+const WIP_TEXT_PREFIX = `${WIP_SHA}\u0000`;
 
 function readFlag(key: string, fallback: boolean): boolean {
   try {
@@ -404,6 +413,8 @@ export function RepoWorkspace({
   const [refsLoading, setRefsLoading] = useState(false);
   const [page, setPage] = useState<PageRequest>(FIRST_PAGE);
   const [reloadKey, setReloadKey] = useState(0);
+  /** 쓰기가 끝날 때마다 오른다. graphToken과 무관한 사이드바 목록(remote, 워크트리)을 다시 읽는다 */
+  const [writeNonce, setWriteNonce] = useState(0);
   const [graphLoading, setGraphLoading] = useState(false);
   const [opening, setOpening] = useState(false);
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
@@ -499,6 +510,21 @@ export function RepoWorkspace({
   const termWaitTimer = useRef<number | null>(null);
   /** 진행 중인 sync/conflict 요청 번호. 늦게 온 응답을 버린다 */
   const syncReq = useRef(0);
+  /** 진행 중인 get_repo_state 요청 번호. 쓰기 뒤 새로고침과 폴링이 함께 쓴다 */
+  const stateReq = useRef(0);
+  /**
+   * 그래프 요청과 상태 요청이 공유하는 시작 순번. 늦게 시작한 쪽의 wip이 더 새 것이다.
+   * 그래프 로드가 날아가는 사이 상태 요청이 새 wip을 반영했다면, 그 뒤에 도착한 그래프의
+   * 낡은 wip이 덮어쓰지 않게 비교하는 기준이다
+   */
+  const ioSeq = useRef(0);
+  /** 마지막으로 반영한 get_repo_state의 wip과 그 요청의 시작 순번 */
+  const stateWip = useRef<{ seq: number; wip: WipInfo | null } | null>(null);
+  /**
+   * 큐에 들어간 쓰기 수. useRepoActions가 동기로 올리고 내린다.
+   * actions.busy는 렌더를 거쳐야 바뀌어서, 쓰기 IPC가 나간 직후의 폴링 틱을 놓칠 수 있다
+   */
+  const writingRef = useRef(0);
   /** Repository 메뉴 카운터의 직전 값 */
   const lastRepoCommands = useRef<RepoCommandNonces>(NO_REPO_COMMANDS);
   /**
@@ -612,12 +638,18 @@ export function RepoWorkspace({
     }
     const reqId = graphReq.current + 1;
     graphReq.current = reqId;
+    ioSeq.current += 1;
+    const seq = ioSeq.current;
     setGraphLoading(true);
     loadGraph(repo.path, page.limit, page.skip)
-      .then((loaded) => {
+      .then((fetched) => {
         if (graphReq.current !== reqId) {
           return;
         }
+        // 이 요청보다 늦게 시작한 get_repo_state가 이미 wip을 반영했으면 그쪽이 더 새 것이다
+        const newer = stateWip.current;
+        const loaded =
+          newer !== null && newer.seq > seq ? { ...fetched, wip: newer.wip } : fetched;
         if (page.skip === 0) {
           graphToken.current = loaded.graphToken;
           contentTokenRef.current = wipContentToken(loaded.wip);
@@ -706,6 +738,9 @@ export function RepoWorkspace({
         setSearchExhausted(false);
         searchCache.current.clear();
         fileTextCache.current.clear();
+        // 이전 레포를 향한 get_repo_state 응답이 늦게 와도 버린다
+        stateReq.current += 1;
+        stateWip.current = null;
         setOpenFile(null);
         pendingJump.current = null;
         setGraph(null);
@@ -753,14 +788,13 @@ export function RepoWorkspace({
     onLoadingChange?.(graphLoading);
   }, [graphLoading, onLoadingChange]);
 
-  // 사이드바 Remotes/Worktrees 섹션과 동기화 배지의 초기 데이터.
-  // reloadKey가 오를 때(=쓰기 직후) 다시 읽어 remote 추가/워크트리 생성이 바로 보이게 한다
+  // 사이드바 Remotes/Worktrees 섹션.
+  // remote 추가나 워크트리 생성은 graphToken을 바꾸지 않는다. 그래프를 다시 읽지 않는 쓰기도
+  // 바로 보이도록 reloadKey와 별도로 writeNonce(쓰기마다 오른다)에도 다시 읽는다
   useEffect(() => {
     if (repo === null) {
       setRemotes([]);
       setWorktrees([]);
-      setSyncState(null);
-      setConflicts([]);
       return;
     }
     const path = repo.path;
@@ -770,8 +804,17 @@ export function RepoWorkspace({
     listWorktrees(path)
       .then(setWorktrees)
       .catch(() => setWorktrees([]));
-    void loadSyncData(path);
-  }, [repo, reloadKey, loadSyncData]);
+  }, [repo, reloadKey, writeNonce]);
+
+  // 동기화 배지의 초기 데이터. 그 뒤로는 refreshAll, 폴링, 수동 Refresh가 직접 부른다
+  useEffect(() => {
+    if (repo === null) {
+      setSyncState(null);
+      setConflicts([]);
+      return;
+    }
+    void loadSyncData(repo.path);
+  }, [repo, loadSyncData]);
 
 
   /** 선택 + 해당 행을 뷰포트 중앙으로 스크롤 */
@@ -961,27 +1004,110 @@ export function RepoWorkspace({
     setReloadKey((k) => k + 1);
   }, []);
 
+  /** 툴바 Refresh와 ⌘R. 그래프와 함께 sync 배지도 다시 읽는다 */
+  const manualRefresh = useCallback(() => {
+    reloadFromStart();
+    const current = repoRef.current;
+    if (current !== null) {
+      void loadSyncData(current.path);
+    }
+  }, [reloadFromStart, loadSyncData]);
+
   // ════════════════════════════════════════════════════════
   // v0.18 쓰기 액션 배선
   // ════════════════════════════════════════════════════════
 
   /**
-   * 쓰기 직후 전체 새로고침. 폴링(5초)을 기다리지 않는다.
-   * load_graph(skip=0, 현재 깊이 유지) + list_refs + get_sync_state + WIP 재로드.
-   * 그래프/refs는 효과 기반이라 reloadFromStart가 트리거만 걸고,
-   * await는 sync/conflict까지만 기다린다.
+   * 워킹 트리 파일의 전문 캐시만 버린다. 커밋 sha로 읽은 전문은 내용이 바뀔 수 없어
+   * 커밋, checkout, 리베이스 뒤에도 그대로 맞으므로 남겨 둔다
+   */
+  const dropWipFileText = useCallback(() => {
+    for (const key of fileTextCache.current.keys()) {
+      if (key.startsWith(WIP_TEXT_PREFIX)) {
+        fileTextCache.current.delete(key);
+      }
+    }
+  }, []);
+
+  /**
+   * get_repo_state 하나로 그래프를 다시 읽을지 정한다 (CONTRACTS v0.15.2 4번).
+   * graphToken이 바뀌었으면 그래프와 refs를 처음부터 다시 읽고, 같으면 행 배열은 그대로 두고
+   * data.wip만 바꾼다. 행 참조가 그대로라 GraphView가 레인 레이아웃을 다시 계산하지 않는다.
+   * contentChanged는 WIP 내용이 바뀌었는지(폴링이 WIP 상세를 다시 읽을지 정한다),
+   * reloaded는 그래프 전체 리로드를 걸었는지다.
+   * afterWrite가 아니면(폴링) 응답이 왔을 때 쓰기가 진행 중이면 버린다. 쓰기 도중의 중간 상태라
+   * 곧 쓰기 뒤 새로고침이 덮어쓴다
+   */
+  const syncRepoState = useCallback(
+    async (
+      path: string,
+      afterWrite: boolean,
+    ): Promise<{ contentChanged: boolean; reloaded: boolean }> => {
+      const none = { contentChanged: false, reloaded: false };
+      const reqId = stateReq.current + 1;
+      stateReq.current = reqId;
+      ioSeq.current += 1;
+      const seq = ioSeq.current;
+      let state: RepoState;
+      try {
+        state = await getRepoState(path);
+      } catch {
+        if (afterWrite && stateReq.current === reqId && repoRef.current?.path === path) {
+          // 지문을 못 읽었으니 무엇이 바뀌었는지 모른다. 예전처럼 전부 다시 읽는다
+          searchCache.current.clear();
+          reloadFromStart();
+          return { contentChanged: true, reloaded: true };
+        }
+        // 폴링 실패는 조용히 넘긴다. 다음 주기에 다시 시도한다
+        return none;
+      }
+      if (stateReq.current !== reqId || repoRef.current?.path !== path) {
+        return none;
+      }
+      if (!afterWrite && writingRef.current > 0) {
+        return none;
+      }
+      const token = wipContentToken(state.wip);
+      const contentChanged = token !== contentTokenRef.current || !sameWip(state.wip, wipRef.current);
+      contentTokenRef.current = token;
+      stateWip.current = { seq, wip: state.wip };
+      if (state.graphToken !== graphToken.current) {
+        // 커밋 위치와 인덱스가 달라진 검색 결과는 쓸 수 없다
+        searchCache.current.clear();
+        reloadFromStart();
+        return { contentChanged, reloaded: true };
+      }
+      setGraph((prev) =>
+        prev === null || sameWipInfo(prev.wip, state.wip) ? prev : { ...prev, wip: state.wip },
+      );
+      return { contentChanged, reloaded: false };
+    },
+    [reloadFromStart],
+  );
+
+  /**
+   * 쓰기 직후 새로고침. 폴링(5초)을 기다리지 않는다.
+   * get_repo_state로 그래프를 다시 읽을지 정하고(syncRepoState), WIP 상세, 열린 WIP diff,
+   * sync, conflicts는 무엇이 바뀌었든 항상 다시 읽는다.
+   * 그래프와 refs, WIP 상세는 효과 기반이라 트리거만 걸고 await는 지문과 sync까지만 기다린다
    */
   const refreshAll = useCallback(async () => {
     const current = repoRef.current;
-    searchCache.current.clear();
-    fileTextCache.current.clear();
+    // 쓰기는 워킹 트리나 인덱스를 바꿨을 수 있다. 내용 지문이 같아 보여도 확인할 방법이
+    // 다시 읽는 것뿐이라 WIP 쪽 전문 캐시는 항상 버린다. 커밋 쪽은 sha가 같으면 내용도 같다
+    dropWipFileText();
     setWipNonce((n) => n + 1);
-    reloadFromStart();
     if (current === null) {
       return;
     }
-    await loadSyncData(current.path);
-  }, [reloadFromStart, loadSyncData]);
+    const sync = loadSyncData(current.path);
+    const { reloaded } = await syncRepoState(current.path, true);
+    if (!reloaded) {
+      // 그래프 리로드(reloadKey)가 걸렸으면 remote, 워크트리도 그쪽에서 이미 다시 읽는다
+      setWriteNonce((n) => n + 1);
+    }
+    await sync;
+  }, [dropWipFileText, syncRepoState, loadSyncData]);
 
   /**
    * 확인 다이얼로그를 띄우고 사용자의 선택을 Promise로 돌려준다.
@@ -1124,6 +1250,7 @@ export function RepoWorkspace({
     toast: pushToast,
     runInTerminal,
     onConflicts: handleConflicts,
+    writing: writingRef,
   });
 
   /**
@@ -1545,47 +1672,36 @@ export function RepoWorkspace({
       return;
     }
     lastRefreshNonce.current = refreshNonce;
-    reloadFromStart();
-  }, [refreshNonce, reloadFromStart]);
+    manualRefresh();
+  }, [refreshNonce, manualRefresh]);
 
   /**
-   * refs 지문/wip이 바뀌었으면 전체 리로드. 폴링과 탭 전환이 함께 쓴다.
-   * get_sync_state는 배지와 충돌 배너에 필요해 지문과 무관하게 매 주기 같이 읽는다
+   * 5초 폴링과 탭 전환 확인. 쓰기 뒤 새로고침과 같은 syncRepoState를 쓴다.
+   * graphToken이 바뀔 때만 그래프를 다시 읽고, wip이나 내용 지문만 바뀌었으면 WIP 상세와
+   * 열린 WIP diff만 새로 읽는다 (audit-state M1. 그대로 두면 화면의 옛 hunk가 디스크에 없는
+   * 내용을 인덱스에 넣는다). get_sync_state는 배지와 충돌 배너에 필요해 매 주기 같이 읽는다.
+   * 쓰기가 큐에 있으면 건너뛴다 (CONTRACTS v0.15.2 5번). command가 메인 스레드를 떠나
+   * 폴링이 리베이스 중간 상태를 읽을 수 있다. 쓰기가 끝나면 refreshAll이 어차피 돈다.
+   * 확인창이 떠 있는 동안은 아직 큐에 없으니 폴링이 계속 돈다
    * (활성 탭 + 창 포커스 조건은 호출 측이 이미 걸어둔다).
    */
   const checkRepoState = useCallback(() => {
-    if (repo === null || loadingRef.current || graphToken.current === "") {
+    if (
+      repo === null ||
+      writingRef.current > 0 ||
+      loadingRef.current ||
+      graphToken.current === ""
+    ) {
       return;
     }
     void loadSyncData(repo.path);
-    getRepoState(repo.path)
-      .then((state) => {
-        const wipChanged = !sameWip(state.wip, wipRef.current);
-        const token = wipContentToken(state.wip);
-        const contentChanged = token !== contentTokenRef.current;
-        contentTokenRef.current = token;
-        if (state.graphToken !== graphToken.current || wipChanged) {
-          searchCache.current.clear();
-          if (wipChanged) {
-            // 워킹 트리 파일은 내용이 바뀌었을 수 있으니 캐시를 버리고 다시 읽는다
-            fileTextCache.current.clear();
-            setWipNonce((n) => n + 1);
-          }
-          reloadFromStart();
-          return;
-        }
-        if (contentChanged) {
-          // 파일 수는 그대로고 내용만 바뀌었다. 그래프 모양은 같으니 다시 읽지 않고,
-          // 열린 WIP diff와 WIP 상세만 새로 읽는다 (audit-state M1). 그대로 두면
-          // 화면의 옛 hunk가 디스크에 없는 내용을 인덱스에 넣는다
-          fileTextCache.current.clear();
-          setWipNonce((n) => n + 1);
-        }
-      })
-      .catch(() => {
-        // 폴링 실패는 조용히 넘긴다. 다음 주기에 다시 시도한다
-      });
-  }, [repo, reloadFromStart, loadSyncData]);
+    void syncRepoState(repo.path, false).then(({ contentChanged }) => {
+      if (contentChanged) {
+        dropWipFileText();
+        setWipNonce((n) => n + 1);
+      }
+    });
+  }, [repo, loadSyncData, syncRepoState, dropWipFileText]);
 
   // 자동 새로고침: 활성 탭이고 창이 포커스+가시 상태일 때만 5초마다 경량 폴링
   useEffect(() => {
@@ -2447,7 +2563,7 @@ export function RepoWorkspace({
         commitCount={data.totalLoaded}
         hasMore={data.hasMore}
         loading={graphLoading}
-        onRefresh={reloadFromStart}
+        onRefresh={manualRefresh}
         updateTag={update.tag}
         onOpenRelease={update.onOpenRelease}
         appVersion={APP_VERSION}

@@ -12,7 +12,7 @@ const MARKER_START: &str = "<<<<<<<";
 const MARKER_END: &str = ">>>>>>>";
 
 /// 충돌 파일 목록과 각 파일의 충돌 종류.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_conflicts(path: String) -> Result<Vec<ConflictFile>, String> {
     // `ls-files -u`는 스테이지 번호(1=base, 2=ours, 3=theirs)와 경로를 함께 준다.
     // 어느 스테이지가 빠졌는지가 곧 "누가 지웠는지"라서 이 한 번의 호출로 종류가 나온다.
@@ -100,7 +100,7 @@ fn has_markers(repo: &str, relative: &str) -> bool {
 }
 
 /// 한쪽을 통째로 골라 해결한다. 고른 뒤 인덱스에 올려 "해결됨"까지 한 번에 끝낸다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_resolve_with(path: String, file: String, side: String) -> Result<OpResult, String> {
     let flag = match side.as_str() {
         "ours" => "--ours",
@@ -120,7 +120,7 @@ pub fn git_resolve_with(path: String, file: String, side: String) -> Result<OpRe
 }
 
 /// 손으로 고친 파일을 해결 완료로 표시한다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_mark_resolved(path: String, files: Vec<String>) -> Result<OpResult, String> {
     let files = validate_paths(&files)?;
     let mut args: Vec<&str> = vec!["add", "--"];
@@ -129,7 +129,7 @@ pub fn git_mark_resolved(path: String, files: Vec<String>) -> Result<OpResult, S
 }
 
 /// 3-way 비교용 원문. 해당 스테이지가 없으면(그쪽이 지웠으면) 빈 문자열이다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_conflict_side(path: String, file: String, side: String) -> Result<String, String> {
     let stage = match side.as_str() {
         "base" => "1",

@@ -1333,8 +1333,9 @@ dependencies = [
 
 [[package]]
 name = "gitlanes"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
+ "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -1346,6 +1347,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-window-state",
+ "tokio",
 ]
 
 [[package]]

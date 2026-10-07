@@ -43,14 +43,20 @@ function flipped(): boolean {
 }
 
 /**
- * 쓰기가 일어날 때마다 오르는 값. 토큰에 섞어 그래프가 실제로 다시 로드되게 한다.
- * (폴링은 지문이 바뀌어야만 리로드한다)
+ * 쓰기가 일어날 때마다 오르는 값. WIP 내용 지문(contentToken)에 섞는다.
+ * graphToken에는 섞지 않는다. stage처럼 ref를 안 바꾸는 쓰기는 실제 git에서도 지문이 같다
  */
 let writeSalt = 0;
 
-/** refs 지문. 30초 전후로 한 번, 그리고 쓰기마다 바뀐다 */
+/**
+ * ref, HEAD, 체크아웃된 브랜치, 스태시 목록 중 하나라도 바꾸는 쓰기에서만 오른다.
+ * CONTRACTS v0.15.2 3번의 graphToken과 같은 규칙이다 (refSaltAfter 참고)
+ */
+let refSalt = 0;
+
+/** refs 지문. 30초 전후로 한 번, 그리고 ref를 바꾸는 쓰기마다 바뀐다 */
 function currentToken(): string {
-  return `mock-graph-token-v${flipped() ? 2 : 1}-${writeSalt}`;
+  return `mock-graph-token-v${flipped() ? 2 : 1}-${refSalt}`;
 }
 
 /**
@@ -100,6 +106,36 @@ declare global {
   interface Window {
     /** 하네스 전용: 파일 수는 그대로 두고 워킹 트리 내용만 바꾼다 */
     __mockEdit?: () => number;
+    /** 하네스 전용: command별 호출 횟수. 콘솔에서 `__mockCalls` 로 읽는다 */
+    __mockCalls?: Record<string, number>;
+    /** 하네스 전용: 쓰기 command가 진행 중일 때 시작된 읽기 command 횟수 */
+    __mockCallsDuringWrite?: Record<string, number>;
+    /** 하네스 전용: 두 카운터를 비운다 */
+    __mockResetCalls?: () => void;
+  }
+}
+
+const callCounts: Record<string, number> = {};
+const callsDuringWrite: Record<string, number> = {};
+/** 지금 진행 중인 쓰기 command 수 */
+let writesInFlight = 0;
+
+window.__mockCalls = callCounts;
+window.__mockCallsDuringWrite = callsDuringWrite;
+window.__mockResetCalls = () => {
+  for (const key of Object.keys(callCounts)) {
+    delete callCounts[key];
+  }
+  for (const key of Object.keys(callsDuringWrite)) {
+    delete callsDuringWrite[key];
+  }
+};
+
+/** 호출을 센다. 쓰기 진행 중에 시작된 읽기는 따로 센다 (폴링 가드 검증용) */
+function countCall(cmd: string): void {
+  callCounts[cmd] = (callCounts[cmd] ?? 0) + 1;
+  if (writesInFlight > 0 && !cmd.startsWith("git_")) {
+    callsDuringWrite[cmd] = (callsDuringWrite[cmd] ?? 0) + 1;
   }
 }
 
@@ -646,8 +682,10 @@ function installForcedUpdate(): void {
 //   ?auth=1           위 실패에 needsAuth:true를 붙인다 (터미널 핸드오프 검증)
 //   ?conflict=1       머지 충돌이 진행 중인 상태로 시작한다
 //   ?slow=1           쓰기마다 1.2초 지연 (스피너/중복 클릭 방지 검증)
+//   ?slow=6000        숫자를 주면 그 밀리초만큼 지연 (5초 폴링 틱이 쓰기 도중에 걸리게 할 때)
 //
 // 콘솔: __mockEdit()  파일 수는 그대로, 내용만 바꾼다 (contentToken + unstaged diff 변경)
+//       __mockCalls, __mockCallsDuringWrite, __mockResetCalls()  command 호출 횟수
 // ════════════════════════════════════════════════════════════
 
 const PARAMS = new URLSearchParams(window.location.search);
@@ -660,7 +698,49 @@ const FAIL_SET = new Set(
 );
 const FAIL_ALL = FAIL_SET.has("all");
 const FORCE_AUTH = PARAMS.get("auth") === "1";
-const SLOW_WRITES = PARAMS.get("slow") === "1";
+const SLOW_PARAM = Number(PARAMS.get("slow") ?? "0");
+const SLOW_WRITES = SLOW_PARAM > 0;
+/** ?slow=1은 기존대로 1.2초, 그보다 큰 숫자는 밀리초로 읽는다 */
+const WRITE_DELAY_MS = SLOW_PARAM > 1 ? SLOW_PARAM : SLOW_WRITES ? 1200 : 140;
+
+/**
+ * 성공한 쓰기가 graphToken을 바꾸는가. 실제 rust는 ref(종류, 이름, sha, is_head), HEAD sha,
+ * 스태시 목록을 섞는다. stage, unstage, discard, hunk 적용, clean, remote, 태그 push처럼
+ * 이 셋을 안 건드리는 쓰기는 지문이 그대로다
+ */
+function changesRefs(cmd: string, payload: unknown): boolean {
+  switch (cmd) {
+    case "git_commit":
+    case "git_undo_commit":
+    case "git_checkout":
+    case "git_create_branch":
+    case "git_delete_branch":
+    case "git_rename_branch":
+    case "git_fetch":
+    case "git_pull":
+    case "git_push":
+    case "git_merge":
+    case "git_rebase":
+    case "git_rebase_interactive":
+    case "git_cherry_pick":
+    case "git_revert":
+    case "git_reset":
+    case "git_pending_action":
+    case "git_create_tag":
+    case "git_delete_tag":
+    case "git_stash_push":
+    case "git_stash_drop":
+    case "git_stash_branch":
+      return true;
+    case "git_stash_apply":
+      // pop만 스태시 목록을 줄인다
+      return boolArg(payload, "drop");
+    case "git_add_worktree":
+      return boolArg(payload, "createBranch");
+    default:
+      return false;
+  }
+}
 
 /** 진행 중인 머지/리베이스. ?conflict=1이면 처음부터 켜져 있다 */
 let pendingOp: PendingOp | null =
@@ -1424,11 +1504,21 @@ if (FAIL_SET.size > 0 || FORCE_AUTH || pendingOp !== null || SLOW_WRITES) {
 installForcedUpdate();
 
 mockIPC(async (cmd, payload) => {
+  countCall(cmd);
   // 쓰기 command는 한곳에서 처리한다. 모르는 이름이면 null이 와서 아래 switch로 흐른다
   if (cmd.startsWith("git_")) {
-    await sleep(SLOW_WRITES ? 1200 : 140);
-    const result = handleWrite(cmd, payload);
+    writesInFlight += 1;
+    let result: OpResult | null;
+    try {
+      await sleep(WRITE_DELAY_MS);
+      result = handleWrite(cmd, payload);
+    } finally {
+      writesInFlight -= 1;
+    }
     if (result !== null) {
+      if (result.ok && changesRefs(cmd, payload)) {
+        refSalt += 1;
+      }
       console.log(`[mock] ${cmd}`, result.ok ? "ok" : `failed: ${result.stderr.split("\n")[0]}`);
       return result;
     }

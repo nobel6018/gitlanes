@@ -40,7 +40,7 @@ struct Session {
 pub struct Terminals(Mutex<HashMap<String, Session>>);
 
 /// 새 PTY를 열고 세션 id를 돌려준다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn term_open(
     app: AppHandle,
     terminals: State<'_, Terminals>,
@@ -108,6 +108,7 @@ pub fn term_open(
 }
 
 /// 키 입력을 PTY로 보낸다. 이미 끝난 세션이면 조용히 무시한다.
+// 메인 스레드에 둔다(async 아님). 스레드 풀로 보내면 키 입력 순서가 뒤바뀔 수 있다.
 #[tauri::command]
 pub fn term_write(terminals: State<'_, Terminals>, id: String, data: String) -> Result<(), String> {
     let mut sessions = terminals.0.lock().map_err(lock_error)?;
@@ -123,6 +124,7 @@ pub fn term_write(terminals: State<'_, Terminals>, id: String, data: String) -> 
 }
 
 /// 창 크기를 셸에 알린다. 모르는 id는 조용히 무시한다.
+// 메인 스레드에 둔다(async 아님). 스레드 풀로 보내면 키 입력 순서가 뒤바뀔 수 있다.
 #[tauri::command]
 pub fn term_resize(
     terminals: State<'_, Terminals>,
@@ -150,6 +152,7 @@ pub fn term_resize(
 ///
 /// 맵에서 빼고 셸을 죽이면 PTY가 닫혀 읽기 스레드가 스스로 끝난다. 그 스레드가
 /// `term:exit`까지 보내고 정리하므로 여기서 스레드를 기다리지 않는다.
+// 메인 스레드에 둔다(async 아님). 스레드 풀로 보내면 키 입력 순서가 뒤바뀔 수 있다.
 #[tauri::command]
 pub fn term_close(terminals: State<'_, Terminals>, id: String) -> Result<(), String> {
     let session = terminals.0.lock().map_err(lock_error)?.remove(&id);

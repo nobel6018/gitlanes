@@ -12,7 +12,7 @@ use super::run::{run_op, LOCAL_TIMEOUT};
 /// 메시지는 `-m`으로 넘긴다. `-m`은 다음 인자를 무조건 값으로 먹어서 메시지가 `-`로
 /// 시작해도 옵션이 되지 않고, 프로세스 인자는 셸을 거치지 않아 따옴표 문제도 없다.
 /// amend에 메시지가 비어 있으면 `--no-edit`으로 원래 메시지를 유지한다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_commit(path: String, options: CommitOptions) -> Result<OpResult, String> {
     let message = options.message.trim().to_string();
     if message.is_empty() && !options.amend {
@@ -46,7 +46,7 @@ pub fn git_commit(path: String, options: CommitOptions) -> Result<OpResult, Stri
 }
 
 /// amend 체크박스를 켰을 때 메시지 상자를 채울 값.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_last_commit_message(path: String) -> Result<String, String> {
     git::run(&path, &["log", "-1", "--format=%B"]).map(|out| out.trim_end().to_string())
 }
@@ -55,7 +55,7 @@ pub fn get_last_commit_message(path: String) -> Result<String, String> {
 ///
 /// 설정만 있고 파일이 없는 경우가 흔하다(다른 기계에서 복사해 온 `.gitconfig`).
 /// 그건 오류가 아니라 "템플릿 없음"이다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_commit_template(path: String) -> Result<Option<String>, String> {
     let Ok(raw) = git::run(&path, &["config", "--get", "commit.template"]) else {
         return Ok(None);
@@ -84,7 +84,7 @@ fn expand_home(raw: &str) -> std::path::PathBuf {
 ///
 /// `reset --soft HEAD~1`은 머지 커밋에서도 안전하다. 첫 부모로 옮기고 트리를 손대지
 /// 않으므로 머지 결과가 전부 인덱스에 남는다. `--hard`였다면 그게 사라진다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_undo_commit(path: String) -> Result<OpResult, String> {
     run_op(&path, &["reset", "--soft", "HEAD~1"], LOCAL_TIMEOUT)
 }
