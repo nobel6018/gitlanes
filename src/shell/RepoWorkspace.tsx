@@ -542,6 +542,11 @@ export function RepoWorkspace({
     const item: ToastItem = {
       id,
       ...spec,
+      // 표시 문구와 실제 실행이 같은 formatCommand를 거쳐야 화면이 거짓말을 하지 않는다
+      commandLine:
+        spec.command !== undefined && spec.command.length > 0 && origin !== undefined
+          ? formatCommand(spec.command, origin)
+          : undefined,
       onRunInTerminal: (command) => runInTerminalRef.current(command, origin),
     };
     setToasts((prev) => [...prev.slice(-(MAX_TOASTS - 1)), item]);
