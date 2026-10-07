@@ -685,6 +685,7 @@ function installForcedUpdate(): void {
 //   ?auth=1           위 실패에 needsAuth:true를 붙인다 (터미널 핸드오프 검증)
 //   ?conflict=1       머지 충돌이 진행 중인 상태로 시작한다
 //   ?conflict=am      git am이 충돌로 멈춘 상태로 시작한다 (Continue/Skip patch/Abort)
+//   ?conflict=rebase  리베이스가 충돌로 멈춘 상태 (비교 화면의 ours/theirs 뒤집힘 안내 확인)
 //   ?conflict=conflicts  이어갈 작업 없이 충돌만 남은 상태 (stash pop 충돌 등). 해결 UI만 보이고
 //                     파일을 다 해결하면 pending이 null이 되어 패널이 사라진다
 //   ?denied=<계정>    위 실패에 403 stderr와 deniedAccount를 붙인다 (계정 힌트 검증)
@@ -797,6 +798,8 @@ function initialPending(): PendingOp | null {
       return { kind: "merge", progress: null, conflictCount: 3, detail: "origin/develop into main" };
     case "am":
       return { kind: "am", progress: "2/5", conflictCount: 3, detail: null };
+    case "rebase":
+      return { kind: "rebase", progress: "1/3", conflictCount: 3, detail: "origin/main" };
     case "conflicts":
       return { kind: "conflicts", progress: null, conflictCount: 3, detail: null };
     default:
