@@ -248,11 +248,20 @@ impl Fnv {
     }
 }
 
-/// refs 상태 지문. ref 하나라도 이름, 종류, 가리키는 커밋이 바뀌면 값이 달라진다.
+/// 그래프 지문. 아래 중 하나라도 바뀌면 값이 달라진다.
 ///
-/// 프론트는 skip 페이징 도중 이 값이 바뀌면 누적분을 버리고 전체를 다시 읽는다.
-/// 입력 순서는 [`parse_ref_entries`]의 정렬(종류 → 이름)이라 실행마다 고정된다.
-pub fn graph_token(refs: &[RefEntry], head_sha: &str) -> String {
+/// - ref 하나하나의 이름, 종류, 가리키는 커밋, 체크아웃 여부(`is_head`)
+/// - HEAD가 가리키는 커밋
+/// - 스태시 목록(sha, `stash@{0}`부터 순서대로)
+///
+/// `is_head`가 없으면 같은 커밋을 가리키는 다른 브랜치로 checkout해도 값이 그대로라 사이드바의
+/// 현재 브랜치 표시가 낡는다. 스태시는 `refs/stash`가 `stash@{0}`만 가리켜서 ref 목록으로는
+/// `stash@{1}` drop을 못 본다. 그래서 목록 전체를 섞는다.
+///
+/// 프론트는 skip 페이징 도중 이 값이 바뀌면 누적분을 버리고 전체를 다시 읽는다. `load_graph`와
+/// `get_repo_state`가 같은 입력으로 이 함수를 불러야 폴링이 헛 재로드를 하지 않는다.
+/// ref 입력 순서는 [`parse_ref_entries`]의 정렬(종류 → 이름)이라 실행마다 고정된다.
+pub fn graph_token<S: AsRef<str>>(refs: &[RefEntry], head_sha: &str, stash_shas: &[S]) -> String {
     let mut hash = Fnv::new();
     for entry in refs {
         // 종류까지 섞어야 같은 이름의 로컬/원격 브랜치가 구분된다
@@ -261,10 +270,17 @@ pub fn graph_token(refs: &[RefEntry], head_sha: &str) -> String {
         hash.absorb(entry.name.as_bytes());
         hash.absorb(b"\x1f");
         hash.absorb(entry.sha.as_bytes());
+        hash.absorb(b"\x1f");
+        hash.absorb(if entry.is_head { b"*" } else { b"-" });
         hash.absorb(b"\x1e");
     }
     hash.absorb(b"HEAD\x1f");
     hash.absorb(head_sha.as_bytes());
+    hash.absorb(b"\x1estash");
+    for sha in stash_shas {
+        hash.absorb(b"\x1f");
+        hash.absorb(sha.as_ref().as_bytes());
+    }
     hash.hex()
 }
 
@@ -623,6 +639,8 @@ mod tests {
         assert!(parse_stashes("\n").is_empty());
     }
 
+    const NO_STASH: &[&str] = &[];
+
     #[test]
     fn graph_token은_ref가_바뀌면_달라진다() {
         let base = vec![
@@ -639,10 +657,14 @@ mod tests {
                 is_head: false,
             },
         ];
-        let token = graph_token(&base, "aaa");
+        let token = graph_token(&base, "aaa", NO_STASH);
 
         assert_eq!(token.len(), 16, "16자리 hex다");
-        assert_eq!(graph_token(&base, "aaa"), token, "같은 입력은 같은 값이다");
+        assert_eq!(
+            graph_token(&base, "aaa", NO_STASH),
+            token,
+            "같은 입력은 같은 값이다"
+        );
 
         // 브랜치 추가 (기존 커밋을 가리켜도 달라져야 한다)
         let mut added = base.clone();
@@ -652,25 +674,44 @@ mod tests {
             sha: "aaa".into(),
             is_head: false,
         });
-        assert_ne!(graph_token(&added, "aaa"), token);
+        assert_ne!(graph_token(&added, "aaa", NO_STASH), token);
 
         // tip 이동
         let mut moved = base.clone();
         moved[0].sha = "bbb".into();
-        assert_ne!(graph_token(&moved, "aaa"), token);
+        assert_ne!(graph_token(&moved, "aaa", NO_STASH), token);
 
         // 브랜치 이름 변경
         let mut renamed = base.clone();
         renamed[0].name = "master".into();
-        assert_ne!(graph_token(&renamed, "aaa"), token);
+        assert_ne!(graph_token(&renamed, "aaa", NO_STASH), token);
 
         // 같은 이름의 로컬/원격 구분
         let mut kind_swapped = base.clone();
         kind_swapped[0].kind = RefKind::RemoteBranch;
-        assert_ne!(graph_token(&kind_swapped, "aaa"), token);
+        assert_ne!(graph_token(&kind_swapped, "aaa", NO_STASH), token);
 
         // detached HEAD 이동
-        assert_ne!(graph_token(&base, "ccc"), token);
+        assert_ne!(graph_token(&base, "ccc", NO_STASH), token);
+
+        // 같은 커밋을 가리키는 다른 브랜치로 checkout
+        let mut switched = added.clone();
+        switched[0].is_head = false;
+        switched[2].is_head = true;
+        assert_ne!(
+            graph_token(&switched, "aaa", NO_STASH),
+            graph_token(&added, "aaa", NO_STASH)
+        );
+    }
+
+    #[test]
+    fn graph_token은_스태시_목록과_순서가_바뀌면_달라진다() {
+        let refs: Vec<RefEntry> = Vec::new();
+        let two = graph_token(&refs, "aaa", &["s0", "s1"]);
+        assert_ne!(graph_token(&refs, "aaa", NO_STASH), two);
+        assert_ne!(graph_token(&refs, "aaa", &["s0"]), two, "안쪽 drop");
+        assert_ne!(graph_token(&refs, "aaa", &["s1", "s0"]), two, "순서");
+        assert_eq!(graph_token(&refs, "aaa", &["s0", "s1"]), two);
     }
 
     fn no_token(_paths: &[&str]) -> String {

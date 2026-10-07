@@ -32,6 +32,8 @@ const REF_ARGS: [&str; 5] = [
 ];
 const STATUS_ARGS: [&str; 3] = ["status", "--porcelain", "-z"];
 const HEAD_ARGS: [&str; 2] = ["rev-parse", "HEAD"];
+/// 폴링용 스태시 목록. 지문에는 sha와 순서만 필요하다.
+const STASH_SHA_ARGS: [&str; 3] = ["stash", "list", "--format=%H"];
 
 /// diff 파일 헤더의 접두를 `a/` `b/`로 고정한다.
 ///
@@ -184,13 +186,14 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
     let mut refs_by_sha = parse_refs(&ref_out);
 
     let head_sha = head_out.map(|s| s.trim().to_string()).unwrap_or_default();
-    let token = graph_token(&ref_entries, &head_sha);
 
     // status가 실패해도(잠긴 인덱스 등) 그래프는 보여준다
     let wip = status_out.ok().and_then(|out| wip_of(&path, &out));
 
     // 스태시가 없거나 명령이 실패하면 빈 배열이다
     let stashes = stash_out.map(|out| parse_stashes(&out)).unwrap_or_default();
+    let stash_shas: Vec<&str> = stashes.iter().map(|stash| stash.sha.as_str()).collect();
+    let token = graph_token(&ref_entries, &head_sha, &stash_shas);
 
     let layout = assign_lanes(&commits);
 
@@ -361,19 +364,33 @@ fn stream_commits(path: &str, args: &[&str], want: usize) -> Result<Vec<RawCommi
 }
 
 /// 자동 새로고침 폴링용 경량 상태. log를 읽지 않아 대형 저장소에서도 싸다.
-/// git 호출은 for-each-ref, rev-parse, status 3회이고 동시에 돌린다.
+/// git 호출은 for-each-ref, rev-parse, status, stash list 4회이고 동시에 돌린다.
+///
+/// 스태시는 sha만 읽는다(`%H`). 지문에 필요한 것은 목록의 sha와 순서뿐이고, `load_graph`가
+/// 같은 순서(`stash@{0}`부터)로 같은 sha를 넘기므로 두 경로의 지문이 일치한다.
 #[tauri::command(async)]
 pub fn get_repo_state(path: String) -> Result<RepoState, String> {
-    let outputs = git::run_all(&path, &[&REF_ARGS[..], &HEAD_ARGS[..], &STATUS_ARGS[..]]);
-    let [ref_out, head_out, status_out] =
-        <[_; 3]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
+    let outputs = git::run_all(
+        &path,
+        &[
+            &REF_ARGS[..],
+            &HEAD_ARGS[..],
+            &STATUS_ARGS[..],
+            &STASH_SHA_ARGS[..],
+        ],
+    );
+    let [ref_out, head_out, status_out, stash_out] =
+        <[_; 4]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
 
     // 저장소 자체가 아니면 for-each-ref가 실패한다. 폴링이 조용히 성공하면 안 된다
     let ref_out = ref_out.map_err(|e| format!("저장소 상태를 읽지 못했습니다: {e}"))?;
     let head_sha = head_out.map(|s| s.trim().to_string()).unwrap_or_default();
+    // load_graph와 같게, 실패하면 스태시가 없는 것으로 본다
+    let stash_out = stash_out.unwrap_or_default();
+    let stash_shas: Vec<&str> = stash_out.split_whitespace().collect();
 
     Ok(RepoState {
-        graph_token: graph_token(&parse_ref_entries(&ref_out), &head_sha),
+        graph_token: graph_token(&parse_ref_entries(&ref_out), &head_sha, &stash_shas),
         wip: status_out.ok().and_then(|out| wip_of(&path, &out)),
     })
 }
@@ -1356,6 +1373,64 @@ mod integration_tests {
         repo.git(&["branch", "polling"]);
         let branched = get_repo_state(repo.path()).unwrap();
         assert_ne!(branched.graph_token, state.graph_token);
+    }
+
+    /// 폴링 지문과 그래프 지문이 같은 값인지까지 함께 본다. 둘이 다르면 매 폴링이 재로드가 된다.
+    fn tokens(repo: &TempRepo) -> String {
+        let state = get_repo_state(repo.path()).unwrap();
+        let graph = load_graph(repo.path(), 100, 0).unwrap();
+        assert_eq!(
+            state.graph_token, graph.graph_token,
+            "두 경로의 지문이 갈렸다"
+        );
+        state.graph_token
+    }
+
+    #[test]
+    fn graph_token은_같은_커밋의_다른_브랜치로_checkout하면_바뀐다() {
+        let repo = fixture();
+        repo.git(&["branch", "twin"]);
+        let before = tokens(&repo);
+
+        repo.git(&["checkout", "-q", "twin"]);
+        assert_ne!(
+            tokens(&repo),
+            before,
+            "HEAD sha는 같아도 체크아웃된 브랜치가 바뀌었다"
+        );
+    }
+
+    #[test]
+    fn graph_token은_안쪽_스태시를_drop하면_바뀐다() {
+        let repo = fixture();
+        repo.write("m.txt", "first stash\n");
+        repo.git(&["stash", "push", "-q", "-m", "one"]);
+        repo.write("m.txt", "second stash\n");
+        repo.git(&["stash", "push", "-q", "-m", "two"]);
+        let before = tokens(&repo);
+
+        // refs/stash(= stash@{0})는 그대로라 ref만 보면 놓친다
+        repo.git(&["stash", "drop", "-q", "stash@{1}"]);
+        assert_ne!(tokens(&repo), before);
+    }
+
+    #[test]
+    fn graph_token은_파일을_stage해도_그대로다() {
+        let repo = fixture();
+        repo.write("m.txt", "staged\n");
+        let before = tokens(&repo);
+
+        repo.git(&["add", "m.txt"]);
+        assert_eq!(tokens(&repo), before, "stage는 wip 몫이다");
+    }
+
+    #[test]
+    fn graph_token은_아무것도_안_하면_같다() {
+        let repo = fixture();
+        repo.write("m.txt", "stash\n");
+        repo.git(&["stash", "push", "-q"]);
+        let before = tokens(&repo);
+        assert_eq!(tokens(&repo), before);
     }
 
     #[test]
