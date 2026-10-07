@@ -104,6 +104,7 @@ pub fn git_push(
         set_upstream,
         force_with_lease,
         tags,
+        supports_force_if_includes(),
     );
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
 
@@ -115,6 +116,12 @@ pub fn git_push(
 ///
 /// remote와 branch를 명시하는 경우가 아니면 인자를 덧붙이지 않는다. 그래야 `push.default`
 /// 설정과 upstream 추적이 평소대로 동작한다.
+///
+/// `--force-with-lease`에는 `--force-if-includes`를 함께 붙인다. lease 값은 원격 추적 ref라서
+/// 툴바 Fetch가 그걸 갱신하면, 통합하지 않은 동료 커밋이 있어도 lease 검사를 통과해 덮어쓴다.
+/// `--force-if-includes`는 원격 추적 ref의 끝이 로컬 브랜치 reflog에 있을 때만, 즉 내가 한 번
+/// 받아 본 상태에서 고쳐 쓴 것일 때만 허용한다. 2.30 미만 git은 이 옵션을 모르고 push 자체가
+/// 실패하므로 `if_includes_supported`가 꺼져 있으면 lease만 남긴다.
 fn push_args(
     remote: Option<&str>,
     branch: &str,
@@ -122,10 +129,14 @@ fn push_args(
     set_upstream: bool,
     force_with_lease: bool,
     tags: bool,
+    if_includes_supported: bool,
 ) -> Vec<String> {
     let mut args = vec!["push".to_string()];
     if force_with_lease {
         args.push("--force-with-lease".to_string());
+        if if_includes_supported {
+            args.push("--force-if-includes".to_string());
+        }
     }
     if tags {
         args.push("--tags".to_string());
@@ -141,6 +152,12 @@ fn push_args(
         args.push(branch.to_string());
     }
     args
+}
+
+/// `push --force-if-includes`는 git 2.30에서 들어왔다. 버전을 못 읽으면 붙이지 않는다.
+/// 모르는 옵션으로 push가 통째로 실패하는 것보다 lease만 남는 쪽이 덜 나쁘다.
+fn supports_force_if_includes() -> bool {
+    crate::git::version().is_some_and(|version| version >= (2, 30))
 }
 
 /// 다른 모듈의 통합 테스트가 공유하는 로컬 리모트 픽스처.
@@ -343,18 +360,42 @@ mod tests {
         assert!(!result.needs_auth, "{result:?}");
     }
 
+    fn remote_log(origin: &crate::testrepo::TempRepo) -> String {
+        crate::git::run(origin.path(), &["log", "--format=%s", "main"]).unwrap()
+    }
+
+    /// 툴바 Fetch가 lease 값(원격 추적 ref)을 갱신해 버리면 `--force-with-lease`만으로는
+    /// `--force`와 다를 바 없다. 통합하지 않은 동료 커밋이 있으면 거절해야 한다.
     #[test]
-    fn force_with_lease는_fetch로_lease를_갱신한_뒤에만_통한다() {
+    fn force_with_lease는_fetch만_하고_통합하지_않은_원격_커밋을_덮지_않는다() {
         let (origin, repo) = remote_fixture();
-        diverge(&origin, &repo);
+        push_remote_commit(&origin, "teammate-work");
+        repo.git(&["commit", "-q", "--amend", "-m", "c1-amended"]);
 
         // 원격 추적 ref가 낡아서 lease 검사에 걸린다
         let stale = git_push(repo.path(), None, None, false, true, false).unwrap();
         assert!(!stale.ok, "{stale:?}");
 
+        // Fetch로 lease가 최신이 됐어도 teammate-work를 통합하지 않았으니 거절이다
         assert!(fetch_all(&repo).ok);
-        let fresh = git_push(repo.path(), None, None, false, true, false).unwrap();
-        assert!(fresh.ok, "{fresh:?}");
+        let fetched = git_push(repo.path(), None, None, false, true, false).unwrap();
+        assert!(!fetched.ok, "통합 안 한 원격 커밋을 덮었다: {fetched:?}");
+        assert!(
+            remote_log(&origin).contains("teammate-work"),
+            "{}",
+            remote_log(&origin)
+        );
+    }
+
+    /// 내가 올린 커밋을 amend해 다시 올리는 평범한 force push는 그대로 통한다.
+    #[test]
+    fn force_with_lease는_내_커밋을_고쳐_올리는_것은_허용한다() {
+        let (origin, repo) = remote_fixture();
+        repo.git(&["commit", "-q", "--amend", "-m", "c1-amended"]);
+
+        let result = git_push(repo.path(), None, None, false, true, false).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(remote_log(&origin).trim(), "c1-amended");
     }
 
     #[test]
@@ -402,23 +443,26 @@ mod tests {
                 for set_upstream in [false, true] {
                     for force_with_lease in [false, true] {
                         for tags in [false, true] {
-                            let args = push_args(
-                                remote,
-                                "main",
-                                has_upstream,
-                                set_upstream,
-                                force_with_lease,
-                                tags,
-                            );
-                            assert!(
-                                !args.iter().any(|arg| arg == "--force" || arg == "-f"),
-                                "{args:?}"
-                            );
-                            assert_eq!(
-                                args.iter().any(|arg| arg == "--force-with-lease"),
-                                force_with_lease,
-                                "{args:?}"
-                            );
+                            for supported in [false, true] {
+                                let args = push_args(
+                                    remote,
+                                    "main",
+                                    has_upstream,
+                                    set_upstream,
+                                    force_with_lease,
+                                    tags,
+                                    supported,
+                                );
+                                assert!(
+                                    !args.iter().any(|arg| arg == "--force" || arg == "-f"),
+                                    "{args:?}"
+                                );
+                                let lease = args.iter().any(|arg| arg == "--force-with-lease");
+                                let includes = args.iter().any(|arg| arg == "--force-if-includes");
+                                assert_eq!(lease, force_with_lease, "{args:?}");
+                                // if-includes는 lease 없이 혼자 나오지 않고, 지원되면 lease와 늘 함께다
+                                assert_eq!(includes, lease && supported, "{args:?}");
+                            }
                         }
                     }
                 }
@@ -426,17 +470,17 @@ mod tests {
         }
 
         // upstream이 이미 있으면 -u를 붙이지 않는다
-        assert_eq!(push_args(None, "main", true, true, false, false), ["push"]);
+        assert_eq!(push_args(None, "main", true, true, false, false, true), ["push"]);
         assert_eq!(
-            push_args(None, "feature", false, true, false, false),
+            push_args(None, "feature", false, true, false, false, true),
             ["push", "-u", "origin", "feature"]
         );
         assert_eq!(
-            push_args(Some("upstream"), "feature", true, false, false, false),
+            push_args(Some("upstream"), "feature", true, false, false, false, true),
             ["push", "upstream", "feature"]
         );
         assert_eq!(
-            push_args(None, "main", true, false, false, true),
+            push_args(None, "main", true, false, false, true, true),
             ["push", "--tags"]
         );
     }
