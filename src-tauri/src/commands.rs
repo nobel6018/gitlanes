@@ -33,6 +33,32 @@ const REF_ARGS: [&str; 5] = [
 const STATUS_ARGS: [&str; 3] = ["status", "--porcelain", "-z"];
 const HEAD_ARGS: [&str; 2] = ["rev-parse", "HEAD"];
 
+/// diff 파일 헤더의 접두를 `a/` `b/`로 고정한다.
+///
+/// 사용자 설정 `diff.noprefix=true`면 헤더가 `--- src/app.txt`로 와서, 프론트가 만든 패치를
+/// `git apply`(-p1)가 `app.txt`로 읽고 **루트의 다른 파일**에 적용한다. `diff.mnemonicPrefix`도
+/// `c/` `w/` 같은 접두로 바꾼다. 프론트가 파일 헤더를 파싱하므로 표시용 커밋 diff에도 건다.
+const DIFF_PREFIX_ARGS: [&str; 2] = ["--src-prefix=a/", "--dst-prefix=b/"];
+
+/// 패치의 원료가 되는 WIP diff의 형식. 사용자 git 설정이 새어 들어오지 않게 전부 명시한다.
+///
+/// - `-U3`: `diff.context=0`이면 context 없는 hunk가 와서 순수 삽입이 한 줄 어긋난 자리에
+///   적용된다. 엔진은 context 3줄을 전제로 헤더를 다시 계산한다
+/// - 접두: [`DIFF_PREFIX_ARGS`]
+/// - `--no-textconv`: porcelain `git diff`는 textconv가 기본으로 켜져 있어, 변환된 텍스트
+///   (`secret=***`)가 패치에 실려 인덱스에 그대로 들어간다
+/// - `--no-ext-diff`: `diff.external`이면 unified diff가 아닌 출력이 온다
+///
+/// 프론트 테스트 하네스(tests/)가 같은 인자로 diff를 만든다. 바꾸면 하네스도 같이 바꾼다.
+const PATCH_SOURCE_DIFF_ARGS: [&str; 6] = [
+    "--no-color",
+    "-U3",
+    DIFF_PREFIX_ARGS[0],
+    DIFF_PREFIX_ARGS[1],
+    "--no-textconv",
+    "--no-ext-diff",
+];
+
 /// `get_file_content`의 상한. 넘으면 내용을 읽지 않고 거절한다.
 /// 뷰어가 한 화면에 올릴 수 있는 크기를 한참 넘고, 문법 강조도 의미가 없어진다.
 const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
@@ -413,6 +439,7 @@ pub fn get_file_diff(
         ]
     };
 
+    args.extend(DIFF_PREFIX_ARGS);
     args.push("--");
     // rename/copy는 원본 경로도 pathspec에 걸어야 한다. 새 경로만 걸면 rename 원본이
     // 필터에서 빠져 git이 rename을 못 찾고 "new file"로 보여준다.
@@ -494,49 +521,27 @@ pub fn get_wip_details(path: String) -> Result<WipDetails, String> {
 pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<String, String> {
     let file = validate_pathspec(&file)?;
 
-    match area.as_str() {
-        "staged" => git::run(
-            &path,
-            &[
-                "diff",
-                "--cached",
-                "--no-color",
-                "--no-ext-diff",
-                "-M",
-                "--",
-                file.as_str(),
-            ],
-        )
-        .map_err(|e| format!("staged diff를 읽지 못했습니다: {e}")),
-        "unstaged" => git::run(
-            &path,
-            &[
-                "diff",
-                "--no-color",
-                "--no-ext-diff",
-                "-M",
-                "--",
-                file.as_str(),
-            ],
-        )
-        .map_err(|e| format!("unstaged diff를 읽지 못했습니다: {e}")),
+    let head: &[&str] = match area.as_str() {
+        "staged" => &["diff", "--cached", "-M"],
+        "unstaged" => &["diff", "-M"],
         // 추적되지 않는 파일은 인덱스에 없어 일반 diff로 안 나온다. 빈 파일과 비교해
-        // 전체를 추가로 보여준다. 차이가 있으면 종료 코드가 1이라 run_allow_diff를 쓴다.
-        "untracked" => git::run_allow_diff(
-            &path,
-            &[
-                "diff",
-                "--no-index",
-                "--no-color",
-                "--no-ext-diff",
-                "--",
-                "/dev/null",
-                file.as_str(),
-            ],
-        )
-        .map_err(|e| format!("untracked diff를 읽지 못했습니다: {e}")),
-        other => Err(format!("알 수 없는 WIP 영역입니다: {other}")),
+        // 전체를 추가로 보여준다.
+        "untracked" => &["diff", "--no-index"],
+        other => return Err(format!("알 수 없는 WIP 영역입니다: {other}")),
+    };
+    let mut args: Vec<&str> = head.to_vec();
+    args.extend(PATCH_SOURCE_DIFF_ARGS);
+    args.push("--");
+
+    if area == "untracked" {
+        args.push("/dev/null");
+        args.push(file.as_str());
+        // --no-index는 차이가 있으면 종료 코드가 1이라 run_allow_diff를 쓴다
+        return git::run_allow_diff(&path, &args)
+            .map_err(|e| format!("untracked diff를 읽지 못했습니다: {e}"));
     }
+    args.push(file.as_str());
+    git::run(&path, &args).map_err(|e| format!("{area} diff를 읽지 못했습니다: {e}"))
 }
 
 /// 워킹 트리의 현재 파일 내용. 커밋이 아니라 디스크를 읽는다.
@@ -1791,6 +1796,100 @@ mod integration_tests {
             !diff.contains("pages/i.tsx"),
             "다른 파일의 diff가 섞였다. 프론트는 이걸 한 파일 diff로 알고 패치를 만든다:\n{diff}"
         );
+    }
+
+    /// 사용자 git 설정 중 패치 원료 diff의 형식을 바꾸는 것들을 전부 켠 저장소.
+    /// 커밋된 `f.txt`는 l1..l10이고, `secret=` 줄은 textconv가 `secret=***`로 가린다.
+    fn hostile_diff_config() -> TempRepo {
+        let repo = TempRepo::init("gitlanes-diff-config");
+        repo.git(&["config", "diff.context", "0"]);
+        repo.git(&["config", "diff.noprefix", "true"]);
+        repo.git(&["config", "diff.mnemonicPrefix", "true"]);
+        repo.git(&["config", "diff.mask.textconv", "sed s/secret=.*/secret=***/"]);
+        repo.write(".gitattributes", "*.txt diff=mask\n");
+        let base: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+        repo.write("f.txt", &base);
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo
+    }
+
+    fn with_secret() -> String {
+        (1..=10)
+            .map(|i| {
+                if i == 5 {
+                    "secret=2\n".to_string()
+                } else {
+                    format!("l{i}\n")
+                }
+            })
+            .collect()
+    }
+
+    fn assert_patch_source(diff: &str, area: &str) {
+        assert!(diff.contains("+++ b/"), "[{area}] b/ 접두가 없다:\n{diff}");
+        assert!(diff.contains("+secret=2"), "[{area}] textconv 결과가 섞였다:\n{diff}");
+        assert!(!diff.contains("***"), "[{area}] textconv 결과가 섞였다:\n{diff}");
+    }
+
+    /// 프론트 패치 하네스가 이 인자를 그대로 흉내 낸다. 어긋나면 하네스가 검증하는 diff와
+    /// 실제 앱이 받는 diff가 달라진다. 바꿀 거면 tests/ 하네스와 함께 바꾼다.
+    #[test]
+    fn 패치_원료_diff_인자는_계약값_그대로다() {
+        assert_eq!(
+            PATCH_SOURCE_DIFF_ARGS,
+            [
+                "--no-color",
+                "-U3",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--no-textconv",
+                "--no-ext-diff",
+            ]
+        );
+        assert_eq!(DIFF_PREFIX_ARGS, ["--src-prefix=a/", "--dst-prefix=b/"]);
+    }
+
+    #[test]
+    fn wip_diff는_사용자_diff_설정과_무관하게_형식이_고정된다() {
+        let repo = hostile_diff_config();
+        repo.write("f.txt", &with_secret());
+
+        let unstaged =
+            get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string()).unwrap();
+        assert_patch_source(&unstaged, "unstaged");
+        assert!(unstaged.contains("--- a/f.txt"), "{unstaged}");
+        // l5 앞뒤로 context 3줄씩: l2..l4, l6..l8
+        assert!(unstaged.contains("@@ -2,7 +2,7 @@"), "context가 3줄이 아니다:\n{unstaged}");
+        assert!(unstaged.contains(" l2\n") && unstaged.contains(" l8\n"), "{unstaged}");
+
+        repo.git(&["add", "f.txt"]);
+        let staged =
+            get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string()).unwrap();
+        assert_patch_source(&staged, "staged");
+        assert!(staged.contains("--- a/f.txt"), "{staged}");
+        assert!(staged.contains("@@ -2,7 +2,7 @@"), "{staged}");
+
+        repo.write("fresh.txt", "x\nsecret=2\n");
+        let untracked = get_wip_file_diff(
+            repo.path(),
+            "fresh.txt".to_string(),
+            "untracked".to_string(),
+        )
+        .unwrap();
+        assert_patch_source(&untracked, "untracked");
+    }
+
+    #[test]
+    fn 커밋_diff도_접두가_고정된다() {
+        let repo = hostile_diff_config();
+        repo.write("f.txt", &with_secret());
+        repo.git(&["commit", "-qam", "secret"]);
+
+        let diff =
+            get_file_diff(repo.path(), "HEAD".to_string(), "f.txt".to_string(), None).unwrap();
+        assert!(diff.contains("--- a/f.txt"), "{diff}");
+        assert!(diff.contains("+++ b/f.txt"), "{diff}");
     }
 
     #[test]
