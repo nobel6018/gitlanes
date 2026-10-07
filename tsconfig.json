@@ -20,6 +20,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"],
+  // tests도 타입 검사한다(npm run build의 tsc). vite는 index.html에서 import로 닿는 파일만 묶으므로
+  // 테스트는 번들에 들어가지 않는다. Node 타입은 tests/node-shim.d.ts의 최소 선언을 쓴다
+  "include": ["src", "tests"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
