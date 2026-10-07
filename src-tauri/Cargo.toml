@@ -26,6 +26,9 @@ tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.9.0"
+# git을 기다리는 실행기가 block_in_place로 tokio 워커를 내놓는다(src/blocking.rs).
+# tauri가 같은 기능으로 이미 끌고 오는 크레이트라 새로 받아오는 의존성은 없다.
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 # 유닉스 전용: 타임아웃 때 git이 띄운 프로세스 그룹 전체를 죽이는 killpg.
 # tauri가 이미 끌고 오는 크레이트라 새로 받아오는 의존성은 없다.

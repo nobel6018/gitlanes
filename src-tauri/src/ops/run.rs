@@ -176,6 +176,15 @@ pub fn execute(command: Command, timeout: Duration) -> Result<Outcome, String> {
 /// git-remote-https는 파이프를 상속해 쥐고 있어서 git만 죽이면 읽기 스레드가 끝나지 않는다.
 /// 타임아웃 때 그룹 전체를 죽이고, 그래도 남는 파이프에 대비해 스레드 join에 상한을 둔다.
 pub fn execute_with_input(
+    command: Command,
+    timeout: Duration,
+    input: Option<Vec<u8>>,
+) -> Result<Outcome, String> {
+    // spawn부터 리더 join까지 전부 기다리는 구간이다. 최대 120초 + 2초 동안 워커를 내놓는다
+    crate::blocking::wait(|| execute_blocking(command, timeout, input))
+}
+
+fn execute_blocking(
     mut command: Command,
     timeout: Duration,
     input: Option<Vec<u8>>,

@@ -2,6 +2,7 @@
 //!
 //! @see CONTRACTS.md
 
+mod blocking;
 mod commands;
 mod dump;
 mod git;

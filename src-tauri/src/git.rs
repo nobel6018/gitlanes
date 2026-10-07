@@ -50,9 +50,9 @@ where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
 {
-    let output = base_command(repo)
-        .args(args)
-        .output()
+    let mut command = base_command(repo);
+    command.args(args);
+    let output = crate::blocking::wait(|| command.output())
         .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
 
     if !output.status.success() {
@@ -75,9 +75,9 @@ where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
 {
-    let output = base_command(repo)
-        .args(args)
-        .output()
+    let mut command = base_command(repo);
+    command.args(args);
+    let output = crate::blocking::wait(|| command.output())
         .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
 
     if !output.status.success() && output.status.code() != Some(1) {
@@ -127,6 +127,21 @@ pub enum Flow {
 /// `on_record`가 [`Flow::Stop`]을 돌려주면 파이프를 닫고 프로세스를 kill + wait 해서
 /// 좀비를 남기지 않는다.
 pub fn stream_records<P, S, F>(
+    repo: P,
+    args: &[S],
+    separator: u8,
+    on_record: F,
+) -> Result<(), String>
+where
+    P: AsRef<OsStr>,
+    S: AsRef<OsStr>,
+    F: FnMut(&str) -> Flow,
+{
+    // 읽기 루프 전체가 git 출력을 기다리는 구간이다
+    crate::blocking::wait(|| stream_blocking(repo, args, separator, on_record))
+}
+
+fn stream_blocking<P, S, F>(
     repo: P,
     args: &[S],
     separator: u8,
@@ -218,20 +233,23 @@ where
         return commands.iter().map(|args| run(&repo, args)).collect();
     }
 
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = commands
-            .iter()
-            .map(|args| scope.spawn(|| run(&repo, args)))
-            .collect();
+    // 각 호출은 scope가 띄운 스레드(런타임 밖)에서 돈다. 기다리는 쪽은 이 스레드라 여기를 감싼다
+    crate::blocking::wait(|| {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = commands
+                .iter()
+                .map(|args| scope.spawn(|| run(&repo, args)))
+                .collect();
 
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err("git 호출 중 내부 오류가 발생했습니다".to_string()))
-            })
-            .collect()
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err("git 호출 중 내부 오류가 발생했습니다".to_string()))
+                })
+                .collect()
+        })
     })
 }
 

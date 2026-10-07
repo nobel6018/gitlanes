@@ -155,21 +155,24 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
 
     // 다섯 호출은 서로 값을 주고받지 않아 동시에 돌린다. log는 읽으면서 바로 파싱해
     // git 실행 시간과 파싱 시간을 겹친다. 벽시계는 가장 무거운 log가 결정한다.
-    let (log_result, outputs) = std::thread::scope(|scope| {
-        let log = scope.spawn(|| stream_commits(&path, &log_args, want));
-        let outputs = git::run_all(
-            &path,
-            &[
-                &REF_ARGS[..],
-                &HEAD_ARGS[..],
-                &STATUS_ARGS[..],
-                &stash_args[..],
-            ],
-        );
-        let log_result = log
-            .join()
-            .unwrap_or_else(|_| Err("커밋 목록을 읽는 중 내부 오류가 발생했습니다".to_string()));
-        (log_result, outputs)
+    // log는 scope가 띄운 스레드에서 돌고 이 스레드는 join에서 기다린다. 그 기다림도 워커를 내놓는다
+    let (log_result, outputs) = crate::blocking::wait(|| {
+        std::thread::scope(|scope| {
+            let log = scope.spawn(|| stream_commits(&path, &log_args, want));
+            let outputs = git::run_all(
+                &path,
+                &[
+                    &REF_ARGS[..],
+                    &HEAD_ARGS[..],
+                    &STATUS_ARGS[..],
+                    &stash_args[..],
+                ],
+            );
+            let log_result = log.join().unwrap_or_else(|_| {
+                Err("커밋 목록을 읽는 중 내부 오류가 발생했습니다".to_string())
+            });
+            (log_result, outputs)
+        })
     });
 
     let [ref_out, head_out, status_out, stash_out] =
