@@ -22,6 +22,11 @@ fn base_command<P: AsRef<OsStr>>(repo: P) -> Command {
     cmd.env_remove("GIT_WORK_TREE");
     cmd.env_remove("GIT_INDEX_FILE");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // 경로 인자는 glob이 아니라 리터럴이다. `pages/[id].tsx`의 diff를 읽는데 glob으로 풀리면
+    // `pages/i.tsx`까지 섞인 diff가 나오고, 프론트는 그걸 한 파일 diff로 알고 패치를 만든다.
+    // 읽기 경로는 훅을 돌리지 않아 쓰기 쪽(ops/run.rs)과 달리 예외 없이 건다.
+    // 이 모듈에 pathspec magic(`:(top)`, `*.rs`)을 일부러 쓰는 호출은 없다(v0.15.1 전수 확인).
+    cmd.env("GIT_LITERAL_PATHSPECS", "1");
     cmd
 }
 

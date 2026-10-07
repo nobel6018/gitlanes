@@ -128,6 +128,34 @@ mod tests {
             .unwrap()
     }
 
+    /// pathspec 리터럴 처리가 사용자 훅까지 새어 들어가지 않는지 본다.
+    /// 훅 안의 glob은 사용자가 터미널에서 커밋할 때와 똑같이 풀려야 한다.
+    #[cfg(unix)]
+    #[test]
+    fn pre_commit_훅의_glob은_평소대로_풀린다() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = based("gitlanes-commit-hook");
+        let seen = format!("{}/.git/hook-seen", repo.path());
+        let hook = format!("{}/.git/hooks/pre-commit", repo.path());
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\ngit diff --cached --name-only -- '*.txt' > '{seen}'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        repo.write("a.txt", "2\n");
+        repo.git(&["add", "-A"]);
+        let result = git_commit(repo.path(), options("훅 확인")).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap().trim(),
+            "a.txt",
+            "훅의 '*.txt'가 리터럴로 해석돼 아무것도 못 찾았다"
+        );
+    }
+
     #[test]
     fn 스테이지된_변경을_커밋한다() {
         let repo = based("gitlanes-commit");

@@ -419,6 +419,72 @@ mod tests {
         assert!(exists(&repo, "keep.txt"));
     }
 
+    /// glob 문자가 든 이름의 추적 파일과, 그 glob에 걸리는 다른 추적 파일이 함께 있는 저장소.
+    fn glob_names() -> TempRepo {
+        let repo = TempRepo::init("gitlanes-literal");
+        repo.write("data[1].csv", "base\n");
+        repo.write("data1.csv", "base\n");
+        repo.write("pages/[id].tsx", "base\n");
+        repo.write("pages/i.tsx", "base\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        for name in ["data[1].csv", "data1.csv", "pages/[id].tsx", "pages/i.tsx"] {
+            repo.write(name, "changed\n");
+        }
+        repo
+    }
+
+    #[test]
+    fn discard는_대괄호_이름을_glob으로_풀지_않는다() {
+        let repo = glob_names();
+
+        let result = git_discard(
+            repo.path(),
+            vec!["data[1].csv".to_string()],
+            "worktree".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(read(&repo, "data[1].csv"), "base\n");
+        assert_eq!(
+            read(&repo, "data1.csv"),
+            "changed\n",
+            "glob [1]에 걸린 data1.csv의 수정이 사라졌다"
+        );
+    }
+
+    #[test]
+    fn clean은_별표_이름을_glob으로_풀지_않는다() {
+        let repo = TempRepo::init("gitlanes-literal-clean");
+        repo.write("base.txt", "base\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("note*", "지울 파일\n");
+        repo.write("note_draft.txt", "남겨야 할 초안\n");
+
+        let result = git_discard(repo.path(), vec!["note*".to_string()], "all".to_string()).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(!exists(&repo, "note*"));
+        assert!(
+            exists(&repo, "note_draft.txt"),
+            "glob note*에 걸린 untracked 파일이 지워졌다(복구 불가)"
+        );
+
+        repo.write("note*", "다시\n");
+        let cleaned = git_clean(repo.path(), vec!["note*".to_string()]).unwrap();
+        assert!(cleaned.ok, "{cleaned:?}");
+        assert!(exists(&repo, "note_draft.txt"));
+    }
+
+    #[test]
+    fn stage는_대괄호_이름을_glob으로_풀지_않는다() {
+        let repo = glob_names();
+
+        let result = git_stage(repo.path(), vec!["pages/[id].tsx".to_string()]).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(staged_files(&repo), ["pages/[id].tsx"]);
+    }
+
     /// 파일 두 군데를 고친 뒤 한 hunk만 스테이지한다. hunk 단위 스테이징의 핵심 시나리오다.
     #[test]
     fn apply_patch는_고른_hunk만_인덱스에_올린다() {

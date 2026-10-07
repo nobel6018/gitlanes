@@ -1769,6 +1769,29 @@ mod integration_tests {
     }
 
     #[test]
+    fn wip_diff는_대괄호_이름을_glob으로_풀지_않는다() {
+        let repo = TempRepo::init("gitlanes-wip-literal");
+        repo.write("pages/[id].tsx", "base\n");
+        repo.write("pages/i.tsx", "base\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("pages/[id].tsx", "id 수정\n");
+        repo.write("pages/i.tsx", "i 수정\n");
+
+        let diff = get_wip_file_diff(
+            repo.path(),
+            "pages/[id].tsx".to_string(),
+            "unstaged".to_string(),
+        )
+        .unwrap();
+        assert!(diff.contains("+id 수정"), "{diff}");
+        assert!(
+            !diff.contains("pages/i.tsx"),
+            "다른 파일의 diff가 섞였다. 프론트는 이걸 한 파일 diff로 알고 패치를 만든다:\n{diff}"
+        );
+    }
+
+    #[test]
     fn 알_수_없는_area는_거부한다() {
         let repo = wip_fixture();
         assert!(get_wip_file_diff(repo.path(), "keep.txt".to_string(), "".to_string()).is_err());
