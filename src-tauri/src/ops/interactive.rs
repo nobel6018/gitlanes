@@ -735,6 +735,136 @@ mod tests {
         assert_eq!(subjects(&repo), ["two", "one", "three"]);
     }
 
+    /// stacked 위에서 base에서 갈라진 side 브랜치에 커밋 하나를 만들고 main으로 돌아온다.
+    fn with_side(prefix: &str) -> TempRepo {
+        let repo = stacked(prefix);
+        repo.git(&["checkout", "-qb", "side", "base"]);
+        repo.write("side.txt", "side\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "side"]);
+        repo.git(&["checkout", "-q", "main"]);
+        repo
+    }
+
+    #[test]
+    fn 에디터_목록은_오래된_커밋부터_pick으로_나온다() {
+        let repo = stacked("gitlanes-steps-order");
+        let (one, two, three) = (repo.rev("HEAD~2"), repo.rev("HEAD~1"), repo.rev("HEAD"));
+
+        let steps = get_rebase_steps(repo.path(), "base".to_string()).unwrap();
+        assert_eq!(
+            steps,
+            vec![
+                RebaseStep {
+                    sha: one,
+                    action: "pick".to_string(),
+                    subject: "one".to_string(),
+                    message: None,
+                },
+                RebaseStep {
+                    sha: two,
+                    action: "pick".to_string(),
+                    subject: "two".to_string(),
+                    message: None,
+                },
+                RebaseStep {
+                    sha: three,
+                    action: "pick".to_string(),
+                    subject: "three".to_string(),
+                    message: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn 에디터_목록에_다른_브랜치_커밋이_섞이지_않는다() {
+        // side 커밋이 가장 최근이라 그래프에서는 main 커밋들 사이에 끼어 보인다
+        let repo = with_side("gitlanes-steps-foreign");
+        let side = repo.rev("side");
+
+        let steps = get_rebase_steps(repo.path(), "base".to_string()).unwrap();
+        let subjects: Vec<&str> = steps.iter().map(|step| step.subject.as_str()).collect();
+        assert_eq!(subjects, ["one", "two", "three"]);
+        assert!(steps.iter().all(|step| step.sha != side), "{steps:?}");
+    }
+
+    #[test]
+    fn 제목이_빈_커밋도_에디터_목록에서_빠지지_않는다() {
+        let repo = stacked("gitlanes-steps-empty-subject");
+        repo.git(&[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "--allow-empty-message",
+            "-m",
+            "",
+        ]);
+        let empty = repo.rev("HEAD");
+
+        let steps = get_rebase_steps(repo.path(), "base".to_string()).unwrap();
+        assert_eq!(steps.len(), 4, "{steps:?}");
+        assert_eq!(steps[3].sha, empty);
+        assert_eq!(steps[3].subject, "");
+    }
+
+    #[test]
+    fn 조상이_아닌_base는_에디터_목록을_거절한다() {
+        let repo = with_side("gitlanes-steps-not-ancestor");
+
+        let error =
+            get_rebase_steps(repo.path(), "side".to_string()).expect_err("side는 조상이 아니다");
+        assert!(error.contains("not an ancestor"), "{error}");
+    }
+
+    #[test]
+    fn 머지가_있는_범위는_에디터_목록을_거절한다() {
+        let repo = with_side("gitlanes-steps-merge");
+        repo.git(&["merge", "-q", "--no-ff", "--no-edit", "side"]);
+
+        let error = get_rebase_steps(repo.path(), "base".to_string()).expect_err("머지가 있다");
+        assert!(error.contains("merge commits"), "{error}");
+    }
+
+    #[test]
+    fn 에디터_목록을_그대로_실행하면_성공한다() {
+        let repo = with_side("gitlanes-steps-roundtrip");
+
+        let steps = get_rebase_steps(repo.path(), "base".to_string()).unwrap();
+        let result = git_rebase_interactive(repo.path(), "base".to_string(), steps).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(subjects(&repo), ["three", "two", "one"]);
+        assert_eq!(crate::ops::sync::detect_pending(&repo.path()), None);
+    }
+
+    #[test]
+    fn 에디터_목록을_뒤집어_실행해도_검증을_통과한다() {
+        let repo = stacked("gitlanes-steps-roundtrip-reversed");
+
+        let mut steps = get_rebase_steps(repo.path(), "base".to_string()).unwrap();
+        steps.reverse();
+        let result = git_rebase_interactive(repo.path(), "base".to_string(), steps).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(subjects(&repo), ["one", "two", "three"]);
+    }
+
+    #[test]
+    fn 조상이_아닌_base로는_인터랙티브_리베이스를_시작하지_않는다() {
+        // 목록과 같은 기준이다. 목록이 거절하는 base를 실행 쪽이 받아 주면 안 된다
+        let repo = with_side("gitlanes-irebase-not-ancestor");
+        let head = repo.rev("HEAD");
+        let one = repo.rev("HEAD~2");
+
+        let result = git_rebase_interactive(
+            repo.path(),
+            "side".to_string(),
+            vec![step(&one, "pick", None)],
+        );
+        let error = result.expect_err("side는 조상이 아니다");
+        assert!(error.contains("not an ancestor"), "{error}");
+        assert_eq!(repo.rev("HEAD"), head);
+    }
+
     #[test]
     fn 워킹트리가_더러워도_autostash로_시작하고_되돌려_놓는다() {
         let repo = stacked("gitlanes-irebase-autostash");
