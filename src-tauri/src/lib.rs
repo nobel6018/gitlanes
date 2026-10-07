@@ -144,6 +144,9 @@ pub fn run() {
         // 패치
         ops::stage::git_create_patch,
         ops::stage::git_apply_patch_file,
+        // 되돌리기
+        ops::undo::get_ref_snapshot,
+        ops::undo::git_undo,
     ]);
 
     // RunEvent를 받으려면 build + run으로 나눠야 한다. 앱이 닫힐 때 남은 셸을 죽인다.

@@ -31,6 +31,7 @@ pub mod stage;
 pub mod stash;
 pub mod sync;
 pub mod tag;
+pub mod undo;
 pub mod worktree;
 
 // invoke_handler는 `ops::network::git_fetch`처럼 모듈 경로까지 적어 참조한다.
