@@ -5,9 +5,27 @@
 //! @see CONTRACTS.md
 
 use std::ffi::OsStr;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, OnceLock};
+use std::time::{Duration, Instant};
+
+use crate::ops::run::{self as runner, RawOutcome};
+
+/// 읽기 git 한 번의 상한. 넘으면 프로세스 그룹을 죽이고 Err를 돌려준다.
+///
+/// 상한이 없으면 멈춘 git(잠긴 NFS, 응답 없는 fsmonitor 훅, credential helper 등)이 블로킹
+/// 스레드와 그 IPC 응답을 영원히 붙든다. 4만 커밋 저장소에서 가장 무거운 읽기(load_graph의
+/// 보조 호출, status)가 1초 안쪽이라(handoff-v16-exec.md 실측) 60초는 멈춘 경우만 걸린다.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// stdout EOF 뒤 종료를 확인하는 간격. EOF면 git은 거의 끝났으므로 짧게 둔다.
+const EXIT_POLL: Duration = Duration::from_millis(1);
+
+/// 스트리밍 읽기(전체 히스토리 검색, 그래프 log)의 상한. 히스토리 전체를 훑는 검색이
+/// 가장 길어서 일반 읽기보다 넉넉히 둔다.
+pub const STREAM_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// `core.quotepath=false`로 비ASCII 경로가 이스케이프되지 않게 한다.
 /// `GIT_OPTIONAL_LOCKS=0`은 읽기 전용 뷰어가 인덱스 잠금을 건드리지 않게 한다.
@@ -50,20 +68,59 @@ where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
 {
+    run_bytes_within(repo, args, READ_TIMEOUT)
+}
+
+fn run_bytes_within<P, S>(repo: P, args: &[S], timeout: Duration) -> Result<Vec<u8>, String>
+where
+    P: AsRef<OsStr>,
+    S: AsRef<OsStr>,
+{
+    let output = capture(repo, args, timeout)?;
+    if output.code != Some(0) {
+        return Err(failure_message(&output.stderr));
+    }
+    Ok(output.stdout)
+}
+
+/// 읽기 git 하나를 상한과 함께 실행한다. 타임아웃은 여기서 Err로 바꾼다.
+fn capture<P, S>(repo: P, args: &[S], timeout: Duration) -> Result<RawOutcome, String>
+where
+    P: AsRef<OsStr>,
+    S: AsRef<OsStr>,
+{
     let mut command = base_command(repo);
     command.args(args);
-    let output = crate::blocking::wait(|| command.output())
-        .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
-            return Err("git 명령이 실패했습니다".to_string());
-        }
-        return Err(stderr);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let output = runner::capture(command, timeout, None)?;
+    if output.timed_out {
+        return Err(timeout_message(args, timeout));
     }
+    Ok(output)
+}
 
-    Ok(output.stdout)
+fn failure_message(stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    if stderr.is_empty() {
+        "git 명령이 실패했습니다".to_string()
+    } else {
+        stderr
+    }
+}
+
+/// 사람이 읽을 타임아웃 오류. 인자 전체는 `--format=...`처럼 길어서 하위 명령만 보인다.
+fn timeout_message<S: AsRef<OsStr>>(args: &[S], timeout: Duration) -> String {
+    let verb = args
+        .iter()
+        .map(|arg| arg.as_ref().to_string_lossy())
+        .find(|arg| !arg.starts_with('-'))
+        .unwrap_or_default();
+    format!(
+        "git {verb} 명령이 {}초 안에 끝나지 않아 중단했습니다. 저장소가 매우 크거나 git이 응답하지 않습니다",
+        timeout.as_secs()
+    )
 }
 
 /// git을 실행해 stdout을 돌려주되, 종료 코드 1을 성공으로 본다.
@@ -75,19 +132,10 @@ where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
 {
-    let mut command = base_command(repo);
-    command.args(args);
-    let output = crate::blocking::wait(|| command.output())
-        .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
-
-    if !output.status.success() && output.status.code() != Some(1) {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
-            return Err("git 명령이 실패했습니다".to_string());
-        }
-        return Err(stderr);
+    let output = capture(repo, args, READ_TIMEOUT)?;
+    if !matches!(output.code, Some(0 | 1)) {
+        return Err(failure_message(&output.stderr));
     }
-
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -137,14 +185,70 @@ where
     S: AsRef<OsStr>,
     F: FnMut(&str) -> Flow,
 {
+    stream_records_within(repo, args, separator, STREAM_TIMEOUT, on_record)
+}
+
+fn stream_records_within<P, S, F>(
+    repo: P,
+    args: &[S],
+    separator: u8,
+    timeout: Duration,
+    on_record: F,
+) -> Result<(), String>
+where
+    P: AsRef<OsStr>,
+    S: AsRef<OsStr>,
+    F: FnMut(&str) -> Flow,
+{
     // 읽기 루프 전체가 git 출력을 기다리는 구간이다
-    crate::blocking::wait(|| stream_blocking(repo, args, separator, on_record))
+    crate::blocking::wait(|| stream_blocking(repo, args, separator, timeout, on_record))
+}
+
+/// 상한이 지나면 프로세스 그룹을 죽이는 감시 스레드.
+///
+/// 읽기 루프는 `read_until`에서 막혀 있어 스스로 시계를 볼 수 없다. 감시자가 그룹을 죽이면
+/// 파이프가 닫혀 루프가 EOF를 보고 빠져나온다. [`Watchdog::stop`]은 자식을 `wait`로
+/// 거두기 **전에** 불러야 한다. 거둔 뒤에는 pid가 재사용될 수 있어 엉뚱한 그룹을 죽인다.
+struct Watchdog {
+    cancel: Option<mpsc::Sender<()>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    fired: Arc<AtomicBool>,
+}
+
+impl Watchdog {
+    fn start(pid: u32, timeout: Duration) -> Self {
+        let (cancel, cancelled) = mpsc::channel::<()>();
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fired);
+        let handle = std::thread::spawn(move || {
+            // 송신자가 drop되면 Disconnected로 깨어나 아무것도 하지 않는다
+            if let Err(mpsc::RecvTimeoutError::Timeout) = cancelled.recv_timeout(timeout) {
+                flag.store(true, Ordering::SeqCst);
+                runner::kill_group(pid);
+            }
+        });
+        Self {
+            cancel: Some(cancel),
+            handle: Some(handle),
+            fired,
+        }
+    }
+
+    /// 감시를 끝내고, 그사이 상한이 지나 그룹을 죽였는지 돌려준다.
+    fn stop(&mut self) -> bool {
+        drop(self.cancel.take());
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        self.fired.load(Ordering::SeqCst)
+    }
 }
 
 fn stream_blocking<P, S, F>(
     repo: P,
     args: &[S],
     separator: u8,
+    timeout: Duration,
     mut on_record: F,
 ) -> Result<(), String>
 where
@@ -152,26 +256,44 @@ where
     S: AsRef<OsStr>,
     F: FnMut(&str) -> Flow,
 {
-    let mut child = base_command(repo)
+    let mut command = base_command(repo);
+    command
         .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    runner::isolate_group(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "git 출력을 열지 못했습니다".to_string())?;
+    let deadline = Instant::now() + timeout;
+    let mut watchdog = Watchdog::start(child.id(), timeout);
+    // stderr를 stdout 다 읽은 뒤에 읽으면, git이 stderr에 64KB 넘게 쓰는 순간 서로를 기다린다
+    let stderr = child.stderr.take();
+    let err_reader = std::thread::spawn(move || runner::drain(stderr));
+
+    let Some(stdout) = child.stdout.take() else {
+        watchdog.stop();
+        runner::kill_group(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("git 출력을 열지 못했습니다".to_string());
+    };
     let mut reader = BufReader::new(stdout);
     let mut record = Vec::new();
     let mut stopped_early = false;
+    let mut read_error = None;
 
     loop {
         record.clear();
-        let read = reader
-            .read_until(separator, &mut record)
-            .map_err(|e| format!("git 출력을 읽지 못했습니다: {e}"))?;
+        let read = match reader.read_until(separator, &mut record) {
+            Ok(read) => read,
+            Err(error) => {
+                read_error = Some(format!("git 출력을 읽지 못했습니다: {error}"));
+                break;
+            }
+        };
         if read == 0 {
             break;
         }
@@ -191,30 +313,40 @@ where
     }
 
     drop(reader);
+    let timed_out = watchdog.stop();
 
-    if stopped_early {
+    if stopped_early || read_error.is_some() || timed_out {
         // 파이프를 닫으면 대개 SIGPIPE로 끝나지만, 확실히 정리하고 회수한다
+        runner::kill_group(child.id());
         let _ = child.kill();
         let _ = child.wait();
-        return Ok(());
+        // 그룹 밖으로 빠져나간 손자가 stderr를 쥐고 있을 수 있어 기다리는 시간을 자른다
+        runner::join_within(err_reader, Instant::now() + runner::READER_GRACE);
+        if timed_out {
+            return Err(timeout_message(args, timeout));
+        }
+        return read_error.map_or(Ok(()), Err);
     }
 
-    // stdout을 EOF까지 읽은 뒤라 stderr를 마저 읽어도 막히지 않는다
-    let mut errors = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut errors);
-    }
-    let status = child
-        .wait()
-        .map_err(|e| format!("git 종료를 기다리지 못했습니다: {e}"))?;
+    // stdout을 닫고도 끝나지 않는 git이 있을 수 있다. 감시자는 이미 멈췄으니 남은 시간만큼만 기다린다
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(EXIT_POLL),
+            Ok(None) => {
+                runner::kill_group(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(timeout_message(args, timeout));
+            }
+            Err(e) => return Err(format!("git 종료를 기다리지 못했습니다: {e}")),
+        }
+    };
+    let errors =
+        runner::join_within(err_reader, Instant::now() + runner::READER_GRACE).unwrap_or_default();
 
     if !status.success() {
-        let errors = errors.trim();
-        return Err(if errors.is_empty() {
-            "git 명령이 실패했습니다".to_string()
-        } else {
-            errors.to_string()
-        });
+        return Err(failure_message(&errors));
     }
     Ok(())
 }
@@ -257,6 +389,7 @@ where
 mod tests {
     use super::*;
     use crate::testrepo::TempRepo;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn 저장소가_아닌_경로는_git_stderr를_그대로_전달한다() {
@@ -380,6 +513,93 @@ mod tests {
         assert_eq!(parse_version("hub version 2.14"), None);
         assert_eq!(parse_version("git version x"), None);
         assert!(version().is_some(), "테스트 환경의 git 버전을 읽지 못했다");
+    }
+
+    /// 셸 alias로 멈춘 git을 흉내 낸다. sleep의 pid를 남겨 그룹 kill로 죽었는지 확인한다.
+    #[cfg(unix)]
+    fn stuck_repo(prefix: &str) -> (TempRepo, std::path::PathBuf) {
+        let repo = TempRepo::linear(prefix, 1);
+        let mark = std::path::PathBuf::from(repo.path())
+            .join(".git")
+            .join("stuck.pid");
+        // pid를 먼저 남기고 exec한다. 부하가 큰 기계에서는 셸이 상한 안에 다음 줄까지 못 갈 수 있다
+        let alias = format!("!echo $$ > '{}'; exec sleep 30", mark.display());
+        repo.git(&["config", "alias.stuck", alias.as_str()]);
+        (repo, mark)
+    }
+
+    #[cfg(unix)]
+    fn assert_sleeper_dead(mark: &std::path::Path) {
+        let pid: i32 = std::fs::read_to_string(mark)
+            .unwrap_or_else(|e| panic!("alias가 pid를 남기지 못했다: {e}"))
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        // SAFETY: 시그널 0은 존재 확인만 한다
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "alias의 sleep {pid}가 살아 있다");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 멈춘_읽기_git은_상한에서_그룹째_죽이고_사람이_읽을_오류를_준다() {
+        let (repo, mark) = stuck_repo("gl-read-timeout");
+        let started = Instant::now();
+        let err = run_bytes_within(repo.path(), &["stuck"], Duration::from_secs(3)).unwrap_err();
+
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "상한 3초인데 {:?} 걸렸다",
+            started.elapsed()
+        );
+        assert!(
+            err.contains("git stuck 명령이 3초 안에 끝나지 않아"),
+            "{err}"
+        );
+        assert_sleeper_dead(&mark);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 멈춘_스트리밍_git도_상한에서_그룹째_죽인다() {
+        let (repo, mark) = stuck_repo("gl-stream-timeout");
+        let started = Instant::now();
+        let err = stream_records_within(
+            repo.path(),
+            &["stuck"],
+            0x1e,
+            Duration::from_secs(3),
+            |_| Flow::Continue,
+        )
+        .unwrap_err();
+
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "상한 3초인데 {:?} 걸렸다",
+            started.elapsed()
+        );
+        assert!(err.contains("3초 안에 끝나지 않아"), "{err}");
+        assert_sleeper_dead(&mark);
+    }
+
+    #[test]
+    fn 실행기를_바꿔도_읽기_결과는_그대로다() {
+        let repo = TempRepo::linear("gl-read-same", 3);
+        // 종료 코드 1을 성공으로 보는 diff --no-index
+        repo.write("x.txt", "a\n");
+        repo.write("y.txt", "b\n");
+        let diff =
+            run_allow_diff(repo.path(), &["diff", "--no-index", "--", "x.txt", "y.txt"]).unwrap();
+        assert!(diff.contains("-a") && diff.contains("+b"), "{diff}");
+        // 실패는 stderr가 오류가 된다
+        let err = run(repo.path(), &["rev-parse", "--verify", "nope"]).unwrap_err();
+        assert!(err.contains("fatal"), "{err}");
+        // 바이트 그대로 돌려준다
+        let count = run(repo.path(), &["rev-list", "--count", "HEAD"]).unwrap();
+        assert_eq!(count.trim(), "3");
     }
 
     #[test]

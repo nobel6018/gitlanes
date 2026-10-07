@@ -35,10 +35,14 @@ pub const LOCAL_TIMEOUT: Duration = Duration::from_secs(60);
 ///
 /// 남은 파이프 버퍼를 비우는 데는 밀리초면 충분하다. 이보다 오래 걸린다면 그룹 밖의
 /// 프로세스가 파이프를 쥐고 있다는 뜻이고, 기다려도 끝난다는 보장이 없다.
-const READER_GRACE: Duration = Duration::from_secs(2);
+pub const READER_GRACE: Duration = Duration::from_secs(2);
 
-/// 종료를 기다리는 폴링 간격. 사람이 못 느끼는 지연이면서 폴링 비용도 없는 값.
+/// 종료를 기다리는 폴링 간격의 상한. 사람이 못 느끼는 지연이면서 폴링 비용도 없는 값.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// 폴링 첫 간격. 읽기 경로의 git은 대부분 수 ms 안에 끝난다. 처음부터 20ms를 자면
+/// `rev-parse` 하나가 20ms가 된다. 1ms에서 시작해 두 배씩 늘려 [`POLL_INTERVAL`]에서 멈춘다.
+const FIRST_POLL: Duration = Duration::from_millis(1);
 
 /// stdout/stderr에서 보관할 줄 수. 프론트가 토스트에 그대로 뿌리므로 상한이 필요하다.
 const MAX_OUTPUT_LINES: usize = 200;
@@ -81,6 +85,16 @@ const AUTH_MARKERS_403: [&str; 2] = ["returned error: 403", "403 forbidden"];
 /// "터미널에서 실행"이 뜨는데, 터미널에서도 똑같이 실패한다.
 /// 원격 브랜치 삭제와 태그 push는 `push`로 나간다.
 const NETWORK_VERBS: [&str; 4] = ["fetch", "pull", "push", "ls-remote"];
+
+/// 바이트 그대로의 실행 결과. 읽기 경로(`git::run_bytes`)는 lossy 변환 전 바이트가 필요하다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawOutcome {
+    /// 시그널로 죽으면 None
+    pub code: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub timed_out: bool,
+}
 
 /// 실행 결과 원본. [`finish`]가 이걸 [`OpResult`]로 바꾼다.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,24 +263,48 @@ pub fn execute_with_input(
     timeout: Duration,
     input: Option<Vec<u8>>,
 ) -> Result<Outcome, String> {
+    let raw = capture(command, timeout, input)?;
+    Ok(Outcome {
+        code: raw.code,
+        stdout: String::from_utf8_lossy(&raw.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&raw.stderr).into_owned(),
+        timed_out: raw.timed_out,
+    })
+}
+
+/// [`execute_with_input`]의 바이트 버전. 읽기 경로(`git.rs`)도 이 실행기를 쓴다.
+/// 멈춘 git(잠긴 NFS, fsmonitor 훅 등)이 블로킹 스레드를 영원히 붙잡지 않게 하는 장치가
+/// 쓰기와 읽기에서 같아야 해서다.
+pub fn capture(
+    command: Command,
+    timeout: Duration,
+    input: Option<Vec<u8>>,
+) -> Result<RawOutcome, String> {
     // spawn부터 리더 join까지 전부 기다리는 구간이다. 최대 120초 + 2초 동안 워커를 내놓는다
     crate::blocking::wait(|| execute_blocking(command, timeout, input))
 }
 
-fn execute_blocking(
-    mut command: Command,
-    timeout: Duration,
-    input: Option<Vec<u8>>,
-) -> Result<Outcome, String> {
-    if input.is_some() {
-        command.stdin(Stdio::piped());
-    }
+/// 자식을 새 프로세스 그룹으로 띄우게 한다. 타임아웃 때 [`kill_group`]이 그룹 전체를 죽인다.
+pub fn isolate_group(command: &mut Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         // 0이면 자식 pid가 곧 새 그룹 id다. 앱의 그룹과 떨어지니 killpg가 앱을 건드리지 않는다.
         command.process_group(0);
     }
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+fn execute_blocking(
+    mut command: Command,
+    timeout: Duration,
+    input: Option<Vec<u8>>,
+) -> Result<RawOutcome, String> {
+    if input.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    isolate_group(&mut command);
 
     let mut child = command
         .spawn()
@@ -291,6 +329,7 @@ fn execute_blocking(
 
     let deadline = Instant::now() + timeout;
     let mut status = None;
+    let mut pause = FIRST_POLL;
     loop {
         match child.try_wait() {
             Ok(Some(done)) => {
@@ -306,7 +345,8 @@ fn execute_blocking(
         if Instant::now() >= deadline {
             break;
         }
-        std::thread::sleep(POLL_INTERVAL);
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(POLL_INTERVAL);
     }
 
     let timed_out = status.is_none();
@@ -319,7 +359,7 @@ fn execute_blocking(
     // 어느 쪽이든 git의 출력은 이미 다 나왔으니 기다리는 시간만 자른다.
     let joined = Instant::now() + READER_GRACE;
     join_within(in_writer, joined);
-    Ok(Outcome {
+    Ok(RawOutcome {
         code: status.and_then(|status| status.code()),
         stdout: join_within(out_reader, joined).unwrap_or_default(),
         stderr: join_within(err_reader, joined).unwrap_or_default(),
@@ -333,25 +373,30 @@ fn execute_blocking(
 /// 거두지 않은 자식은 끝났더라도 좀비로 남아 pid와 그룹 id를 붙들고 있다.
 /// `setsid`로 그룹을 빠져나간 프로세스(ssh ControlPersist 마스터 등)는 여기서 못 죽인다.
 /// 그 경우는 [`join_within`]의 상한이 반환을 보장한다.
-#[cfg(unix)]
 fn kill_tree(child: &mut std::process::Child) {
-    if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
-        // SAFETY: 인자는 정수뿐이고, 실패(ESRCH 등)는 반환값으로만 알린다.
-        unsafe {
-            libc::killpg(pgid, libc::SIGKILL);
-        }
-    }
+    kill_group(child.id());
     // killpg가 실패해도 git 자신은 확실히 죽인다
     let _ = child.kill();
     let _ = child.wait();
 }
 
-/// Windows는 정식 지원 전이라 git만 죽이는 기존 동작을 유지한다.
-#[cfg(not(unix))]
-fn kill_tree(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+/// [`isolate_group`]으로 띄운 자식의 그룹 전체에 SIGKILL을 보낸다.
+///
+/// 호출자는 그 자식을 아직 `wait`로 거두지 않았어야 한다. 거두기 전에는 좀비가 pid와
+/// 그룹 id를 붙들고 있어 엉뚱한 그룹을 죽일 일이 없다.
+#[cfg(unix)]
+pub fn kill_group(pid: u32) {
+    if let Ok(pgid) = libc::pid_t::try_from(pid) {
+        // SAFETY: 인자는 정수뿐이고, 실패(ESRCH 등)는 반환값으로만 알린다.
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
 }
+
+/// Windows는 정식 지원 전이라 그룹을 죽이지 않는다. [`kill_tree`]가 git만 죽인다.
+#[cfg(not(unix))]
+pub fn kill_group(_pid: u32) {}
 
 /// 스레드가 `deadline` 안에 끝나면 결과를, 아니면 None을 준다.
 ///
@@ -361,24 +406,26 @@ fn kill_tree(child: &mut std::process::Child) {
 /// 끝난다. 그때까지 남는 것은 스레드 스택 하나와 그동안 읽은 출력뿐이고, 그 writer가 영원히
 /// 살아 있지 않는 한 새는 것은 없다. 타임아웃이 날 때마다 쌓일 수 있지만 그룹 kill이 대부분을
 /// 정리하므로 실제로 남는 경우는 드물다.
-fn join_within<T>(handle: std::thread::JoinHandle<T>, deadline: Instant) -> Option<T> {
+pub fn join_within<T>(handle: std::thread::JoinHandle<T>, deadline: Instant) -> Option<T> {
+    let mut pause = FIRST_POLL;
     while !handle.is_finished() {
         if Instant::now() >= deadline {
             return None;
         }
-        std::thread::sleep(POLL_INTERVAL);
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(POLL_INTERVAL);
     }
     handle.join().ok()
 }
 
-/// 파이프를 끝까지 읽는다. 임의 인코딩이 올 수 있어 lossy 변환을 쓴다.
-fn drain<R: Read>(source: Option<R>) -> String {
+/// 파이프를 끝까지 읽는다. 문자열 변환은 호출자 몫이다(임의 인코딩이 올 수 있다).
+pub fn drain<R: Read>(source: Option<R>) -> Vec<u8> {
     let Some(mut source) = source else {
-        return String::new();
+        return Vec::new();
     };
     let mut buffer = Vec::new();
     let _ = source.read_to_end(&mut buffer);
-    String::from_utf8_lossy(&buffer).into_owned()
+    buffer
 }
 
 /// git 쓰기 명령 하나를 실행하고 결과를 [`OpResult`]로 돌려준다.
