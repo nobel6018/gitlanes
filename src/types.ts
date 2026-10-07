@@ -488,3 +488,73 @@ export interface UndoEntry {
 //   - checkout: before.headRef(없으면 before.headSha)로 checkout. 워킹트리가 막으면 git이 거절한다
 //   - createBranch/deleteBranch/renameBranch/createTag/deleteTag: update-ref로 before 상태 복원
 //   - reset: before.headSha로 같은 모드 reset. hard는 워킹트리가 깨끗할 때만(아니면 ok=false)
+
+// ════════════════════════════════════════════════════════════
+// v0.18 파일 히스토리, blame, 비교 (전부 읽기 전용)
+// ════════════════════════════════════════════════════════════
+
+/** 비교 결과와 파일 히스토리에 쓰는 커밋 요약 */
+export interface CommitSummary {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  /** unix seconds */
+  timestamp: number;
+}
+
+/** get_file_history의 한 항목. `--follow`로 rename을 따라간다 */
+export interface FileHistoryEntry extends CommitSummary {
+  authorEmail: string;
+  /** 이 커밋 시점의 경로 */
+  path: string;
+  /** 이 커밋에서 rename됐으면 원래 경로, 아니면 null */
+  oldPath: string | null;
+  status: FileStatus;
+}
+
+/** blame의 연속 구간. 같은 커밋이 이어지는 줄을 하나로 묶는다 */
+export interface BlameHunk {
+  sha: string;
+  shortSha: string;
+  author: string;
+  authorEmail: string;
+  /** unix seconds */
+  timestamp: number;
+  summary: string;
+  /** 결과 파일 기준 시작 줄 (1부터) */
+  startLine: number;
+  lineCount: number;
+  /** 아직 커밋되지 않은 줄(워킹트리 blame에서만) */
+  uncommitted: boolean;
+}
+
+export interface BlameResult {
+  /** 파일 내용을 줄 단위로 (줄바꿈 제외) */
+  lines: string[];
+  hunks: BlameHunk[];
+}
+
+/** compare_refs 결과. 파일 목록은 세 점(`base...head`, 공통 조상 기준) diff다 */
+export interface CompareResult {
+  base: string;
+  head: string;
+  /** 공통 조상. 없으면(관계없는 히스토리) null */
+  mergeBase: string | null;
+  /** head에만 있는 커밋 (`base..head`), 최신이 먼저 */
+  onlyInHead: CommitSummary[];
+  /** base에만 있는 커밋 (`head..base`), 최신이 먼저 */
+  onlyInBase: CommitSummary[];
+  /** 커밋 목록이 limit에 걸려 잘렸으면 true */
+  truncated: boolean;
+  files: FileChange[];
+}
+
+// get_file_history(path, file: string, rev: string | null, limit: number) -> FileHistoryEntry[]
+//   rev가 null이면 HEAD부터. 최신이 먼저. `git log --follow` 이라 경로 하나만 받는다
+// get_blame(path, file: string, rev: string | null) -> BlameResult
+//   rev가 null이면 워킹트리 기준(커밋 안 된 줄은 uncommitted). 바이너리면 Err("binary"),
+//   5MB 넘으면 Err("too large"). 사용자 설정(blame.ignoreRevsFile 등)에 흔들리지 않게 인자를 고정한다
+// compare_refs(path, base: string, head: string, limit: number) -> CompareResult
+// get_compare_file_diff(path, base: string, head: string, file: string, oldFile: string | null) -> string
+//   `base...head` 세 점 diff. 형식은 get_file_diff와 같다(접두 고정)
