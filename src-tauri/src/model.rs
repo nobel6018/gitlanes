@@ -449,6 +449,52 @@ pub struct CommitDetails {
     pub files: Vec<FileChange>,
 }
 
+/// `get_ref_snapshot` 응답이자 `UndoEntry`의 전후 상태. 프론트가 그대로 돌려보내므로 양방향이다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefSnapshot {
+    /// HEAD가 가리키는 브랜치의 전체 이름("refs/heads/main"). detached면 None
+    pub head_ref: Option<String>,
+    /// 커밋이 하나도 없는(unborn) 브랜치면 ""
+    pub head_sha: String,
+    /// 로컬 브랜치와 태그의 전체 ref 이름 → sha. annotated 태그는 태그 객체 sha다
+    pub refs: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UndoKind {
+    Commit,
+    Amend,
+    Checkout,
+    CreateBranch,
+    DeleteBranch,
+    RenameBranch,
+    CreateTag,
+    DeleteTag,
+    Reset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResetMode {
+    Soft,
+    Mixed,
+    Hard,
+}
+
+/// 되돌리기 스택의 한 항목. 프론트가 작업 전후에 찍은 스냅샷을 담아 `git_undo`로 넘긴다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoEntry {
+    pub kind: UndoKind,
+    pub label: String,
+    pub before: RefSnapshot,
+    pub after: RefSnapshot,
+    /// kind가 Reset일 때만 Some
+    pub reset_mode: Option<ResetMode>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
