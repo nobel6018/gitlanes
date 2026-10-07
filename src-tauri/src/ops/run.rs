@@ -43,6 +43,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// stdout/stderr에서 보관할 줄 수. 프론트가 토스트에 그대로 뿌리므로 상한이 필요하다.
 const MAX_OUTPUT_LINES: usize = 200;
 
+/// 출력이 길 때 앞에서 보존할 줄 수. 나머지([`MAX_OUTPUT_LINES`] - 이 값)는 꼬리에서 남긴다.
+const HEAD_LINES: usize = 20;
+
 /// 충돌 파일 목록을 뽑는 인자.
 const CONFLICT_ARGS: [&str; 3] = ["diff", "--name-only", "--diff-filter=U"];
 
@@ -388,7 +391,7 @@ pub fn finish(repo: &str, args: &[&str], outcome: Outcome, timeout: Duration) ->
     if outcome.timed_out {
         return OpResult {
             ok: false,
-            stdout: tail(&outcome.stdout),
+            stdout: clip_output(&outcome.stdout),
             stderr: format!("timed out after {}s", timeout.as_secs()),
             conflicts,
             command,
@@ -400,8 +403,8 @@ pub fn finish(repo: &str, args: &[&str], outcome: Outcome, timeout: Duration) ->
     OpResult {
         needs_auth: !ok && looks_like_auth_failure(&outcome.stderr),
         ok,
-        stdout: tail(&outcome.stdout),
-        stderr: tail(&outcome.stderr),
+        stdout: clip_output(&outcome.stdout),
+        stderr: clip_output(&outcome.stderr),
         conflicts,
         command,
     }
@@ -432,13 +435,50 @@ pub fn lines_of(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// 마지막 [`MAX_OUTPUT_LINES`]줄만 남긴다.
-pub fn tail(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= MAX_OUTPUT_LINES {
+/// 토스트에 뿌릴 출력을 정리한다.
+///
+/// - 파이프로 받은 진행 표시는 `\r`로 덮어쓰는 문구가 한 줄에 이어 붙어 온다
+///   (`Rebasing (2/3)\rRebasing (3/3)\r...`). 터미널이 보여주는 것처럼 줄마다 마지막 `\r`
+///   뒤만 남긴다
+/// - [`MAX_OUTPUT_LINES`]를 넘으면 앞 [`HEAD_LINES`]줄과 뒤 나머지를 남기고 가운데를
+///   생략 표시 한 줄로 바꾼다. git은 오류 문장을 첫 줄에, 요약을 끝에 쓴다. 꼬리만 남기면
+///   덮어쓸 파일 목록만 보이고 무엇이 실패했는지가 사라진다
+pub fn clip_output(text: &str) -> String {
+    let has_progress = text.contains('\r');
+    let mut lines: Vec<&str> = text.lines().collect();
+    if !has_progress && lines.len() <= MAX_OUTPUT_LINES {
         return text.to_string();
     }
-    lines[lines.len() - MAX_OUTPUT_LINES..].join("\n")
+
+    if has_progress {
+        lines = lines.into_iter().map(last_overwrite).collect();
+    }
+    let mut kept: Vec<String> = Vec::with_capacity(MAX_OUTPUT_LINES + 1);
+    if lines.len() > MAX_OUTPUT_LINES {
+        let tail_lines = MAX_OUTPUT_LINES - HEAD_LINES;
+        let omitted = lines.len() - MAX_OUTPUT_LINES;
+        kept.extend(lines[..HEAD_LINES].iter().map(|line| (*line).to_string()));
+        kept.push(format!("... ({omitted} lines omitted) ..."));
+        kept.extend(
+            lines[lines.len() - tail_lines..]
+                .iter()
+                .map(|line| (*line).to_string()),
+        );
+    } else {
+        kept.extend(lines.iter().map(|line| (*line).to_string()));
+    }
+
+    let mut joined = kept.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// `\r`로 덮어쓴 줄에서 화면에 남는 마지막 조각. 끝에 붙은 `\r`은 덮어쓸 내용이 없어 버린다.
+fn last_overwrite(line: &str) -> &str {
+    let line = line.trim_end_matches('\r');
+    line.rsplit('\r').next().unwrap_or(line)
 }
 
 /// 브랜치/ref 이름을 검증한다. 규칙은 git이 안다.
@@ -667,16 +707,33 @@ mod tests {
     }
 
     #[test]
-    fn 출력은_마지막_200줄만_남는다() {
-        let long: String = (0..500).map(|i| format!("line {i}\n")).collect();
-        let kept = tail(&long);
+    fn 긴_출력은_머리와_꼬리를_남기고_가운데를_줄인다() {
+        // checkout이 덮어쓸 파일 300개를 나열하는 꼴. 오류 문장은 첫 줄에 있다
+        let mut long = String::from("error: Your local changes would be overwritten:\n");
+        for i in 0..299 {
+            long.push_str(&format!("\tf{i}\n"));
+        }
+        let kept = clip_output(&long);
         let lines: Vec<&str> = kept.lines().collect();
-        assert_eq!(lines.len(), MAX_OUTPUT_LINES);
-        assert_eq!(lines[0], "line 300");
-        assert_eq!(lines[MAX_OUTPUT_LINES - 1], "line 499");
+
+        assert_eq!(lines.len(), MAX_OUTPUT_LINES + 1, "생략 표시 한 줄이 더 붙는다");
+        assert_eq!(lines[0], "error: Your local changes would be overwritten:");
+        assert_eq!(lines[19], "\tf18");
+        assert_eq!(lines[20], "... (100 lines omitted) ...");
+        assert_eq!(lines[21], "\tf119");
+        assert_eq!(lines[MAX_OUTPUT_LINES], "\tf298");
 
         // 상한 이하는 손대지 않는다
-        assert_eq!(tail("a\nb\n"), "a\nb\n");
+        assert_eq!(clip_output("a\nb\n"), "a\nb\n");
+    }
+
+    #[test]
+    fn 캐리지_리턴_진행_표시는_줄마다_마지막_것만_남긴다() {
+        let raw = "Rebasing (2/3)\rRebasing (3/3)\rExecuting: make\nerror: boom\r\nReceiving objects:  50%\rReceiving objects: 100%, done.\r\r\n";
+        assert_eq!(
+            clip_output(raw),
+            "Executing: make\nerror: boom\nReceiving objects: 100%, done.\n"
+        );
     }
 
     #[test]

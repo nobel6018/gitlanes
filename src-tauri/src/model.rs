@@ -217,9 +217,9 @@ pub struct FileChange {
 #[serde(rename_all = "camelCase")]
 pub struct OpResult {
     pub ok: bool,
-    /// git stdout. 마지막 200줄만
+    /// git stdout. 200줄을 넘으면 앞 20줄과 뒤 180줄만
     pub stdout: String,
-    /// git stderr. 마지막 200줄만
+    /// git stderr. 200줄을 넘으면 앞 20줄과 뒤 180줄만
     pub stderr: String,
     /// `git diff --name-only --diff-filter=U` 결과. 충돌이 없으면 빈 배열
     pub conflicts: Vec<String>,
