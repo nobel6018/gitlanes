@@ -100,11 +100,11 @@ function wipDiff(repo: string, file: string, area: "staged" | "unstaged", mode: 
   const cacheKey = `${file}\0${area}\0${mode}`;
   const hit = cache?.get(cacheKey);
   if (hit !== undefined) return hit;
-  // -c diff.suppressBlankEmpty=false 는 Rust의 PATCH_SOURCE_CONFIG_ARGS와 같다 (commands.rs)
+  // src-tauri/src/commands.rs의 get_wip_file_diff, ops/stage.rs의 git_apply_patch와 같아야 한다.
+  // (PATCH_SOURCE_CONFIG_ARGS, PATCH_SOURCE_DIFF_ARGS) 사용자 설정(diff.context, diff.noprefix,
+  // diff.suppressBlankEmpty, textconv, diff.external, color)이 패치 원료에 새지 않게 고정한다
   const args = ["-c", "core.quotepath=false", "--no-optional-locks", "-c", "diff.suppressBlankEmpty=false", "diff"];
   if (area === "staged") args.push("--cached");
-  // src-tauri/src/commands.rs의 get_wip_file_diff, ops/stage.rs의 git_apply_patch와 같아야 한다.
-  // 사용자 설정(diff.context, diff.noprefix, textconv, diff.external, color)이 패치 원료에 새지 않게 고정한다
   args.push("--no-color", "--no-ext-diff", "-M", "--src-prefix=a/", "--dst-prefix=b/", "--no-textconv");
   args.push(mode === "u0" ? "-U0" : "-U3");
   args.push("--", file);
@@ -831,10 +831,14 @@ for (const file of ["dir with space/my file.txt", "한글/파일.txt", "a/b/c.tx
     runOp(ctx, "stage", { hunks: [0] });
     eqBuf(readIndex(ctx.repo, "app.txt"), Buffer.from(BASE20), "decoy root app.txt untouched in index");
   });
-  scenario("config diff.suppressBlankEmpty=true", () => {
-    const ctx = makeRepo({ head: lines("a", "", "b", "", "c", "", "d"), work: lines("a", "", "B", "", "c", "", "d"), config: { "diff.suppressBlankEmpty": "true" } });
-    runOp(ctx, "stage", { hunks: [0] });
-  });
+  for (const op of ALL_OPS) {
+    scenario(`config diff.suppressBlankEmpty=true ${op}`, () => {
+      const ctx = makeRepo(specFor(op, lines("a", "", "b", "", "c", "", "d"), lines("a", "", "B", "", "c", "", "d"), { config: { "diff.suppressBlankEmpty": "true" } }));
+      const d = wipDiff(ctx.repo, ctx.file, OPS[op].area);
+      check(d.split("\n").includes(" "), "blank context line keeps its space prefix", d);
+      runOp(ctx, op, { lines: ["+B"] });
+    });
+  }
   scenario("config all hostile settings at once", () => {
     const config = { "diff.context": "0", "diff.noprefix": "true", "diff.mnemonicPrefix": "true", "color.ui": "always", "diff.interHunkContext": "5", ...mask };
     for (const op of ALL_OPS) {
