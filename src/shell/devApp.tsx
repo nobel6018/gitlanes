@@ -614,14 +614,16 @@ function mockCompare(base: string, head: string, limit: number): CompareResult {
     }
     return out;
   };
-  const headCount = COMPARE_UNRELATED ? 40 : 3 + (hashOf(head) % 6);
-  const baseCount = COMPARE_UNRELATED ? 25 : 1 + (hashOf(base) % 3);
+  // 개수는 이름에만 기댄다. 역할(base/head)에 기대면 맞바꿨을 때 목록 길이가 달라진다
+  const count = (name: string) => (COMPARE_UNRELATED ? 25 : 1) + (hashOf(name) % 6);
+  const headCount = count(head);
+  const baseCount = count(base);
   const onlyInHead = side(head, headCount);
   const onlyInBase = side(base, baseCount);
   const lowest = Math.max(compareAnchor(base), compareAnchor(head));
   const files = COMPARE_UNRELATED
     ? mockFiles(hashOf(head)).map((file) => ({ ...file, status: "A" as const, oldPath: null, deletions: 0 }))
-    : mockFiles(hashOf(base + head)).filter((_, i) => i !== 6);
+    : mockFiles(hashOf([base, head].sort().join("\u0000"))).filter((_, i) => i !== 6);
   return {
     base,
     head,

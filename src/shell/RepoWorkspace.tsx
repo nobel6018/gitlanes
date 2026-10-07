@@ -75,6 +75,9 @@ import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { DiffPanel } from "./DiffPanel";
+import { BlameView } from "./BlameView";
+import { ComparePanel } from "./ComparePanel";
+import { FileHistoryPanel } from "./FileHistoryPanel";
 import { RebaseEditor } from "./RebaseEditor";
 import { MultiCommitPanel } from "./MultiCommitPanel";
 import { markSquash, orderNewestFirst, orderOldestFirst, squashBase } from "./multiSelect";
@@ -2535,9 +2538,14 @@ export function RepoWorkspace({
     );
   }, []);
 
-  // TODO(v0.18 통합): 5단계에서 부품을 붙이면 지운다. 그 전까지 noUnusedLocals 빌드를 통과시키는 자리
-  void [history, blame, showHistory, showBlame, closeBlame, openHistoryEntry];
-  void [jumpFromBlame, selectCompareCommit, openCompareFile, swapCompare];
+  /**
+   * DiffPanel 머리 버튼을 낼지. 비교 diff는 어느 한 커밋의 파일이 아니라 내지 않는다.
+   * untracked는 히스토리가 없고, 삭제된 파일은 그 시점에 blame할 내용이 없다.
+   * 히스토리 목록이 이미 열려 있으면 History는 같은 목록을 다시 여는 것뿐이라 감춘다
+   */
+  const diffSource = openFile !== null && openFile.compare === null && openFile.area !== "untracked";
+  const diffHistory = diffSource && historyView === null ? showHistory : undefined;
+  const diffBlame = diffSource && openFile?.file.status !== "D" ? showBlame : undefined;
 
   const menuItems: MenuItem[] = useMemo(() => {
     if (menu === null) {
@@ -3430,7 +3438,16 @@ export function RepoWorkspace({
           </>
         )}
         <div className="graph-area">
-          {openFile !== null ? (
+          {blameTarget !== null ? (
+            <BlameView
+              file={blameTarget.file}
+              blame={blame.data}
+              error={blame.error}
+              dateMode={prefs.dateMode}
+              onJumpToCommit={jumpFromBlame}
+              onClose={closeBlame}
+            />
+          ) : openFile !== null ? (
             <DiffPanel
               file={openFile.file}
               badge={openFile.area ?? undefined}
@@ -3442,6 +3459,8 @@ export function RepoWorkspace({
               loading={diffLoading}
               error={diffError}
               onClose={closeFile}
+              onShowHistory={diffHistory}
+              onShowBlame={diffBlame}
             />
           ) : filterMode ? (
             <FilterResults
@@ -3489,7 +3508,35 @@ export function RepoWorkspace({
             onReset={() => resetWidth("detail")}
           />
         )}
-        {multiActive && (
+        {/* 목록 화면은 상세 패널 자리를 빌린다. 폭 조절과 너비 기억(--detail-w)이 그대로 이어진다 */}
+        {historyView !== null && (
+          <aside className="detail-panel">
+            <FileHistoryPanel
+              file={historyView.file}
+              entries={history.data}
+              error={history.error}
+              selectedSha={openFile !== null && openFile.fromSide ? openFile.sha : null}
+              onSelect={openHistoryEntry}
+              onClose={closeSideView}
+            />
+          </aside>
+        )}
+        {compareView !== null && (
+          <aside className="detail-panel">
+            <ComparePanel
+              baseLabel={compareView.baseLabel}
+              headLabel={compareView.headLabel}
+              result={comparison.data}
+              error={comparison.error}
+              openFilePath={openFile !== null && openFile.compare !== null ? openFile.file.path : null}
+              onOpenFile={openCompareFile}
+              onSelectCommit={selectCompareCommit}
+              onSwap={swapCompare}
+              onClose={closeSideView}
+            />
+          </aside>
+        )}
+        {sideView === null && multiActive && (
           <MultiCommitPanel
             rows={multiRows}
             busy={actions.busy}
@@ -3501,7 +3548,7 @@ export function RepoWorkspace({
             onClear={clearMultiSelection}
           />
         )}
-        {!multiActive && isWipSelected && (
+        {sideView === null && !multiActive && isWipSelected && (
           <WipDetailPanel
             actions={actions}
             repoPath={repo.path}
@@ -3516,7 +3563,7 @@ export function RepoWorkspace({
             }
           />
         )}
-        {!multiActive && selectedSha !== null && !isWipSelected && (
+        {sideView === null && !multiActive && selectedSha !== null && !isWipSelected && (
           <CommitDetailPanel
             key={selectedSha}
             repoPath={repo.path}
