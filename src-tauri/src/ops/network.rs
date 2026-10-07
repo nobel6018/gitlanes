@@ -96,6 +96,10 @@ pub fn git_push(
             .ok_or_else(|| "detached HEAD 상태에서는 푸시할 수 없습니다".to_string())?,
     };
 
+    if force_with_lease {
+        check_force_push_support(crate::git::version())?;
+    }
+
     let has_upstream = upstream_of_head(&path).is_some();
     let args = push_args(
         remote.as_deref(),
@@ -104,8 +108,7 @@ pub fn git_push(
         set_upstream,
         force_with_lease,
         tags,
-        crate::git::version(),
-    )?;
+    );
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
 
     run_op(&path, &args, NETWORK_TIMEOUT)
@@ -117,16 +120,11 @@ pub fn git_push(
 /// remote와 branch를 명시하는 경우가 아니면 인자를 덧붙이지 않는다. 그래야 `push.default`
 /// 설정과 upstream 추적이 평소대로 동작한다.
 ///
-/// `--force-with-lease`에는 `--force-if-includes`를 함께 붙인다. lease 값은 원격 추적 ref라서
-/// 툴바 Fetch가 그걸 갱신하면, 통합하지 않은 동료 커밋이 있어도 lease 검사를 통과해 덮어쓴다.
-/// `--force-if-includes`는 원격 추적 ref의 끝이 로컬 브랜치 reflog에 있을 때만, 즉 내가 한 번
-/// 받아 본 상태에서 고쳐 쓴 것일 때만 허용한다.
-///
-/// 이 옵션은 git 2.30부터 있다. 그보다 낮거나 버전을 못 읽으면 force push를 **거절한다**.
-/// 옵션만 빼고 lease로 밀면, 확인창의 "통합하지 않은 원격 커밋이 있으면 거절된다"는 약속이
-/// 거짓이 되고 사용자는 그 문구를 믿고 남의 커밋을 덮는다. 기능이 없는 편이 낫다.
-/// 일반 push는 버전과 무관하다. `git_version`을 인자로 받는 이유는 테스트가 버전을 주입하기
-/// 위해서다.
+/// `--force-with-lease`에는 `--force-if-includes`를 언제나 함께 붙인다. lease 값은 원격 추적
+/// ref라서 툴바 Fetch가 그걸 갱신하면, 통합하지 않은 동료 커밋이 있어도 lease 검사를 통과해
+/// 덮어쓴다. `--force-if-includes`는 원격 추적 ref의 끝이 로컬 브랜치 reflog에 있을 때만,
+/// 즉 내가 한 번 받아 본 상태에서 고쳐 쓴 것일 때만 허용한다. 이 옵션을 모르는 git은
+/// 호출 전에 [`check_force_push_support`]가 막는다.
 fn push_args(
     remote: Option<&str>,
     branch: &str,
@@ -134,15 +132,9 @@ fn push_args(
     set_upstream: bool,
     force_with_lease: bool,
     tags: bool,
-    git_version: Option<(u32, u32)>,
-) -> Result<Vec<String>, String> {
+) -> Vec<String> {
     let mut args = vec!["push".to_string()];
     if force_with_lease {
-        if git_version.is_none_or(|version| version < FORCE_IF_INCLUDES_SINCE) {
-            return Err(
-                "Force push needs git 2.30 or newer. Update git and try again.".to_string(),
-            );
-        }
         args.push("--force-with-lease".to_string());
         args.push("--force-if-includes".to_string());
     }
@@ -159,11 +151,24 @@ fn push_args(
         args.push(remote.unwrap_or("origin").to_string());
         args.push(branch.to_string());
     }
-    Ok(args)
+    args
 }
 
 /// `push --force-if-includes`가 들어온 git 버전.
 const FORCE_IF_INCLUDES_SINCE: (u32, u32) = (2, 30);
+
+/// force push를 해도 되는 git인지 판정한다. 버전은 테스트가 주입하도록 인자로 받는다.
+///
+/// 2.30 미만이거나 버전을 못 읽으면 **거절한다**. 옵션만 빼고 lease로 밀면 확인창의
+/// "통합하지 않은 원격 커밋이 있으면, 방금 Fetch했더라도 거절된다"는 약속이 거짓이 되고,
+/// 사용자는 그 문구를 믿고 동료 커밋을 덮는다. 안전 장치의 폴백은 약한 보호로 진행하는 것이
+/// 아니라 멈추고 이유를 말하는 것이다. 일반 push는 이 판정을 거치지 않는다.
+fn check_force_push_support(git_version: Option<(u32, u32)>) -> Result<(), String> {
+    if git_version.is_some_and(|version| version >= FORCE_IF_INCLUDES_SINCE) {
+        return Ok(());
+    }
+    Err("Force push needs git 2.30 or newer. Update git and try again.".to_string())
+}
 
 /// 다른 모듈의 통합 테스트가 공유하는 로컬 리모트 픽스처.
 #[cfg(test)]
@@ -448,36 +453,23 @@ mod tests {
                 for set_upstream in [false, true] {
                     for force_with_lease in [false, true] {
                         for tags in [false, true] {
-                            for version in [None, Some((2, 29)), Some((2, 30)), Some((3, 0))] {
-                                let built = push_args(
-                                    remote,
-                                    "main",
-                                    has_upstream,
-                                    set_upstream,
-                                    force_with_lease,
-                                    tags,
-                                    version,
-                                );
-                                let supported = version.is_some_and(|v| v >= (2, 30));
-                                if force_with_lease && !supported {
-                                    // 보호를 보장할 수 없으면 git을 부르지 않고 거절한다
-                                    assert_eq!(
-                                        built.unwrap_err(),
-                                        "Force push needs git 2.30 or newer. Update git and try again."
-                                    );
-                                    continue;
-                                }
-                                let args = built.expect("일반 push는 버전과 무관하다");
-                                assert!(
-                                    !args.iter().any(|arg| arg == "--force" || arg == "-f"),
-                                    "{args:?}"
-                                );
-                                let lease = args.iter().any(|arg| arg == "--force-with-lease");
-                                let includes = args.iter().any(|arg| arg == "--force-if-includes");
-                                assert_eq!(lease, force_with_lease, "{args:?}");
-                                // 둘은 언제나 함께 나온다. lease만 나가는 조합은 없다
-                                assert_eq!(includes, lease, "{args:?}");
-                            }
+                            let args = push_args(
+                                remote,
+                                "main",
+                                has_upstream,
+                                set_upstream,
+                                force_with_lease,
+                                tags,
+                            );
+                            assert!(
+                                !args.iter().any(|arg| arg == "--force" || arg == "-f"),
+                                "{args:?}"
+                            );
+                            let lease = args.iter().any(|arg| arg == "--force-with-lease");
+                            let includes = args.iter().any(|arg| arg == "--force-if-includes");
+                            assert_eq!(lease, force_with_lease, "{args:?}");
+                            // lease면 --force-if-includes가 반드시 함께 있다. lease만 나가는 조합은 없다
+                            assert_eq!(includes, lease, "{args:?}");
                         }
                     }
                 }
@@ -485,45 +477,38 @@ mod tests {
         }
 
         // upstream이 이미 있으면 -u를 붙이지 않는다
+        assert_eq!(push_args(None, "main", true, true, false, false), ["push"]);
         assert_eq!(
-            push_args(None, "main", true, true, false, false, Some((2, 50))).unwrap(),
-            ["push"]
-        );
-        assert_eq!(
-            push_args(None, "feature", false, true, false, false, Some((2, 50))).unwrap(),
+            push_args(None, "feature", false, true, false, false),
             ["push", "-u", "origin", "feature"]
         );
         assert_eq!(
-            push_args(
-                Some("upstream"),
-                "feature",
-                true,
-                false,
-                false,
-                false,
-                Some((2, 50))
-            )
-            .unwrap(),
+            push_args(Some("upstream"), "feature", true, false, false, false,),
             ["push", "upstream", "feature"]
         );
         assert_eq!(
-            push_args(None, "main", true, false, false, true, Some((2, 50))).unwrap(),
+            push_args(None, "main", true, false, false, true),
             ["push", "--tags"]
         );
     }
 
     #[test]
-    fn force_push는_git_2_29에서_거절되고_2_30에서_두_옵션이_함께_나온다() {
-        assert!(push_args(None, "main", true, false, true, false, Some((2, 29))).is_err());
-        assert!(push_args(None, "main", true, false, true, false, None).is_err());
+    fn force_push는_git_2_29와_못_읽은_버전에서_거절되고_2_30부터_진행한다() {
+        let refusal = "Force push needs git 2.30 or newer. Update git and try again.";
         assert_eq!(
-            push_args(None, "main", true, false, true, false, Some((2, 30))).unwrap(),
-            ["push", "--force-with-lease", "--force-if-includes"]
+            check_force_push_support(Some((2, 29))).unwrap_err(),
+            refusal
         );
-        // 일반 push는 오래된 git에서도 그대로다
         assert_eq!(
-            push_args(None, "main", true, false, false, false, Some((2, 20))).unwrap(),
-            ["push"]
+            check_force_push_support(Some((1, 99))).unwrap_err(),
+            refusal
+        );
+        assert_eq!(check_force_push_support(None).unwrap_err(), refusal);
+        assert!(check_force_push_support(Some((2, 30))).is_ok());
+        assert!(check_force_push_support(Some((3, 0))).is_ok());
+        assert_eq!(
+            push_args(None, "main", true, false, true, false),
+            ["push", "--force-with-lease", "--force-if-includes"]
         );
     }
 }
