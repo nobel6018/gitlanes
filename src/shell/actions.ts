@@ -548,9 +548,8 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         exec({
           success: checkout ? `Created and checked out ${name}` : `Created ${name}`,
           failure: `Creating ${name} failed`,
-          // 만들면서 체크아웃까지 하면 HEAD가 새 브랜치에 올라가 있어, 브랜치만 지우는
-          // createBranch 복원으로는 원상복구가 안 된다. 그 조합은 기록하지 않는다
-          undo: checkout ? undefined : { kind: "createBranch", label: `Undo create branch ${name}` },
+          // 체크아웃까지 했으면 Rust가 원래 브랜치로 돌아간 뒤 새 브랜치를 지운다
+          undo: { kind: "createBranch", label: `Undo create branch ${name}` },
           call: () => api.gitCreateBranch(path, name, startPoint, checkout),
         }),
 
