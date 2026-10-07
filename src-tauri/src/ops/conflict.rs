@@ -5,7 +5,7 @@
 use crate::git;
 use crate::model::{ConflictFile, ConflictKind, OpResult};
 
-use super::run::{run_chain, run_op, validate_paths, LOCAL_TIMEOUT};
+use super::run::{execute, finish, op_command, run_op, validate_paths, LOCAL_TIMEOUT};
 
 /// 충돌 시작과 끝 마커. 사용자가 손으로 지웠는지 보는 데 쓴다.
 const MARKER_START: &str = "<<<<<<<";
@@ -100,6 +100,9 @@ fn has_markers(repo: &str, relative: &str) -> bool {
 }
 
 /// 한쪽을 통째로 골라 해결한다. 고른 뒤 인덱스에 올려 "해결됨"까지 한 번에 끝낸다.
+///
+/// 고른 쪽이 파일을 지운 쪽이면(삭제/수정 충돌) 꺼낼 버전이 없어 checkout이
+/// "does not have our version"으로 실패한다. 그때는 삭제를 받아들이는 `rm` 한 단계다.
 #[tauri::command(async)]
 pub fn git_resolve_with(path: String, file: String, side: String) -> Result<OpResult, String> {
     let flag = match side.as_str() {
@@ -109,14 +112,49 @@ pub fn git_resolve_with(path: String, file: String, side: String) -> Result<OpRe
     };
     let file = validate_paths(&[file])?.remove(0);
 
-    run_chain(
-        &path,
-        &[
-            vec!["checkout", flag, "--", file.as_str()],
-            vec!["add", "--", file.as_str()],
-        ],
-        LOCAL_TIMEOUT,
-    )
+    let unmerged = parse_unmerged(&git::run(&path, &["ls-files", "-u", "-z"])?);
+    let chosen_deleted = unmerged
+        .iter()
+        .find(|conflict| conflict.path == file)
+        .is_some_and(|conflict| !has_side(conflict.kind, flag));
+    if chosen_deleted {
+        return run_op(&path, &["rm", "-q", "--", file.as_str()], LOCAL_TIMEOUT);
+    }
+
+    let checkout = checkout_side(&path, flag, &file)?;
+    if !checkout.ok {
+        return Ok(checkout);
+    }
+    let mut added = run_op(&path, &["add", "--", file.as_str()], LOCAL_TIMEOUT)?;
+    if !checkout.stderr.trim().is_empty() {
+        added.stderr = format!("{}\n{}", checkout.stderr.trim_end(), added.stderr);
+    }
+    Ok(added)
+}
+
+/// 충돌 종류에서 고른 쪽 스테이지가 남아 있는지 본다.
+fn has_side(kind: ConflictKind, flag: &str) -> bool {
+    match kind {
+        ConflictKind::BothModified | ConflictKind::BothAdded => true,
+        ConflictKind::DeletedByUs => flag == "--theirs",
+        ConflictKind::DeletedByThem => flag == "--ours",
+        ConflictKind::BothDeleted => false,
+    }
+}
+
+/// `checkout --ours/--theirs`를 경로 리터럴로 실행하되 훅에는 `GIT_LITERAL_PATHSPECS`를
+/// 물려주지 않는다.
+///
+/// checkout은 post-checkout 훅을 돌린다. 환경변수로 리터럴을 걸면 훅 안의
+/// `git diff -- '*.py'` 같은 glob까지 리터럴이 되어 훅이 조용히 아무것도 못 찾는다.
+/// 이 명령의 경로 하나에만 `:(literal)` magic을 붙이면 효과는 같고 훅은 그대로 돈다.
+fn checkout_side(repo: &str, flag: &str, file: &str) -> Result<OpResult, String> {
+    let spec = format!(":(literal){file}");
+    let args = ["checkout", flag, "--", spec.as_str()];
+    let mut command = op_command(repo, &args);
+    command.env_remove("GIT_LITERAL_PATHSPECS");
+    let outcome = execute(command, LOCAL_TIMEOUT)?;
+    Ok(finish(repo, &args, outcome, LOCAL_TIMEOUT))
 }
 
 /// 손으로 고친 파일을 해결 완료로 표시한다.
@@ -277,5 +315,152 @@ mod tests {
         assert!(
             get_conflict_side(repo.path(), "gone.txt".to_string(), "both".to_string()).is_err()
         );
+    }
+
+    fn remaining(repo: &TempRepo) -> Vec<String> {
+        get_conflicts(repo.path())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.path)
+            .collect()
+    }
+
+    fn tracked(repo: &TempRepo, file: &str) -> bool {
+        !git::run(repo.path(), &["ls-files", "--", file])
+            .unwrap()
+            .trim()
+            .is_empty()
+    }
+
+    #[test]
+    fn 상대가_지운_파일에서_theirs를_고르면_삭제로_해결된다() {
+        let repo = conflicted("gitlanes-resolve-deleted-theirs");
+
+        let result =
+            git_resolve_with(repo.path(), "gone.txt".to_string(), "theirs".to_string()).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(!remaining(&repo).contains(&"gone.txt".to_string()));
+        assert!(!tracked(&repo, "gone.txt"));
+        assert!(!std::path::Path::new(&repo.path()).join("gone.txt").exists());
+    }
+
+    #[test]
+    fn 내가_지운_파일에서_ours를_고르면_삭제로_해결된다() {
+        let repo = TempRepo::init("gitlanes-resolve-deleted-ours");
+        repo.write("gone.txt", "base\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.git(&["checkout", "-qb", "other"]);
+        repo.write("gone.txt", "other가 고침\n");
+        repo.git(&["commit", "-qam", "other side"]);
+        repo.git(&["checkout", "-q", "main"]);
+        repo.git(&["rm", "-q", "gone.txt"]);
+        repo.git(&["commit", "-qm", "main이 지움"]);
+        let _ = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["merge", "--no-edit", "other"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            get_conflicts(repo.path()).unwrap()[0].kind,
+            ConflictKind::DeletedByUs
+        );
+
+        let result =
+            git_resolve_with(repo.path(), "gone.txt".to_string(), "ours".to_string()).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(remaining(&repo).is_empty());
+        assert!(!tracked(&repo, "gone.txt"));
+    }
+
+    #[test]
+    fn 지운_쪽이_아니면_그쪽_내용으로_해결된다() {
+        // 삭제/수정 충돌에서 남아 있는 쪽을 고르면 지금처럼 checkout이다
+        let repo = conflicted("gitlanes-resolve-deleted-keep");
+
+        let result =
+            git_resolve_with(repo.path(), "gone.txt".to_string(), "ours".to_string()).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(tracked(&repo, "gone.txt"));
+        assert_eq!(
+            std::fs::read_to_string(std::path::Path::new(&repo.path()).join("gone.txt")).unwrap(),
+            "main이 고침\n"
+        );
+    }
+
+    /// glob 문자가 든 파일과, 그 glob에 걸리는 다른 파일이 함께 충돌하는 저장소.
+    fn glob_conflicted(prefix: &str) -> TempRepo {
+        let repo = TempRepo::init(prefix);
+        for name in ["f*.txt", "fx.txt"] {
+            repo.write(name, "base\n");
+        }
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.git(&["checkout", "-qb", "other"]);
+        for name in ["f*.txt", "fx.txt"] {
+            repo.write(name, "other\n");
+        }
+        repo.git(&["commit", "-qam", "other side"]);
+        repo.git(&["checkout", "-q", "main"]);
+        for name in ["f*.txt", "fx.txt"] {
+            repo.write(name, "main\n");
+        }
+        repo.git(&["commit", "-qam", "main side"]);
+        let _ = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["merge", "--no-edit", "other"])
+            .output()
+            .unwrap();
+        repo
+    }
+
+    #[test]
+    fn resolve_with는_glob_문자_파일명을_리터럴로_다룬다() {
+        let repo = glob_conflicted("gitlanes-resolve-glob");
+
+        let result =
+            git_resolve_with(repo.path(), "f*.txt".to_string(), "theirs".to_string()).unwrap();
+        assert!(result.ok, "{result:?}");
+
+        let root = std::path::Path::new(&repo.path()).to_path_buf();
+        assert_eq!(
+            std::fs::read_to_string(root.join("f*.txt")).unwrap(),
+            "other\n"
+        );
+        // glob으로 해석되면 fx.txt까지 theirs로 덮인다
+        assert_eq!(remaining(&repo), ["fx.txt"]);
+        assert!(has_markers(&repo.path(), "fx.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_with의_checkout은_훅에_리터럴_pathspec을_물려주지_않는다() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = conflicted("gitlanes-resolve-hook");
+        let seen = std::path::Path::new(&repo.path())
+            .join(".git")
+            .join("seen-env");
+        let hook = std::path::Path::new(&repo.path())
+            .join(".git")
+            .join("hooks")
+            .join("post-checkout");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\necho \"${{GIT_LITERAL_PATHSPECS:-unset}}\" > '{}'\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result =
+            git_resolve_with(repo.path(), "both.txt".to_string(), "theirs".to_string()).unwrap();
+        assert!(result.ok, "{result:?}");
+
+        // 훅 안의 `git diff -- '*.py'` 같은 glob이 리터럴로 바뀌지 않아야 한다
+        assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), "unset");
     }
 }

@@ -257,6 +257,11 @@ pub enum PendingKind {
     Rebase,
     CherryPick,
     Revert,
+    /// `git am` 도중. 리베이스와 같은 `rebase-apply/`를 쓰지만 명령이 다르다
+    Am,
+    /// 이어갈 작업 없이 충돌만 남은 상태(squash 머지, stash pop/apply 충돌).
+    /// continue/abort/skip이 없다
+    Conflicts,
 }
 
 /// 진행 중이라 continue/abort가 필요한 작업.
@@ -319,7 +324,8 @@ pub struct WorktreeInfo {
 }
 
 /// `git_rebase_interactive`의 todo 한 줄.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// `get_rebase_steps`가 초기 목록으로 돌려줄 때도 같은 모양을 쓴다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RebaseStep {
     pub sha: String,

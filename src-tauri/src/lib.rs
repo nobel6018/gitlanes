@@ -115,6 +115,7 @@ pub fn run() {
         ops::history::git_revert,
         ops::history::git_reset,
         ops::history::git_pending_action,
+        ops::interactive::get_rebase_steps,
         ops::interactive::git_rebase_interactive,
         // 태그
         ops::tag::git_create_tag,
