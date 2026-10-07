@@ -47,7 +47,12 @@ export interface BranchSidebarProps {
   /** ui-hub의 RepoActions. 없으면 쓰기 메뉴가 전부 비활성 */
   actions?: SidebarActions;
   /** 입력이 필요한 동작을 ui-hub 다이얼로그로 넘긴다 */
-  onRequestDialog?: (kind: SidebarDialogKind, target: SidebarDialogTarget) => void;
+  /** stashDrop/stashBranch는 세 번째 인자로 그 행의 스태시 sha가 온다 */
+  onRequestDialog?: (
+    kind: SidebarDialogKind,
+    target: SidebarDialogTarget,
+    stashSha?: string,
+  ) => void;
   /** 워크트리를 새 탭으로 연다 */
   onOpenWorktree?: (path: string) => void;
   /** ref 드래그 시작/종료. ui-hub가 그래프 캔버스의 드롭 타깃을 켜는 데 쓴다 */

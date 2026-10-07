@@ -28,7 +28,7 @@ export interface SidebarActions {
     tags?: boolean;
   }): Promise<void>;
   pushTag(remote: string, name: string, del: boolean): Promise<void>;
-  stashApply(ref: string, drop: boolean): Promise<void>;
+  stashApply(ref: string, sha: string | null, drop: boolean): Promise<void>;
   /** 쓰기 작업이 진행 중이면 메뉴 항목을 잠근다 */
   busy: boolean;
 }
@@ -62,7 +62,8 @@ export type SidebarDialogKind =
  *  - renameBranch / deleteBranch / setUpstream: 로컬 브랜치 이름
  *  - deleteRemoteBranch: "origin/foo" 전체 이름
  *  - deleteTag / deleteTagOnRemote: 태그 이름
- *  - stashDrop / stashBranch: "stash@{0}" 형태 ref
+ *  - stashDrop / stashBranch: "stash@{0}" 형태 ref. 그 행의 StashInfo.sha를 세 번째 인자로 함께
+ *    넘긴다 (v0.16). 셸이 command에 실어 Rust가 번호 밀림을 잡는다
  *  - addRemote / stashPush / addWorktree: null
  *  - editRemoteUrl / renameRemote / removeRemote: remote 이름
  *  - removeWorktree: 워크트리 절대 경로
@@ -84,7 +85,11 @@ export interface SidebarContextMenuProps {
   /** push tag 등 remote 인자가 필요한 동작의 기본값 */
   defaultRemote: string;
   actions?: SidebarActions;
-  onRequestDialog?: (kind: SidebarDialogKind, target: SidebarDialogTarget) => void;
+  onRequestDialog?: (
+    kind: SidebarDialogKind,
+    target: SidebarDialogTarget,
+    stashSha?: string,
+  ) => void;
   onCopyName: (name: string) => void;
   /** undefined면 "Open on Remote" 항목을 아예 넣지 않는다 */
   onOpenOnRemote?: (ref: RefEntry) => void;
@@ -368,20 +373,20 @@ function stashItems(
       label: "Apply",
       disabled: act.disabled,
       title: act.title ?? "Applies the stash and keeps it in the list",
-      onSelect: () => fire(() => actions!.stashApply(ref, false)),
+      onSelect: () => fire(() => actions!.stashApply(ref, stash.sha, false)),
     },
     {
       label: "Pop",
       disabled: act.disabled,
       title: act.title ?? "Applies the stash and removes it from the list",
-      onSelect: () => fire(() => actions!.stashApply(ref, true)),
+      onSelect: () => fire(() => actions!.stashApply(ref, stash.sha, true)),
     },
     {
       label: "Create Branch from Stash…",
       separatorBefore: true,
       disabled: dlg.disabled,
       title: dlg.title,
-      onSelect: () => onRequestDialog!("stashBranch", ref),
+      onSelect: () => onRequestDialog!("stashBranch", ref, stash.sha),
     },
     {
       label: "Drop…",
@@ -389,7 +394,7 @@ function stashItems(
       danger: true,
       disabled: dlg.disabled,
       title: dlg.title,
-      onSelect: () => onRequestDialog!("stashDrop", ref),
+      onSelect: () => onRequestDialog!("stashDrop", ref, stash.sha),
     },
     {
       label: "Jump to Commit",

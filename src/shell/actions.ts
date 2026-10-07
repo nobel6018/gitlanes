@@ -96,9 +96,14 @@ export interface RepoActions {
     keepIndex?: boolean;
     files?: string[];
   }): Promise<void>;
-  stashApply(ref: string, drop: boolean): Promise<void>;
-  stashDrop(ref: string): Promise<void>;
-  stashBranch(ref: string, name: string): Promise<void>;
+  /**
+   * sha는 ref를 고른 시점의 StashInfo.sha다 (v0.16). Rust가 실행 직전 ref가 아직 그 스태시를
+   * 가리키는지 확인한다. 선택 인자로 두지 않은 이유는 빠뜨리면 번호 밀림 보호가 조용히 꺼져서다.
+   * 스태시 목록을 아직 못 읽었을 때만 null을 넘긴다
+   */
+  stashApply(ref: string, sha: string | null, drop: boolean): Promise<void>;
+  stashDrop(ref: string, sha: string | null): Promise<void>;
+  stashBranch(ref: string, sha: string | null, name: string): Promise<void>;
   addRemote(name: string, url: string): Promise<void>;
   removeRemote(name: string): Promise<void>;
   renameRemote(from: string, to: string): Promise<void>;
@@ -162,9 +167,12 @@ function nameList(names: string[]): string {
 /**
  * 셸에 그대로 넣어도 안전하게 인용한다.
  * 작은따옴표 안에서는 작은따옴표만 탈출이 필요하다 ('foo'\''bar' 관용구).
+ * `=`는 단어 가운데(`--format=x`)에서는 안전하지만 맨 앞에 오면 zsh가 EQUALS 옵션(기본 켜짐)으로
+ * `=foo`를 foo의 명령 경로로 바꾼다. 그래서 `=`로 시작하면 인용한다. `~`와 `!`는 허용 문자에
+ * 없어 항상 인용되고, 작은따옴표 안에서는 bash와 zsh 모두 틸드 확장과 히스토리 확장을 하지 않는다
  */
 export function quoteArg(arg: string): string {
-  if (arg !== "" && /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) {
+  if (arg !== "" && !arg.startsWith("=") && /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) {
     return arg;
   }
   return `'${arg.replace(/'/g, "'\\''")}'`;
@@ -205,6 +213,8 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
   const chain = useRef<Promise<unknown>>(Promise.resolve());
   /** 큐에 있거나 실행 중인 command 수. 0이 아니면 뒤에 다른 쓰기가 기다리고 있다 */
   const queued = useRef(0);
+  /** pendingAction이 상태 확인부터 command 끝까지 진행 중인가 */
+  const pendingInFlight = useRef(false);
 
   const enqueue = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
     queued.current += 1;
@@ -272,6 +282,8 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
               stderr: detail === "" ? undefined : detail,
               command: result.command,
               needsAuth: result.needsAuth,
+              // 터미널로 넘겨도 같은 credential helper가 같은 계정을 내놓는다. needsAuth와 별개로 싣는다
+              deniedAccount: result.deniedAccount ?? undefined,
             },
             startPath,
           );
@@ -580,60 +592,98 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }),
 
       // kind는 프리즈된 시그니처에 없어 호출 직전에 get_sync_state로 읽는다.
-      // 진행 중인 작업이 없으면 부를 이유가 없으므로 조용히 끝낸다
       pendingAction: async (action) => {
-        const state = await api.getSyncState(path);
-        const pending = state.pending;
-        if (pending === null) {
+        // 더블클릭의 두 번째 click은 첫 click의 get_sync_state가 끝나기 전에 온다. 그때는 아직
+        // 큐에 아무것도 없고 busy도 렌더 전이라 둘 다 continue를 보내고, 두 번째가 "no merge in
+        // progress"로 가짜 실패 토스트를 띄운다 (audit-state L1). ref로 동기 판정해 뒤엣것을 버리고,
+        // busy도 진입 즉시 올려 버튼을 잠근다
+        if (pendingInFlight.current) {
           return;
         }
-        const kind: PendingKind = pending.kind;
-        const label = KIND_LABEL[kind];
-        // 진행도와 남은 충돌 수를 확인 문구에 넣는다. "3/12에서 멈춘다"를 알아야
-        // abort가 얼마나 되돌리는 일인지 판단할 수 있다
-        const scope = [
-          pending.progress === null ? null : `at ${pending.progress}`,
-          pending.conflictCount > 0 ? `${pending.conflictCount} conflicted` : null,
-          pending.detail,
-        ]
-          .filter((part): part is string => part !== null && part !== "")
-          .join(", ");
+        pendingInFlight.current = true;
+        setBusyCount((n) => n + 1);
+        try {
+          let state;
+          try {
+            state = await api.getSyncState(path);
+          } catch (err) {
+            const message = api.errorMessage(err);
+            ref.current.toast(
+              {
+                message: "Reading the operation in progress failed",
+                tone: "error",
+                copyable: true,
+                stderr: message,
+              },
+              path,
+            );
+            throw new Error(message);
+          }
+          const pending = state.pending;
+          if (pending === null) {
+            // 다른 창이나 터미널에서 이미 끝냈다. 패널이 남아 있다면 화면이 낡은 것이다
+            ref.current.toast({ message: "Nothing is in progress anymore", tone: "info" }, path);
+            await ref.current.refreshAll();
+            return;
+          }
+          // 이어갈 작업 없이 충돌만 남은 상태다. git에 continue/abort/skip할 대상이 없으므로
+          // Rust를 부르지 않는다. 패널도 이 버튼들을 그리지 않는다
+          if (pending.kind === "conflicts") {
+            return;
+          }
+          const kind: PendingKind = pending.kind;
+          const label = KIND_LABEL[kind];
+          // git am이 건너뛰는 단위는 메일함의 패치 하나다
+          const unit = kind === "am" ? "patch" : "commit";
+          // 진행도와 남은 충돌 수를 확인 문구에 넣는다. "3/12에서 멈춘다"를 알아야
+          // abort가 얼마나 되돌리는 일인지 판단할 수 있다
+          const scope = [
+            pending.progress === null ? null : `at ${pending.progress}`,
+            pending.conflictCount > 0 ? `${pending.conflictCount} conflicted` : null,
+            pending.detail,
+          ]
+            .filter((part): part is string => part !== null && part !== "")
+            .join(", ");
 
-        await exec({
-          success:
-            action === "abort"
-              ? `Aborted the ${label}`
-              : action === "skip"
-                ? "Skipped this commit"
-                : `Continued the ${label}`,
-          failure:
-            action === "abort"
-              ? `Aborting the ${label} failed`
-              : action === "skip"
-                ? "Skipping this commit failed"
-                : `Continuing the ${label} failed`,
-          confirm:
-            action === "abort"
-              ? {
-                  title: `Abort the ${label}?`,
-                  body: `The ${label} in progress stops and the repository returns to the state it had before it started.`,
-                  undo: "Committed history is not lost, but the conflict resolutions you made in the working tree are discarded.",
-                  scope: scope === "" ? null : scope,
-                  confirmLabel: "Abort",
-                  danger: true,
-                }
-              : action === "skip"
+          await exec({
+            success:
+              action === "abort"
+                ? `Aborted the ${label}`
+                : action === "skip"
+                  ? `Skipped this ${unit}`
+                  : `Continued the ${label}`,
+            failure:
+              action === "abort"
+                ? `Aborting the ${label} failed`
+                : action === "skip"
+                  ? `Skipping this ${unit} failed`
+                  : `Continuing the ${label} failed`,
+            confirm:
+              action === "abort"
                 ? {
-                    title: "Skip this commit?",
-                    body: `The commit being applied is dropped from the ${label} and never lands on the branch.`,
-                    undo: "The original commit still exists, so you can cherry-pick it back afterwards with git cherry-pick <sha> once you know its sha.",
+                    title: `Abort the ${label}?`,
+                    body: `The ${label} in progress stops and the repository returns to the state it had before it started.`,
+                    undo: "Committed history is not lost, but the conflict resolutions you made in the working tree are discarded.",
                     scope: scope === "" ? null : scope,
-                    confirmLabel: "Skip",
+                    confirmLabel: "Abort",
                     danger: true,
                   }
-                : undefined,
-          call: () => api.gitPendingAction(path, kind, action),
-        });
+                : action === "skip"
+                  ? {
+                      title: `Skip this ${unit}?`,
+                      body: `The ${unit} being applied is dropped from the ${label} and never lands on the branch.`,
+                      undo: "The original commit still exists, so you can cherry-pick it back afterwards with git cherry-pick <sha> once you know its sha.",
+                      scope: scope === "" ? null : scope,
+                      confirmLabel: "Skip",
+                      danger: true,
+                    }
+                  : undefined,
+            call: () => api.gitPendingAction(path, kind, action),
+          });
+        } finally {
+          pendingInFlight.current = false;
+          setBusyCount((n) => n - 1);
+        }
       },
 
       // ── 태그 ─────────────────────────────────────────────
@@ -691,14 +741,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
             ),
         }),
 
-      stashApply: (stashRef, drop) =>
+      stashApply: (stashRef, sha, drop) =>
         exec({
           success: drop ? `Popped ${stashRef}` : `Applied ${stashRef}`,
           failure: drop ? `Popping ${stashRef} failed` : `Applying ${stashRef} failed`,
-          call: () => api.gitStashApply(path, stashRef, drop),
+          call: () => api.gitStashApply(path, stashRef, sha, drop),
         }),
 
-      stashDrop: (stashRef) =>
+      stashDrop: (stashRef, sha) =>
         exec({
           success: `Dropped ${stashRef}`,
           failure: `Dropping ${stashRef} failed`,
@@ -710,14 +760,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
             confirmLabel: "Drop",
             danger: true,
           },
-          call: () => api.gitStashDrop(path, stashRef),
+          call: () => api.gitStashDrop(path, stashRef, sha),
         }),
 
-      stashBranch: (stashRef, name) =>
+      stashBranch: (stashRef, sha, name) =>
         exec({
           success: `Created ${name} from ${stashRef}`,
           failure: `Creating ${name} from ${stashRef} failed`,
-          call: () => api.gitStashBranch(path, stashRef, name),
+          call: () => api.gitStashBranch(path, stashRef, sha, name),
         }),
 
       // ── remote ───────────────────────────────────────────
