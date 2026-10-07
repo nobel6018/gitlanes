@@ -1,6 +1,8 @@
 // unified diff 파서와 부분 패치 재구성기.
-// hunk/줄 단위 스테이징이 여기에만 의존한다. 테스트 환경(Rust만 있음)이 없으므로
-// 전부 순수 함수로 두고, 파일 맨 아래에 입출력 예시를 주석으로 남긴다.
+// hunk/줄 단위 스테이징이 여기에만 의존한다. 전부 순수 함수로 두고, 파일 맨 아래에
+// 입출력 예시를 주석으로 남긴다.
+// 검증: tests/patch-engine.test.mts (npm run test:patch). 실제 git에 Rust와 같은 인자로
+// 적용한 결과를 바이트 단위로 본다. 이 파일을 고치면 반드시 돌린다.
 //
 // 입력은 파일 하나짜리 unified diff다 (get_wip_file_diff 응답).
 // 여러 파일이 이어진 diff는 다루지 않는다. 두 번째 "diff --git" 줄부터는
@@ -370,7 +372,7 @@ export function buildLinePatch(
 //           2 add "const b = 20;", 3 add "const c = 3;",
 //           4 context "const d = 4;", 5 context "const e = 5;"] }
 //
-// (1) buildPatch(parsed, [0], false) — hunk 전체를 스테이지
+// (1) buildPatch(parsed, [0], false): hunk 전체를 스테이지
 //   헤더는 원본과 같고 본문도 그대로다.
 //   @@ -1,4 +1,5 @@
 //    const a = 1;
@@ -392,7 +394,7 @@ export function buildLinePatch(
 //    const d = 4;
 //    const e = 5;
 //
-// (3) buildPatch(parsedStaged, [0], true) — staged hunk를 언스테이지
+// (3) buildPatch(parsedStaged, [0], true): staged hunk를 언스테이지
 //   패치는 정방향으로 만들고 방향은 호출 측이 준다.
 //   → applyPatch(patch, cached = true, reverse = true)
 //   줄 단위라면 안 고른 -가 빠지고 안 고른 +가 context가 된다.
