@@ -17,6 +17,7 @@ import type {
   RepoState,
   SearchMatch,
   SyncState,
+  UndoEntry,
   WipArea,
   WipDiff,
   WipDetails,
@@ -70,6 +71,8 @@ import type { MenuItem } from "./ContextMenu";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { DiffPanel } from "./DiffPanel";
 import { RebaseEditor } from "./RebaseEditor";
+import { MultiCommitPanel } from "./MultiCommitPanel";
+import { markSquash, orderNewestFirst, orderOldestFirst, squashBase } from "./multiSelect";
 import { parseRefDrag } from "./dnd";
 import type { RefDragPayload } from "./dnd";
 import type { SidebarDialogKind, SidebarDialogTarget } from "./SidebarContextMenu";
@@ -98,6 +101,7 @@ import { SplitHandle } from "./SplitHandle";
 import { ToastStack, trimToasts } from "./Toast";
 import type { ToastItem } from "./Toast";
 import { Toolbar } from "./Toolbar";
+import type { FetchStatus } from "./Toolbar";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { useRecentRepos } from "./useRecentRepos";
 import { APP_VERSION } from "./version";
@@ -125,6 +129,30 @@ const FIRST_PAGE: PageRequest = { skip: 0, limit: COMMITS_PER_PAGE };
 
 /** 자동 새로고침 폴링 간격(ms) */
 const POLL_INTERVAL_MS = 5000;
+/**
+ * 자동 fetch가 "때가 됐나"를 확인하는 간격(ms). 주기 자체는 설정(분)이 정한다.
+ * setInterval을 주기 그대로 걸면 탭을 오갈 때마다 타이머가 처음부터 다시 세어 영영 안 돌 수 있다
+ */
+const AUTO_FETCH_TICK_MS = 15_000;
+/** 탭별 되돌리기 스택 깊이. 넘치면 가장 오래된 것부터 버린다 */
+const UNDO_STACK_MAX = 20;
+/** 이만큼 연속으로 실패하면 Fetch 버튼에 표시한다 (인증 실패는 한 번에 멈춘다) */
+const AUTO_FETCH_FAILURE_LIMIT = 3;
+
+/** 레포 하나의 자동 fetch 기록. path가 지금 레포와 다르면 새 레포로 보고 버린다 */
+interface AutoFetchState {
+  path: string;
+  /** 마지막 시도(성공, 실패 무관) 시각. 다음 주기의 기준이다. null이면 첫 틱에 바로 돈다 */
+  lastAttemptAt: number | null;
+  lastFetchedAt: number | null;
+  failures: number;
+  /** 인증이 필요해 멈췄다. 수동 Fetch가 성공하면 풀린다 */
+  needsAuth: boolean;
+}
+
+function freshAutoFetch(path: string): AutoFetchState {
+  return { path, lastAttemptAt: null, lastFetchedAt: null, failures: 0, needsAuth: false };
+}
 /** search_commits가 돌려줄 최대 매치 수 (계약 상한) */
 const GLOBAL_SEARCH_LIMIT = 500;
 
@@ -424,6 +452,11 @@ export function RepoWorkspace({
   const [graphLoading, setGraphLoading] = useState(false);
   const [opening, setOpening] = useState(false);
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
+  /**
+   * 그래프 다중 선택 (v0.17 3번). 비어 있거나 하나뿐이면 지금까지의 단일 선택 화면이다.
+   * selectedSha는 그대로 "주 선택"이다
+   */
+  const [selectedShas, setSelectedShas] = useState<string[]>([]);
   const [scrollTarget, setScrollTarget] = useState<ScrollTarget | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readFlag(SIDEBAR_KEY, true));
   const [query, setQuery] = useState("");
@@ -475,6 +508,13 @@ export function RepoWorkspace({
   const [rebase, setRebase] = useState<RebaseState | null>(null);
   /** 드래그가 올라와 있는 커밋 행. 그래프가 노란 테두리로 그린다 */
   const [dropTargetSha, setDropTargetSha] = useState<string | null>(null);
+  /** 자동 fetch 기록 (v0.17). 탭이 다른 레포로 바뀌면 path가 어긋나 새로 시작한다 */
+  const [autoFetchState, setAutoFetchState] = useState<AutoFetchState | null>(null);
+  /**
+   * 되돌리기 스택 (v0.17). 마지막 항목이 맨 위다. path가 지금 레포와 다르면 빈 스택으로 본다.
+   * 메모리에만 둔다. 앱을 다시 켜면 사라진다
+   */
+  const [undoStack, setUndoStack] = useState<{ path: string; entries: UndoEntry[] } | null>(null);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
@@ -547,6 +587,9 @@ export function RepoWorkspace({
   const contentTokenRef = useRef<string | null>(null);
   /** 콜백(단축키, 메뉴, openPath)에서 최신 모달 상태를 읽는다 */
   const pendingConfirmRef = useRef<PendingConfirm | null>(null);
+  const autoFetchRef = useRef<AutoFetchState | null>(null);
+  /** 자동 fetch 한 번이 큐에 들어가 끝나기를 기다리는 중인가 */
+  const autoFetchInFlight = useRef(false);
   const dialogRef = useRef<DialogState | null>(null);
   const rebaseRef = useRef<RebaseState | null>(null);
 
@@ -559,6 +602,7 @@ export function RepoWorkspace({
   pendingConfirmRef.current = pendingConfirm;
   dialogRef.current = dialog;
   rebaseRef.current = rebase;
+  autoFetchRef.current = autoFetchState;
 
   /**
    * 인증 핸드오프 핸들러를 토스트마다 붙여 준다.
@@ -743,9 +787,12 @@ export function RepoWorkspace({
           setSyncState(null);
           setConflicts([]);
           contentTokenRef.current = null;
+          // 되돌리기 기록은 그 레포의 ref를 가리킨다. 다른 레포에서 쓸 수 없다
+          setUndoStack(null);
         }
         addRecent(info.path);
         setSelectedSha(null);
+        setSelectedShas([]);
         setScrollTarget(null);
         setQuery("");
         lastQuery.current = "";
@@ -1257,6 +1304,45 @@ export function RepoWorkspace({
     setOpenFile(null);
   }, []);
 
+  /** 그 레포의 자동 fetch 기록을 고친다. 지금 기록이 다른 레포 것이면 새로 시작한다 */
+  const patchAutoFetch = useCallback(
+    (path: string, change: (state: AutoFetchState) => AutoFetchState) => {
+      setAutoFetchState((prev) => {
+        if (repoRef.current?.path !== path) {
+          return prev;
+        }
+        return change(prev?.path === path ? prev : freshAutoFetch(path));
+      });
+    },
+    [],
+  );
+
+  /** 수동 Fetch 성공. 멈춰 있던 자동 fetch를 다시 켜고 다음 주기를 지금부터 센다 */
+  const handleFetched = useCallback(
+    (path: string) => {
+      const now = Date.now();
+      patchAutoFetch(path, (state) => ({
+        ...state,
+        lastAttemptAt: now,
+        lastFetchedAt: now,
+        failures: 0,
+        needsAuth: false,
+      }));
+    },
+    [patchAutoFetch],
+  );
+
+  /** 되돌릴 수 있는 쓰기가 성공했다. 기다리는 사이 다른 레포로 바뀌었으면 버린다 */
+  const handleUndoable = useCallback((entry: UndoEntry, path: string) => {
+    if (repoRef.current?.path !== path) {
+      return;
+    }
+    setUndoStack((prev) => {
+      const entries = prev?.path === path ? prev.entries : [];
+      return { path, entries: [...entries, entry].slice(-UNDO_STACK_MAX) };
+    });
+  }, []);
+
   const actions: RepoActions = useRepoActions({
     repoPath: repo?.path ?? "",
     refreshAll,
@@ -1265,7 +1351,11 @@ export function RepoWorkspace({
     runInTerminal,
     onConflicts: handleConflicts,
     writing: writingRef,
+    onFetched: handleFetched,
+    onUndoable: handleUndoable,
   });
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
 
   /**
    * 충돌 패널에서 파일을 클릭했을 때. 충돌 중인 파일은 인덱스에 unmerged로 남아
@@ -1364,6 +1454,48 @@ export function RepoWorkspace({
       ),
     [actions, fire, runRepoCommand, data.stashes],
   );
+
+  /** 지금 레포의 되돌리기 맨 위 항목. 없으면 null */
+  const undoTop: UndoEntry | null =
+    undoStack !== null && undoStack.path === repo?.path
+      ? (undoStack.entries[undoStack.entries.length - 1] ?? null)
+      : null;
+  const undoTopRef = useRef(undoTop);
+  undoTopRef.current = undoTop;
+
+  /**
+   * 툴바 Undo와 ⌘Z. 맨 위 항목을 먼저 스택에서 빼고 실행한다(연타로 같은 항목이 두 번 나가지 않게).
+   * 결과는 액션 계층이 토스트로 알린다. 그 사이 다른 작업이 있어 거절됐으면(stale) 버리고,
+   * git이 거절했으면(failed, 워킹트리 충돌 등) 상태가 그대로라 다시 올려 둔다.
+   * 그 사이 새 항목이 쌓였다면 이 항목은 어차피 stale이라 다시 올리지 않는다
+   */
+  const doUndo = useCallback(() => {
+    const entry = undoTopRef.current;
+    const path = repoRef.current?.path;
+    if (entry === null || path === undefined || actions.busy) {
+      return;
+    }
+    let remaining = -1;
+    setUndoStack((prev) => {
+      if (prev === null || prev.path !== path || prev.entries[prev.entries.length - 1] !== entry) {
+        return prev;
+      }
+      remaining = prev.entries.length - 1;
+      return { path, entries: prev.entries.slice(0, -1) };
+    });
+    runRepoCommand("undo", () => {
+      void actions.undo(entry).then((result) => {
+        if (result !== "failed") {
+          return;
+        }
+        setUndoStack((prev) =>
+          prev !== null && prev.path === path && prev.entries.length === remaining
+            ? { path, entries: [...prev.entries, entry] }
+            : prev,
+        );
+      });
+    });
+  }, [actions, runRepoCommand]);
 
   /**
    * ⌘Enter(Commit). 커밋 메시지는 CommitBox(ui-wip)가 들고 있어 여기서 바로 커밋할 수 없다.
@@ -1538,7 +1670,11 @@ export function RepoWorkspace({
    * base가 HEAD의 조상이 아니거나 범위에 머지 커밋이 있으면 Err이고, 에디터를 열지 않고 이유를 알린다
    */
   const openRebaseEditor = useCallback(
-    async (sha: string) => {
+    async (
+      sha: string,
+      // 다중 선택 Squash가 목록을 받은 뒤 squash 표시를 붙인다. 문제가 있으면 { error }로 멈춘다
+      prepare?: (steps: RebaseStep[]) => { steps: RebaseStep[] } | { error: string },
+    ) => {
       const path = repoRef.current?.path;
       if (path === undefined || rebaseLoadingRef.current) {
         return;
@@ -1576,6 +1712,14 @@ export function RepoWorkspace({
       if (steps.length === 0) {
         showError("There are no commits above this one to rebase.");
         return;
+      }
+      if (prepare !== undefined) {
+        const prepared = prepare(steps);
+        if ("error" in prepared) {
+          showError(prepared.error);
+          return;
+        }
+        steps = prepared.steps;
       }
       setRebase({ base: sha, steps });
     },
@@ -1704,6 +1848,14 @@ export function RepoWorkspace({
       if (modalOpen()) {
         return;
       }
+      if (!event.shiftKey && event.code === "KeyZ") {
+        // ⌘Z = 마지막 작업 되돌리기. 입력창에서는 텍스트 편집의 Undo가 우선이다
+        if (!textFieldFocused()) {
+          event.preventDefault();
+          doUndo();
+        }
+        return;
+      }
       if (!event.shiftKey) {
         // ⌘Enter = Commit.
         // 커밋 메시지 상자 안에서는 CommitBox가 직접 커밋한다. 그 이벤트는
@@ -1757,6 +1909,7 @@ export function RepoWorkspace({
     doPush,
     doCommit,
     doStashPop,
+    doUndo,
     openNewBranchPrompt,
     openStashPrompt,
   ]);
@@ -1829,6 +1982,80 @@ export function RepoWorkspace({
     checkRepoState();
   }, [active, checkRepoState]);
 
+  /**
+   * 자동 fetch (CONTRACTS v0.17 1번). 활성 탭이고 창이 보일 때만 돈다.
+   * 틱마다 마지막 시도 이후 설정한 분이 지났는지만 보고, 지났으면 액션 계층의 직렬 큐에 넣는다.
+   * 쓰기가 큐에 있으면 액션이 "skipped"를 돌려주고, 그때는 시도 시각을 되돌려 다음 틱에 다시 본다.
+   * 실패는 토스트 없이 기록만 한다. 인증 실패면 이 레포의 자동 fetch를 멈춘다
+   */
+  useEffect(() => {
+    const minutes = prefs.autoFetchMinutes;
+    if (repo === null || !active || minutes === 0) {
+      return;
+    }
+    const path = repo.path;
+    const intervalMs = minutes * 60_000;
+    const tick = () => {
+      if (document.visibilityState !== "visible" || autoFetchInFlight.current) {
+        return;
+      }
+      const current = autoFetchRef.current?.path === path ? autoFetchRef.current : null;
+      if (current?.needsAuth === true) {
+        return;
+      }
+      const previousAttempt = current?.lastAttemptAt ?? null;
+      if (previousAttempt !== null && Date.now() - previousAttempt < intervalMs) {
+        return;
+      }
+      autoFetchInFlight.current = true;
+      const startedAt = Date.now();
+      patchAutoFetch(path, (state) => ({ ...state, lastAttemptAt: startedAt }));
+      void actionsRef.current
+        .autoFetch()
+        .then((result) => {
+          if (result === "skipped") {
+            patchAutoFetch(path, (state) => ({ ...state, lastAttemptAt: previousAttempt }));
+            return;
+          }
+          if (result === "ok") {
+            patchAutoFetch(path, (state) => ({
+              ...state,
+              lastFetchedAt: Date.now(),
+              failures: 0,
+              needsAuth: false,
+            }));
+            return;
+          }
+          patchAutoFetch(path, (state) => ({
+            ...state,
+            failures: state.failures + 1,
+            needsAuth: result === "needsAuth",
+          }));
+        })
+        .finally(() => {
+          autoFetchInFlight.current = false;
+        });
+    };
+    // 탭을 열거나 돌아온 직후에도 한 틱 뒤에 판단한다. 바로 돌면 레포를 여는 읽기와 겹친다
+    const timer = window.setInterval(tick, AUTO_FETCH_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [repo, active, prefs.autoFetchMinutes, patchAutoFetch]);
+
+  /** 툴바 Fetch 버튼에 내려줄 요약. 지금 레포 것만 쓴다 */
+  const fetchStatus = useMemo<FetchStatus | null>(() => {
+    if (autoFetchState === null || autoFetchState.path !== repo?.path) {
+      return null;
+    }
+    return {
+      lastFetchedAt: autoFetchState.lastFetchedAt,
+      paused: autoFetchState.needsAuth
+        ? "needsAuth"
+        : autoFetchState.failures >= AUTO_FETCH_FAILURE_LIMIT
+          ? "failing"
+          : null,
+    };
+  }, [autoFetchState, repo]);
+
   const copySha = useCallback(
     (sha: string) => {
       void copyText(sha).then((ok) => {
@@ -1856,6 +2083,78 @@ export function RepoWorkspace({
   /** 메뉴 콜백에서 최신 openPath를 쓴다 (정의 순서와 의존성 배열을 얽지 않기 위함) */
   const openPathRef = useRef(openPath);
   openPathRef.current = openPath;
+
+  /**
+   * 다중 선택된 커밋 행(그래프 순서, 최신이 위). 그래프가 다시 읽혀 사라진 sha는 빠진다.
+   * 둘 이상일 때만 다중 선택 화면이다
+   */
+  const multiRows = useMemo(() => {
+    if (selectedShas.length < 2) {
+      return [];
+    }
+    const wanted = new Set(selectedShas);
+    const rows = data.rows.filter((row) => wanted.has(row.sha));
+    return rows.length < 2 ? [] : rows;
+  }, [selectedShas, data.rows]);
+  const multiActive = multiRows.length >= 2;
+
+  const clearMultiSelection = useCallback(() => setSelectedShas([]), []);
+
+  /** 그래프 밖(필터 목록)에서 고른 단일 선택. 다중 선택은 일반 클릭처럼 풀린다 */
+  const selectSingle = useCallback((sha: string | null) => {
+    setSelectedShas([]);
+    setSelectedSha(sha);
+  }, []);
+
+  const multiShas = useMemo(() => multiRows.map((row) => row.sha), [multiRows]);
+
+  /** git cherry-pick은 인자 순서대로 적용한다. 원래 순서를 지키려면 오래된 것부터 */
+  const cherryPickSelected = useCallback(() => {
+    fire(actions.cherryPick(orderOldestFirst(multiShas, data.rows), false));
+  }, [actions, fire, multiShas, data.rows]);
+
+  /** 되돌리기는 최신부터 해야 뒤 커밋이 앞 커밋 위에서 만든 변경과 부딪히지 않는다 */
+  const revertSelected = useCallback(() => {
+    fire(actions.revert(orderNewestFirst(multiShas, data.rows), false));
+  }, [actions, fire, multiShas, data.rows]);
+
+  /**
+   * 가장 오래된 선택의 부모를 base로 리베이스 목록을 읽고, 선택이 그 안에서 연속이면
+   * 가장 오래된 것은 pick, 나머지는 squash로 표시해 에디터를 연다. 실행은 사용자가 에디터에서 한다
+   */
+  const squashSelected = useCallback(() => {
+    const base = squashBase(multiShas, data.rows);
+    if (base === null) {
+      showError(
+        "Can't squash these commits: the parent of the oldest one is not loaded or it is the root commit.",
+      );
+      return;
+    }
+    const shas = multiShas;
+    void openRebaseEditor(base, (steps) => markSquash(steps, shas));
+  }, [multiShas, data.rows, showError, openRebaseEditor]);
+
+  /** 폴더를 고르면 선택한 커밋마다 .patch 파일을 만든다. 번호가 커밋 순서를 따르게 오래된 것부터 */
+  const createPatchesForSelected = useCallback(() => {
+    const shas = orderOldestFirst(multiShas, data.rows);
+    void pickDirectory().then((dir) => {
+      if (dir !== null) {
+        fire(actions.createPatch(shas, dir));
+      }
+    });
+  }, [multiShas, data.rows, pickDirectory, actions, fire]);
+
+  /** 그래프 순서(최신이 위) 그대로 한 줄에 하나씩 */
+  const copySelectedShas = useCallback(() => {
+    const text = multiShas.join("\n");
+    void copyText(text).then((ok) => {
+      if (ok) {
+        showToast(`Copied ${multiShas.length} shas`, "info");
+        return;
+      }
+      showError("Could not copy to the clipboard.");
+    });
+  }, [multiShas, showToast, showError]);
 
   /** 우클릭한 행의 메시지. 커밋이면 subject, 스태시면 스태시 메시지 */
   const menuMessage = useMemo(() => {
@@ -1942,6 +2241,39 @@ export function RepoWorkspace({
       return copyPathItems;
     }
     const sha = menu.sha;
+    // 다중 선택 안의 행을 우클릭하면 선택 전체에 대한 메뉴다. 밖의 행이면 그 행 하나의 메뉴다
+    if (multiActive && multiShas.includes(sha)) {
+      const n = multiShas.length;
+      return [
+        {
+          label: `Cherry-pick ${n} commits`,
+          title: "Applies them oldest first on top of the current branch",
+          disabled: actions.busy,
+          onSelect: cherryPickSelected,
+        },
+        {
+          label: `Revert ${n} commits`,
+          title: "Creates revert commits, newest first",
+          disabled: actions.busy,
+          onSelect: revertSelected,
+        },
+        {
+          label: `Squash ${n} commits\u2026`,
+          title: rebaseLoading
+            ? "Still reading the commits for the previous request"
+            : "Opens the interactive rebase editor with these commits marked to squash",
+          disabled: actions.busy || rebaseLoading,
+          onSelect: squashSelected,
+        },
+        {
+          label: "Create patch files\u2026",
+          separatorBefore: true,
+          disabled: actions.busy,
+          onSelect: createPatchesForSelected,
+        },
+        { label: "Copy SHAs", onSelect: copySelectedShas },
+      ];
+    }
     // WIP 의사 행과 스태시 행은 진짜 커밋이 아니라 쓰기 대상이 될 수 없다
     const isCommit = sha !== WIP_SHA && data.rows.some((row) => row.sha === sha);
     const label = shortSha(sha);
@@ -2057,6 +2389,13 @@ export function RepoWorkspace({
     openNewTagPrompt,
     openRebaseEditor,
     rebaseLoading,
+    multiActive,
+    multiShas,
+    cherryPickSelected,
+    revertSelected,
+    squashSelected,
+    createPatchesForSelected,
+    copySelectedShas,
   ]);
 
   const previewWidth = useCallback((name: "sidebar" | "detail", width: number) => {
@@ -2652,6 +2991,9 @@ export function RepoWorkspace({
         sync={syncState}
         onCreateBranch={() => openNewBranchPrompt(null)}
         onOpenStashDialog={openStashPrompt}
+        fetchStatus={fetchStatus}
+        undoLabel={undoTop?.label ?? null}
+        onUndo={doUndo}
         latestStashSha={data.stashes[0]?.sha ?? null}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={handleToggleSidebar}
@@ -2757,7 +3099,7 @@ export function RepoWorkspace({
               rows={filteredRows}
               query={query}
               selectedSha={selectedSha}
-              onSelect={setSelectedSha}
+              onSelect={selectSingle}
               total={filterTotal}
               hasMore={data.hasMore}
               onLoadMore={handleLoadMore}
@@ -2771,6 +3113,8 @@ export function RepoWorkspace({
               pendingSha={syncState?.pending == null ? null : repo.headSha}
               selectedSha={selectedSha}
               onSelect={setSelectedSha}
+              selectedShas={selectedShas}
+              onSelectionChange={setSelectedShas}
               onLoadMore={handleLoadMore}
               loading={graphLoading}
               showTags={prefs.showTags}
@@ -2784,7 +3128,7 @@ export function RepoWorkspace({
             />
           )}
         </div>
-        {selectedSha !== null && (
+        {(selectedSha !== null || multiActive) && (
           <SplitHandle
             label="상세 패널 폭 조절"
             getWidth={() => layout.detail}
@@ -2796,7 +3140,19 @@ export function RepoWorkspace({
             onReset={() => resetWidth("detail")}
           />
         )}
-        {isWipSelected && (
+        {multiActive && (
+          <MultiCommitPanel
+            rows={multiRows}
+            busy={actions.busy}
+            onCherryPick={cherryPickSelected}
+            onRevert={revertSelected}
+            onSquash={squashSelected}
+            onCreatePatch={createPatchesForSelected}
+            onCopyShas={copySelectedShas}
+            onClear={clearMultiSelection}
+          />
+        )}
+        {!multiActive && isWipSelected && (
           <WipDetailPanel
             actions={actions}
             repoPath={repo.path}
@@ -2811,7 +3167,7 @@ export function RepoWorkspace({
             }
           />
         )}
-        {selectedSha !== null && !isWipSelected && (
+        {!multiActive && selectedSha !== null && !isWipSelected && (
           <CommitDetailPanel
             key={selectedSha}
             repoPath={repo.path}

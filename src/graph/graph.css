@@ -106,6 +106,23 @@
   pointer-events: none;
 }
 
+/* 다중 선택 행: 옅은 accent 띠 + 왼쪽 굵은 막대. 주 선택(accent 50%)과 진하기로 갈리고,
+   막대가 있어 경로 강조(dim)나 hover 배경 위에서도 "골라 둔 행"이 읽힌다.
+   주 선택과 같은 ::before 자리를 쓰므로 둘이 겹치면 아래 결합 규칙이 이긴다 */
+.gl-row-multi::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+  pointer-events: none;
+}
+
+.gl-row-selected.gl-row-multi::before {
+  background: color-mix(in srgb, var(--accent) 50%, transparent);
+  opacity: 1;
+}
+
 .gl-row-head {
   font-weight: 700;
 }

@@ -28,6 +28,7 @@ import {
 } from "./layout";
 import type { DateMode } from "./layout";
 import { highlightText } from "./mark";
+import { isToggleModifier, rangeShas, toggleShas } from "./selection";
 import { REF_DRAG_MIME } from "./refDrag";
 import { RefPills, refsTitle } from "./RefPills";
 import "./graph.css";
@@ -79,6 +80,10 @@ export interface GraphViewProps {
   dropTargetSha?: string | null;
   /** 진행 중인 머지/리베이스의 대상 커밋. 점 주위에 이중 링을 그린다 */
   pendingSha?: string | null;
+  /** 다중 선택. 커밋 행만(WIP, 스태시 제외). selectedSha는 그대로 "주 선택"이다 */
+  selectedShas?: string[];
+  /** ⌘/Ctrl 클릭은 토글, Shift 클릭은 주 선택부터 범위. 일반 클릭은 다중 선택을 비우고 onSelect */
+  onSelectionChange?: (shas: string[]) => void;
 }
 
 /** 보이는 범위 위아래로 더 그려두는 행 수 */
@@ -138,6 +143,8 @@ interface RowProps {
   dropTarget: boolean;
   /** 진행 중인 머지/리베이스의 대상이면 true (주황 테두리) */
   pending: boolean;
+  /** 다중 선택에 들어 있으면 true. 주 선택과 겹칠 수 있다 */
+  multi: boolean;
   /** 폭이 부족해 드롭된 컬럼 비트마스크. 원시값이라 memo가 유지된다 */
   hiddenMask: number;
   /** 검색어. 빈 문자열이면 강조 없이 원본 문자열을 그대로 렌더한다 */
@@ -145,7 +152,8 @@ interface RowProps {
   dateMode: DateMode;
   /** 상대 시간 기준 시각(ms). 분 단위로 양자화돼 있어 스크롤 중 memo를 깨지 않는다 */
   nowMs: number;
-  onSelect: (sha: string) => void;
+  /** 수식키(⌘/Ctrl, Shift)로 다중 선택을 가르므로 이벤트를 같이 넘긴다 */
+  onSelect: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
   onDoubleClick: (sha: string) => void;
   onContextMenu: (sha: string, event: MouseEvent<HTMLDivElement>) => void;
   /** hover 강조 기준 커밋 보고. 같은 행이면 GraphView가 재계산 없이 버린다 */
@@ -162,6 +170,7 @@ const Row = memo(function Row({
   dimmed,
   dropTarget,
   pending,
+  multi,
   hiddenMask,
   highlightQuery,
   dateMode,
@@ -174,9 +183,11 @@ const Row = memo(function Row({
   const className =
     "gl-row" +
     (selected ? " gl-row-selected" : "") +
+    (multi ? " gl-row-multi" : "") +
     (row.isHead ? " gl-row-head" : "") +
-    // dim은 액션 상태 아래에 둔다. 드롭 후보와 진행 중 행은 경로 밖이어도 또렷해야 한다
-    (dimmed && !dropTarget && !pending ? " gl-row-dim" : "") +
+    // dim은 액션 상태 아래에 둔다. 드롭 후보와 진행 중 행은 경로 밖이어도 또렷해야 한다.
+    // 다중 선택도 같다. 주 선택의 경로 밖에 있어도 "골라 둔 행"은 읽혀야 한다
+    (dimmed && !dropTarget && !pending && !multi ? " gl-row-dim" : "") +
     (pending ? " gl-row-pending" : "") +
     (dropTarget ? " gl-row-drop" : "");
   const avatarColor = authorColorIndex(row.authorEmail);
@@ -188,7 +199,7 @@ const Row = memo(function Row({
     <div
       className={className}
       style={{ top, height: ROW_HEIGHT }}
-      onClick={() => onSelect(row.sha)}
+      onClick={(event) => onSelect(row.sha, event)}
       onDoubleClick={() => onDoubleClick(row.sha)}
       onContextMenu={(event) => onContextMenu(row.sha, event)}
       // enter만으로는 커서가 멈춘 사이 가상 스크롤로 행이 바뀐 경우를 놓친다
@@ -422,6 +433,8 @@ export function GraphView({
   onRowDrop,
   dropTargetSha,
   pendingSha,
+  selectedShas,
+  onSelectionChange,
 }: GraphViewProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -708,13 +721,109 @@ export function GraphView({
   useEffect(() => {
     onSelectRef.current = onSelect;
   }, [onSelect]);
-  const handleSelect = useCallback((sha: string) => onSelectRef.current(sha), []);
 
   const onSelectWipRef = useRef(onSelectWip);
   useEffect(() => {
     onSelectWipRef.current = onSelectWip;
   }, [onSelectWip]);
-  const handleSelectWip = useCallback(() => onSelectWipRef.current?.(), []);
+
+  // ── 다중 선택 ─────────────────────────────────────────
+  // 판정은 Set 한 번(행당 O(1))이다. 배열을 그대로 내려 includes를 부르면
+  // 보이는 행 수 x 선택 수가 되어 수백 개를 고른 상태에서 스크롤이 무거워진다
+  const selectedSet = useMemo(
+    () => (selectedShas && selectedShas.length > 0 ? new Set(selectedShas) : null),
+    [selectedShas],
+  );
+
+  /**
+   * 클릭/키 핸들러가 읽는 최신 선택 상태. 핸들러를 useCallback 고정 참조로 두어야
+   * 선택이 바뀔 때 Row memo가 깨지지 않는다(바뀐 행만 multi prop이 달라 다시 그린다)
+   */
+  const selectionRef = useRef({ rows, shaToRow, selectedSha, selectedShas, selectedSet });
+  useEffect(() => {
+    selectionRef.current = { rows, shaToRow, selectedSha, selectedShas, selectedSet };
+  }, [rows, shaToRow, selectedSha, selectedShas, selectedSet]);
+
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  useEffect(() => {
+    onSelectionChangeRef.current = onSelectionChange;
+  }, [onSelectionChange]);
+
+  /**
+   * Shift 범위의 움직이는 끝. 기준(고정 끝)은 항상 주 선택이다.
+   * Shift+↑↓가 한 칸씩 범위를 늘리고 줄일 때 어디서부터 움직일지를 기억한다
+   */
+  const rangeFocusRef = useRef<string | null>(null);
+
+  /** 주 선택이 로드된 커밋 행이면 그 행 인덱스. WIP, 스태시, 선택 없음이면 undefined */
+  const primaryRowIndex = (): number | undefined => {
+    const { selectedSha: primary, shaToRow: map } = selectionRef.current;
+    return primary === null ? undefined : map.get(primary);
+  };
+
+  /** 결과가 주 선택 하나뿐이면 다중 선택이 아니다. 빈 배열로 접어 "선택 없음" 상태로 돌린다 */
+  const emitSelection = useCallback((shas: string[]) => {
+    const change = onSelectionChangeRef.current;
+    if (!change) {
+      return;
+    }
+    const primary = selectionRef.current.selectedSha;
+    change(shas.length === 1 && shas[0] === primary ? [] : shas);
+  }, []);
+
+  /** 비어 있으면 부르지 않는다. 일반 클릭마다 shell 상태 갱신이 한 번 더 도는 걸 막는다 */
+  const clearSelection = useCallback(() => {
+    rangeFocusRef.current = null;
+    const current = selectionRef.current.selectedShas;
+    if (current && current.length > 0) {
+      onSelectionChangeRef.current?.([]);
+    }
+  }, []);
+
+  const handleRowClick = useCallback(
+    (sha: string, event: MouseEvent<HTMLDivElement>) => {
+      // 배선되지 않았으면 수식키를 보지 않는다. 예전 동작 그대로다
+      if (!onSelectionChangeRef.current) {
+        onSelectRef.current(sha);
+        return;
+      }
+      const { rows: list, shaToRow: map, selectedSha: primary, selectedShas: current } =
+        selectionRef.current;
+      if (isToggleModifier(event)) {
+        const primaryCommit = primaryRowIndex() !== undefined ? primary : null;
+        emitSelection(toggleShas(current ?? [], sha, primaryCommit));
+        rangeFocusRef.current = sha;
+        return;
+      }
+      if (event.shiftKey) {
+        const anchor = primaryRowIndex();
+        const target = map.get(sha);
+        // 기준이 없으면(주 선택이 없거나 WIP, 스태시) 범위를 만들 수 없다. 일반 클릭으로 처리한다
+        if (anchor !== undefined && target !== undefined) {
+          emitSelection(rangeShas(list, anchor, target));
+          rangeFocusRef.current = sha;
+          return;
+        }
+      }
+      clearSelection();
+      onSelectRef.current(sha);
+    },
+    [emitSelection, clearSelection],
+  );
+
+  /** 스태시 행 클릭. 다중 선택에 참여하지 않으니 수식키와 상관없이 일반 클릭이다 */
+  const handlePseudoSelect = useCallback(
+    (sha: string) => {
+      clearSelection();
+      onSelectRef.current(sha);
+    },
+    [clearSelection],
+  );
+
+  const handleSelectWip = useCallback(() => {
+    clearSelection();
+    onSelectWipRef.current?.();
+  }, [clearSelection]);
 
   const onDoubleClickRef = useRef(onRowDoubleClick);
   useEffect(() => {
@@ -735,9 +844,15 @@ export function GraphView({
       return;
     }
     event.preventDefault();
+    // 다중 선택 안의 행이면 선택을 그대로 두고 메뉴만 연다. shell이 다중용 메뉴로 바꾼다
+    if (selectionRef.current.selectedSet?.has(sha)) {
+      handler(sha, event.clientX, event.clientY);
+      return;
+    }
+    clearSelection();
     onSelectRef.current(sha);
     handler(sha, event.clientX, event.clientY);
-  }, []);
+  }, [clearSelection]);
 
   // ── ref 드래그 수신 ─────────────────────────────────────────
   // GraphView는 payload를 해석하지 않는다. 어느 행 위인지만 알려주고,
@@ -880,8 +995,9 @@ export function GraphView({
       bgColor: bgColorRef.current,
       dropRow: dropRowIndex,
       pendingRow: pendingRowIndex,
+      multi: selectedSet,
     });
-  }, [rows, layout, highlight, graphWidth, size.height, dropRowIndex, pendingRowIndex]);
+  }, [rows, layout, highlight, graphWidth, size.height, dropRowIndex, pendingRowIndex, selectedSet]);
 
   const syncRange = useCallback(() => {
     if (size.height <= 0) {
@@ -1034,6 +1150,15 @@ export function GraphView({
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       const key = event.key;
+      if (key === "Escape") {
+        // 다중 선택이 있을 때만 소비한다. 없으면 상위(모달 등)가 Escape를 받게 둔다
+        const current = selectionRef.current.selectedShas;
+        if (onSelectionChangeRef.current && current && current.length > 0) {
+          event.preventDefault();
+          clearSelection();
+        }
+        return;
+      }
       // ⌘↑/⌘↓는 Home/End와 같은 동작이라 화살표 이동보다 먼저 가른다
       const toFirst = key === "Home" || (event.metaKey && key === "ArrowUp");
       const toLast = key === "End" || (event.metaKey && key === "ArrowDown");
@@ -1047,6 +1172,27 @@ export function GraphView({
       if (rowCount === 0) {
         return;
       }
+
+      // Shift+↑↓: 주 선택을 고정 끝으로 두고 움직이는 끝을 한 칸씩 옮긴다.
+      // 커밋 행 인덱스가 화면 순서와 같아 의사 행은 저절로 건너뛴다
+      if (byStep && event.shiftKey && onSelectionChangeRef.current) {
+        const anchor = primaryRowIndex();
+        if (anchor !== undefined) {
+          const focusSha = rangeFocusRef.current;
+          const focus =
+            focusSha !== null && selectedSet?.has(focusSha) ? shaToRow.get(focusSha) : undefined;
+          const from = focus ?? anchor;
+          const next = Math.max(0, Math.min(rowCount - 1, from + (key === "ArrowDown" ? 1 : -1)));
+          if (next !== from) {
+            emitSelection(rangeShas(rows, anchor, next));
+            rangeFocusRef.current = rows[next].sha;
+            scrollToDisplayIndex(toDisplay(next), "nearest");
+          }
+          return;
+        }
+      }
+      // 일반 이동은 주 선택만 옮긴다. 남은 다중 선택이 새 주 선택과 따로 놀지 않게 비운다
+      clearSelection();
 
       // WIP 행은 목록 맨 위 커밋보다 위에 있으니 Home의 도착지도 WIP가 우선이다
       const wipSelectable = wipDisplayIndex >= 0 && onSelectWipRef.current !== undefined;
@@ -1113,6 +1259,10 @@ export function GraphView({
       selectedDisplayIndex,
       findCommitDisplay,
       scrollToDisplayIndex,
+      selectedSet,
+      shaToRow,
+      emitSelection,
+      clearSelection,
     ],
   );
 
@@ -1159,7 +1309,7 @@ export function GraphView({
             highlightQuery={highlightQuery}
             dateMode={dateMode}
             nowMs={nowMs}
-            onSelect={handleSelect}
+            onSelect={handlePseudoSelect}
             onDoubleClick={handleDoubleClick}
             onContextMenu={handleContextMenu}
             // 스태시 커밋은 로드된 rows에 없으니 앵커 커밋을 기준 삼는다
@@ -1200,11 +1350,12 @@ export function GraphView({
         dimmed={isDimmed(rowIndex)}
         dropTarget={rowIndex === dropRowIndex}
         pending={rowIndex === pendingRowIndex}
+        multi={selectedSet !== null && selectedSet.has(row.sha)}
         hiddenMask={hiddenMask}
         highlightQuery={highlightQuery}
         dateMode={dateMode}
         nowMs={nowMs}
-        onSelect={handleSelect}
+        onSelect={handleRowClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
         onHover={handleHover}

@@ -12,7 +12,13 @@ export interface PrefValues {
   autoUpdateCheck: boolean;
   /** 0.8 ~ 1.6 */
   zoom: number;
+  /** 자동 fetch 주기(분). 0이면 끔 (v0.17) */
+  autoFetchMinutes: AutoFetchMinutes;
 }
+
+/** 자동 fetch 주기 선택지. 0은 끔 */
+export const AUTO_FETCH_CHOICES = [0, 1, 5, 10, 15, 30] as const;
+export type AutoFetchMinutes = (typeof AUTO_FETCH_CHOICES)[number];
 
 export interface PreferencesProps {
   open: boolean;
@@ -80,6 +86,21 @@ export function Preferences({ open, onClose, values, onChange }: PreferencesProp
         <p className="pf-hint">
           Restore repositories on launch - 마지막에 열려 있던 탭은 항상 복원됩니다.
         </p>
+        <h3 className="pf-section">Auto-fetch</h3>
+        <div className="pf-radios" role="radiogroup" aria-label="Auto-fetch interval">
+          {AUTO_FETCH_CHOICES.map((minutes) => (
+            <Radio
+              key={minutes}
+              name="pf-auto-fetch"
+              label={minutes === 0 ? "Off" : minutes === 1 ? "Every minute" : `Every ${minutes} minutes`}
+              checked={values.autoFetchMinutes === minutes}
+              onSelect={() => onChange({ autoFetchMinutes: minutes })}
+            />
+          ))}
+        </div>
+        <p className="pf-hint">
+          Fetches the repository in the active tab while the window is visible. Failures stay quiet and show up on the Fetch button instead.
+        </p>
       </>
     );
   } else if (tab === "appearance") {
@@ -121,11 +142,13 @@ export function Preferences({ open, onClose, values, onChange }: PreferencesProp
         <h3 className="pf-section">Date format</h3>
         <div className="pf-radios" role="radiogroup" aria-label="Date format">
           <Radio
+            name="pf-date-mode"
             label="Absolute (2026. 09. 02. 14:03)"
             checked={values.dateMode === "absolute"}
             onSelect={() => onChange({ dateMode: "absolute" })}
           />
           <Radio
+            name="pf-date-mode"
             label="Relative (3h ago)"
             checked={values.dateMode === "relative"}
             onSelect={() => onChange({ dateMode: "relative" })}
@@ -211,10 +234,12 @@ function Check({
 }
 
 function Radio({
+  name,
   label,
   checked,
   onSelect,
 }: {
+  name: string;
   label: string;
   checked: boolean;
   onSelect: () => void;
@@ -223,7 +248,7 @@ function Radio({
     <label className="pf-check">
       <input
         type="radio"
-        name="pf-date-mode"
+        name={name}
         checked={checked}
         onChange={() => onSelect()}
       />

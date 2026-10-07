@@ -1,0 +1,68 @@
+/* 그래프 다중 선택 패널 (MultiCommitPanel). 레이아웃은 .detail-panel을 그대로 쓴다 */
+
+.multi-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.multi-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--fg-1);
+}
+
+.multi-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-1);
+}
+
+.multi-list {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+
+.multi-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.multi-item:hover {
+  background: var(--hover-bg);
+}
+
+.multi-sha {
+  grid-row: span 2;
+  font-family: var(--font-mono);
+  color: var(--link);
+}
+
+.multi-subject {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-1);
+}
+
+.multi-author {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-2);
+  font-size: 11px;
+}

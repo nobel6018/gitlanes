@@ -440,3 +440,51 @@ export interface CommitOptions {
 // [패치]
 //   git_create_patch(path, shas: string[], outDir: string) -> OpResult  // format-patch
 //   git_apply_patch_file(path, file: string, threeWay: boolean)
+
+// ════════════════════════════════════════════════════════════
+// v0.17 작업 되돌리기
+// ════════════════════════════════════════════════════════════
+
+/** 되돌리기 판단용 ref 스냅샷. Tauri command: get_ref_snapshot(path) */
+export interface RefSnapshot {
+  /** HEAD가 가리키는 브랜치의 전체 이름("refs/heads/main"). detached면 null */
+  headRef: string | null;
+  headSha: string;
+  /** 로컬 브랜치와 태그의 전체 ref 이름 → sha ("refs/heads/x", "refs/tags/v1") */
+  refs: Record<string, string>;
+}
+
+/**
+ * 되돌릴 수 있는 작업. 데이터 자체가 사라지는 작업(discard, clean, stash drop)은 되돌릴 수 없어 넣지 않는다.
+ * merge, pull, cherry-pick, rebase는 워킹트리까지 바뀌어 ref만 되돌려서는 원상복구가 안 되므로 넣지 않는다
+ */
+export type UndoKind =
+  | "commit"
+  | "amend"
+  | "checkout"
+  | "createBranch"
+  | "deleteBranch"
+  | "renameBranch"
+  | "createTag"
+  | "deleteTag"
+  | "reset";
+
+export interface UndoEntry {
+  kind: UndoKind;
+  /** 버튼과 메뉴에 쓰는 문구. 예: `Undo commit "fix: typo"` */
+  label: string;
+  before: RefSnapshot;
+  after: RefSnapshot;
+  /** kind가 "reset"일 때 그 reset의 모드. 그 외는 null */
+  resetMode: "soft" | "mixed" | "hard" | null;
+}
+
+// get_ref_snapshot(path) -> RefSnapshot
+// git_undo(path, entry: UndoEntry) -> OpResult
+//   현재 상태가 entry.after와 다르면(그 사이 다른 작업이 있었으면) git을 실행하지 않고 ok=false와
+//   사람이 읽을 이유를 돌려준다. 남의 작업을 덮어쓰지 않기 위해서다. 비교는 이 작업이 바꾼 ref만 본다.
+//   kind별 복원:
+//   - commit, amend: HEAD 브랜치를 before.headSha로 `reset --soft` (변경은 스테이지에 남는다)
+//   - checkout: before.headRef(없으면 before.headSha)로 checkout. 워킹트리가 막으면 git이 거절한다
+//   - createBranch/deleteBranch/renameBranch/createTag/deleteTag: update-ref로 before 상태 복원
+//   - reset: before.headSha로 같은 모드 reset. hard는 워킹트리가 깨끗할 때만(아니면 ok=false)

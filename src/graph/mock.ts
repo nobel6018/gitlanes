@@ -381,11 +381,20 @@ export interface MockScenario {
   pendingSha: string;
   /** ui-sidebar가 dataTransfer에 싣는 것과 같은 모양의 payload(JSON 문자열) */
   dragPayload: string;
+  /** 다중 선택 강조를 확인할 주 선택. 경로 강조(dim)가 켜지는 기준이다 */
+  multiPrimarySha: string;
+  /**
+   * 다중 선택 초기값. 주 선택을 포함한 연속 구간 하나와 떨어진 행 하나를 섞어
+   * 경로 강조 밖(dim)에 놓인 다중 선택 행도 한 화면에 나오게 한다
+   */
+  multiShas: string[];
 }
 
 /** 강조 대상으로 고를 행. 스크롤 없이 한 화면에 같이 보이는 위치다 */
 const SCENARIO_DROP_ROW = 6;
 const SCENARIO_PENDING_ROW = 3;
+const SCENARIO_MULTI_PRIMARY_ROW = 1;
+const SCENARIO_MULTI_ROWS = [1, 2, 3, 9];
 
 export function makeMockScenario(rowCount: number): MockScenario {
   const data = makeMockGraph(rowCount);
@@ -408,5 +417,7 @@ export function makeMockScenario(rowCount: number): MockScenario {
     dropTargetSha: pick(SCENARIO_DROP_ROW),
     pendingSha: pick(SCENARIO_PENDING_ROW),
     dragPayload: JSON.stringify(payload),
+    multiPrimarySha: pick(SCENARIO_MULTI_PRIMARY_ROW),
+    multiShas: SCENARIO_MULTI_ROWS.map(pick),
   };
 }

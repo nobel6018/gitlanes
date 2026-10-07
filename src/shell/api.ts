@@ -11,11 +11,13 @@ import type {
   PullMode,
   RebaseStep,
   RefEntry,
+  RefSnapshot,
   RemoteInfo,
   RepoInfo,
   RepoState,
   SearchMatch,
   SyncState,
+  UndoEntry,
   WipArea,
   WipDiff,
   WipDetails,
@@ -519,6 +521,21 @@ export function gitApplyPatchFile(
   threeWay: boolean,
 ): Promise<OpResult> {
   return invoke<OpResult>("git_apply_patch_file", { path, file, threeWay });
+}
+
+// ── 되돌리기 (v0.17) ───────────────────────────────────────
+
+/** HEAD와 로컬 브랜치, 태그의 위치. 되돌릴 수 있는 쓰기 전후로 찍는다 */
+export function getRefSnapshot(path: string): Promise<RefSnapshot> {
+  return invoke<RefSnapshot>("get_ref_snapshot", { path });
+}
+
+/**
+ * entry가 기록한 작업을 되돌린다. 그 사이 다른 작업으로 상태가 entry.after와 달라졌으면
+ * git을 실행하지 않고 ok=false와 이유를 돌려준다
+ */
+export function gitUndo(path: string, entry: UndoEntry): Promise<OpResult> {
+  return invoke<OpResult>("git_undo", { path, entry });
 }
 
 // ── 내장 터미널 (인증 핸드오프) ─────────────────────────────

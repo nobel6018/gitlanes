@@ -76,6 +76,7 @@ const GROUPS: ShortcutGroup[] = [
       { combos: ["Mod+Shift+N"], label: "New branch" },
       { combos: ["Mod+Shift+S"], label: "Stash changes" },
       { combos: ["Mod+Shift+O"], label: "Pop latest stash" },
+      { combos: ["Mod+Z"], label: "Undo the last commit, checkout, branch, tag or reset" },
     ],
   },
   {
