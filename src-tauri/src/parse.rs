@@ -224,37 +224,48 @@ pub fn parse_stashes(out: &str) -> Vec<StashInfo> {
     stashes
 }
 
+/// FNV-1a 64비트. 의존성을 늘리지 않으려고 직접 쓴다. 충돌 내성은 필요 없고
+/// "바뀌었는가"만 보면 되는 지문 용도다([`graph_token`], WIP `content_token`).
+pub struct Fnv(u64);
+
+impl Fnv {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    pub fn new() -> Self {
+        Self(Self::OFFSET)
+    }
+
+    pub fn absorb(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    pub fn hex(&self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
 /// refs 상태 지문. ref 하나라도 이름, 종류, 가리키는 커밋이 바뀌면 값이 달라진다.
 ///
 /// 프론트는 skip 페이징 도중 이 값이 바뀌면 누적분을 버리고 전체를 다시 읽는다.
 /// 입력 순서는 [`parse_ref_entries`]의 정렬(종류 → 이름)이라 실행마다 고정된다.
-/// 의존성을 늘리지 않으려고 FNV-1a 64비트를 직접 쓴다. 충돌 내성은 필요 없고
-/// "바뀌었는가"만 보면 되는 용도다.
 pub fn graph_token(refs: &[RefEntry], head_sha: &str) -> String {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    let mut hash = OFFSET;
-    let mut absorb = |bytes: &[u8]| {
-        for &byte in bytes {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(PRIME);
-        }
-    };
-
+    let mut hash = Fnv::new();
     for entry in refs {
         // 종류까지 섞어야 같은 이름의 로컬/원격 브랜치가 구분된다
-        absorb(format!("{:?}", entry.kind).as_bytes());
-        absorb(b"\x1f");
-        absorb(entry.name.as_bytes());
-        absorb(b"\x1f");
-        absorb(entry.sha.as_bytes());
-        absorb(b"\x1e");
+        hash.absorb(format!("{:?}", entry.kind).as_bytes());
+        hash.absorb(b"\x1f");
+        hash.absorb(entry.name.as_bytes());
+        hash.absorb(b"\x1f");
+        hash.absorb(entry.sha.as_bytes());
+        hash.absorb(b"\x1e");
     }
-    absorb(b"HEAD\x1f");
-    absorb(head_sha.as_bytes());
-
-    format!("{hash:016x}")
+    hash.absorb(b"HEAD\x1f");
+    hash.absorb(head_sha.as_bytes());
+    hash.hex()
 }
 
 /// `git status --porcelain -z` 출력을 세어 미커밋 변경 요약을 만든다. 깨끗하면 None.
@@ -264,7 +275,15 @@ pub fn graph_token(refs: &[RefEntry], head_sha: &str) -> String {
 ///
 /// 한 파일이 레코드 두 개로 나오는 경우가 있어(예: `git rm --cached`는 `D `와 `??`를
 /// 함께 낸다) 경로로 중복을 제거한다.
-pub fn parse_status(out: &str) -> Option<WipInfo> {
+///
+/// `content_token`은 레코드 순서대로 모은 워킹 트리 경로를 받아 [`WipInfo::content_token`]을
+/// 만든다. 지문은 파일 시스템을 읽어야 해서 이 모듈(순수 함수만)에 두지 않고 호출자가 넘긴다.
+/// 깨끗하면 부르지 않는다.
+pub fn parse_status<F>(out: &str, content_token: F) -> Option<WipInfo>
+where
+    F: FnOnce(&[&str]) -> String,
+{
+    let mut paths: Vec<&str> = Vec::new();
     let mut changed: HashSet<&str> = HashSet::new();
     let mut staged: HashSet<&str> = HashSet::new();
     // 세 집합은 서로 겹칠 수 있다. WipInfo 필드 주석 참고.
@@ -287,7 +306,9 @@ pub fn parse_status(out: &str) -> Option<WipInfo> {
             chunks.next();
         }
 
-        changed.insert(path);
+        if changed.insert(path) {
+            paths.push(path);
+        }
         if index_mark == '?' {
             untracked.insert(path);
         } else if index_mark != ' ' {
@@ -302,6 +323,7 @@ pub fn parse_status(out: &str) -> Option<WipInfo> {
         changed_files: changed.len(),
         staged_files: staged.len(),
         untracked_files: untracked.len(),
+        content_token: content_token(&paths),
     })
 }
 
@@ -651,6 +673,18 @@ mod tests {
         assert_ne!(graph_token(&base, "ccc"), token);
     }
 
+    fn no_token(_paths: &[&str]) -> String {
+        String::new()
+    }
+
+    #[test]
+    fn 지문_함수는_중복_없는_워킹_트리_경로를_레코드_순서로_받는다() {
+        let out = "R  new.txt\0old.txt\0D  f.txt\0?? f.txt\0 M b.txt\0";
+        let wip = parse_status(out, |paths| paths.join("|")).unwrap();
+        // rename 원본(old.txt)은 워킹 트리에 없으니 넣지 않는다. f.txt는 한 번만
+        assert_eq!(wip.content_token, "new.txt|f.txt|b.txt");
+    }
+
     #[test]
     fn status_출력에서_변경과_staged를_센다() {
         // git status --porcelain -z 실측 출력 형태
@@ -663,7 +697,7 @@ mod tests {
             "?? sub/\0",                      // untracked
             "?? untracked.txt\0",
         );
-        let wip = parse_status(out).expect("변경이 있으면 Some이다");
+        let wip = parse_status(out, no_token).expect("변경이 있으면 Some이다");
         assert_eq!(wip.changed_files, 7);
         assert_eq!(wip.staged_files, 4, "AM, D, R, A만 index에 올라가 있다");
         assert_eq!(wip.untracked_files, 2, "?? 두 줄");
@@ -672,7 +706,7 @@ mod tests {
     #[test]
     fn unstaged_rename도_파일_하나로_센다() {
         let out = " R new.txt\0old.txt\0";
-        let wip = parse_status(out).unwrap();
+        let wip = parse_status(out, no_token).unwrap();
         assert_eq!(wip.changed_files, 1);
         assert_eq!(wip.staged_files, 0);
         assert_eq!(wip.untracked_files, 0);
@@ -681,7 +715,7 @@ mod tests {
     #[test]
     fn 같은_경로가_두_레코드로_나오면_한_번만_센다() {
         // git rm --cached는 index 삭제(D )와 작업 트리 잔존(??)을 함께 낸다
-        let wip = parse_status("D  f.txt\0?? f.txt\0").unwrap();
+        let wip = parse_status("D  f.txt\0?? f.txt\0", no_token).unwrap();
         assert_eq!(wip.changed_files, 1);
         assert_eq!(wip.staged_files, 1);
         // 같은 파일이 staged이면서 untracked다. 세 수를 더해도 changed가 되지 않는다.
@@ -690,13 +724,13 @@ mod tests {
 
     #[test]
     fn 깨끗한_작업_트리는_none이다() {
-        assert!(parse_status("").is_none());
-        assert!(parse_status("\0").is_none());
+        assert!(parse_status("", no_token).is_none());
+        assert!(parse_status("\0", no_token).is_none());
     }
 
     #[test]
     fn 충돌_항목도_변경으로_센다() {
-        let wip = parse_status("UU conflict.txt\0").unwrap();
+        let wip = parse_status("UU conflict.txt\0", no_token).unwrap();
         assert_eq!(wip.changed_files, 1);
         assert_eq!(wip.staged_files, 1);
         assert_eq!(wip.untracked_files, 0, "충돌은 추적 중인 파일이다");

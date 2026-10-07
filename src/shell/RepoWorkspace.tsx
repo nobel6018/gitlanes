@@ -169,11 +169,28 @@ function sameConflicts(a: ConflictFile[], b: ConflictFile[]): boolean {
   });
 }
 
+/**
+ * WIP 행의 모양(파일 수 배지)이 같은가. 다르면 그래프까지 다시 읽는다.
+ * untrackedFiles는 v0.18 이전 rust가 안 채웠을 수 있어 없으면 0으로 본다
+ */
 function sameWip(a: WipInfo | null, b: WipInfo | null): boolean {
   if (a === null || b === null) {
     return a === b;
   }
-  return a.changedFiles === b.changedFiles && a.stagedFiles === b.stagedFiles;
+  return (
+    a.changedFiles === b.changedFiles &&
+    a.stagedFiles === b.stagedFiles &&
+    (a.untrackedFiles ?? 0) === (b.untrackedFiles ?? 0)
+  );
+}
+
+/**
+ * 내용 지문(v0.15.1). 파일 수가 같아도 편집이 있었는지 가린다.
+ * rust가 아직 필드를 안 채운 빌드에서는 undefined가 오므로 null로 접어 비교한다
+ * (둘 다 없으면 "같음"이라 지금까지와 동작이 같다)
+ */
+function wipContentToken(wip: WipInfo | null): string | null {
+  return wip?.contentToken ?? null;
 }
 
 function readFlag(key: string, fallback: boolean): boolean {
@@ -484,6 +501,15 @@ export function RepoWorkspace({
   const syncReq = useRef(0);
   /** Repository 메뉴 카운터의 직전 값 */
   const lastRepoCommands = useRef<RepoCommandNonces>(NO_REPO_COMMANDS);
+  /**
+   * 마지막으로 반영한 WIP 내용 지문. 그래프를 다시 읽지 않고 diff만 새로 읽는 경로가 있어
+   * 그래프의 wip(wipRef)과 따로 들고 있어야 같은 변화를 매 폴링마다 다시 잡지 않는다
+   */
+  const contentTokenRef = useRef<string | null>(null);
+  /** 콜백(단축키, 메뉴, openPath)에서 최신 모달 상태를 읽는다 */
+  const pendingConfirmRef = useRef<PendingConfirm | null>(null);
+  const dialogRef = useRef<DialogState | null>(null);
+  const rebaseRef = useRef<RebaseState | null>(null);
 
   const data: GraphData = graph ?? EMPTY_GRAPH;
   repoRef.current = repo;
@@ -491,21 +517,37 @@ export function RepoWorkspace({
   rowCount.current = data.rows.length;
   loadingRef.current = graphLoading;
   wipRef.current = data.wip;
+  pendingConfirmRef.current = pendingConfirm;
+  dialogRef.current = dialog;
+  rebaseRef.current = rebase;
 
   /**
    * 인증 핸드오프 핸들러를 토스트마다 붙여 준다.
    * runInTerminal은 아래에서 정의되지만 콜백 안에서만 쓰이므로 ref로 지연 참조한다
    */
-  const runInTerminalRef = useRef<(command: string[]) => void>(() => undefined);
+  const runInTerminalRef = useRef<(command: string[], repoPath?: string) => void>(
+    () => undefined,
+  );
 
-  /** 액션 계층이 주는 ToastSpec을 스택에 쌓는다 */
-  const pushToast = useCallback((spec: ToastSpec) => {
+  /**
+   * 액션 계층이 주는 ToastSpec을 스택에 쌓는다.
+   * repoPath는 작업을 시작한 레포다. 토스트가 만들어지는 시점에 고정해 핸들러에 묶어 둔다.
+   * 오류 토스트는 사용자가 닫을 때까지 남으므로, 그 사이 탭이 다른 레포로 바뀌어도
+   * "Run in terminal"은 원래 레포에서 돌아야 한다 (audit-state H1)
+   */
+  const pushToast = useCallback((spec: ToastSpec, repoPath?: string) => {
     toastSeq.current += 1;
     const id = toastSeq.current;
+    const origin = repoPath ?? repoRef.current?.path;
     const item: ToastItem = {
       id,
       ...spec,
-      onRunInTerminal: (command) => runInTerminalRef.current(command),
+      // 표시 문구와 실제 실행이 같은 formatCommand를 거쳐야 화면이 거짓말을 하지 않는다
+      commandLine:
+        spec.command !== undefined && spec.command.length > 0 && origin !== undefined
+          ? formatCommand(spec.command, origin)
+          : undefined,
+      onRunInTerminal: (command) => runInTerminalRef.current(command, origin),
     };
     setToasts((prev) => [...prev.slice(-(MAX_TOASTS - 1)), item]);
   }, []);
@@ -578,6 +620,7 @@ export function RepoWorkspace({
         }
         if (page.skip === 0) {
           graphToken.current = loaded.graphToken;
+          contentTokenRef.current = wipContentToken(loaded.wip);
           setGraph(loaded);
           return;
         }
@@ -639,6 +682,22 @@ export function RepoWorkspace({
       setOpening(true);
       try {
         const info = await openRepo(path);
+        const previous = repoRef.current;
+        if (previous !== null && previous.path !== info.path) {
+          // 같은 탭이 다른 레포로 바뀐다. 이전 레포를 향해 떠 있던 확인창, 입력 다이얼로그,
+          // 리베이스 에디터를 그대로 두면 새 레포 화면에서 확정되어 엉뚱한 레포에 쓴다
+          // (audit-state M5). 확인창은 거절로 끝내 run이 조용히 돌아가게 한다
+          pendingConfirmRef.current?.resolve(false);
+          pendingConfirmRef.current = null;
+          setPendingConfirm(null);
+          setDialog(null);
+          setRebase(null);
+          // 이전 레포의 동기화 응답이 늦게 와도 버리도록 요청 번호를 올린다
+          syncReq.current += 1;
+          setSyncState(null);
+          setConflicts([]);
+          contentTokenRef.current = null;
+        }
         addRecent(info.path);
         setSelectedSha(null);
         setScrollTarget(null);
@@ -955,7 +1014,9 @@ export function RepoWorkspace({
       if (id === null) {
         return false;
       }
-      termWrite(id, `${line}\n`).catch((err: unknown) => showError(errorMessage(err)));
+      // 쓰다 만 입력이 있으면 명령 앞에 붙어 실행된다. ^E로 줄 끝으로 간 뒤 ^U로
+      // 줄을 지운다 (bash의 ^U는 커서 앞만 지우므로 ^E가 먼저 필요하다)
+      termWrite(id, `\x05\x15${line}\n`).catch((err: unknown) => showError(errorMessage(err)));
       return true;
     },
     [showError],
@@ -985,8 +1046,13 @@ export function RepoWorkspace({
    * 떨어지면 "버튼을 눌렀는데 아무 일도 안 일어난 것처럼" 보이므로, 세션을 잠깐 기다린다.
    */
   const runInTerminal = useCallback(
-    (command: string[]) => {
-      const line = formatCommand(command);
+    (command: string[], repoPath?: string) => {
+      // 토스트가 레포를 들고 오지 않은 경로(계약상 runInTerminal 직접 호출)는 지금 레포로 본다
+      const target = repoPath ?? repoRef.current?.path;
+      if (target === undefined) {
+        return;
+      }
+      const line = formatCommand(command, target);
       setTerminalOpen(true);
       if (writeToTerminal(line)) {
         return;
@@ -1083,6 +1149,20 @@ export function RepoWorkspace({
    * 두 경로가 모두 살아날 수 있다. push가 두 번 나가는 것보다 한 번 무시하는 쪽이 낫다.
    */
   const lastCommandAt = useRef<Record<string, number>>({});
+
+  /**
+   * 확인창이나 다른 모달이 떠 있는가. 그 뒤에서 쓰기 단축키가 돌면 사용자가 보고 있는
+   * 확인과 무관한 쓰기가 먼저 일어난다 (예: Reset --hard 확인 중 ⌘⇧O로 stash pop, audit-state M2).
+   * DOM 판정(anyOverlayOpen)은 메뉴와 모달 백드롭을 보고, React 상태는 렌더 전 틈을 메운다
+   */
+  const modalOpen = useCallback((): boolean => {
+    return (
+      pendingConfirmRef.current !== null ||
+      dialogRef.current !== null ||
+      rebaseRef.current !== null ||
+      anyOverlayOpen()
+    );
+  }, []);
 
   const runRepoCommand = useCallback((key: string, action: () => void) => {
     const now = Date.now();
@@ -1339,7 +1419,8 @@ export function RepoWorkspace({
   useEffect(() => {
     const prev = lastRepoCommands.current;
     lastRepoCommands.current = repoCommands;
-    if (repo === null) {
+    // 카운터는 위에서 이미 소비했다. 모달이 닫힌 뒤에 뒤늦게 실행되지 않는다
+    if (repo === null || modalOpen()) {
       return;
     }
     if (repoCommands.fetch > prev.fetch) {
@@ -1366,6 +1447,7 @@ export function RepoWorkspace({
   }, [
     repoCommands,
     repo,
+    modalOpen,
     doFetch,
     doPull,
     doPush,
@@ -1386,6 +1468,9 @@ export function RepoWorkspace({
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (!activeRef.current || (!event.metaKey && !event.ctrlKey) || event.altKey) {
+        return;
+      }
+      if (modalOpen()) {
         return;
       }
       if (!event.shiftKey) {
@@ -1435,6 +1520,7 @@ export function RepoWorkspace({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     repo,
+    modalOpen,
     doFetch,
     doPull,
     doPush,
@@ -1475,6 +1561,9 @@ export function RepoWorkspace({
     getRepoState(repo.path)
       .then((state) => {
         const wipChanged = !sameWip(state.wip, wipRef.current);
+        const token = wipContentToken(state.wip);
+        const contentChanged = token !== contentTokenRef.current;
+        contentTokenRef.current = token;
         if (state.graphToken !== graphToken.current || wipChanged) {
           searchCache.current.clear();
           if (wipChanged) {
@@ -1483,6 +1572,14 @@ export function RepoWorkspace({
             setWipNonce((n) => n + 1);
           }
           reloadFromStart();
+          return;
+        }
+        if (contentChanged) {
+          // 파일 수는 그대로고 내용만 바뀌었다. 그래프 모양은 같으니 다시 읽지 않고,
+          // 열린 WIP diff와 WIP 상세만 새로 읽는다 (audit-state M1). 그대로 두면
+          // 화면의 옛 hunk가 디스크에 없는 내용을 인덱스에 넣는다
+          fileTextCache.current.clear();
+          setWipNonce((n) => n + 1);
         }
       })
       .catch(() => {
@@ -1913,9 +2010,17 @@ export function RepoWorkspace({
     setOpenFile(null);
   }, [selectedSha]);
 
+  /** 지금 diffText가 어느 파일의 diff인가. 같은 파일을 다시 읽을 때 화면을 비우지 않으려고 쓴다 */
+  const diffKeyRef = useRef<string | null>(null);
+  const diffTextRef = useRef<string | null>(null);
+  diffTextRef.current = diffText;
+  const openFileRef = useRef<OpenFile | null>(null);
+  openFileRef.current = openFile;
+
   // 파일이 열리면 그 커밋 기준 unified diff를 읽는다
   useEffect(() => {
     if (repo === null || openFile === null || selectedSha === null) {
+      diffKeyRef.current = null;
       setDiffText(null);
       setFileText(null);
       setDiffError(null);
@@ -1923,19 +2028,35 @@ export function RepoWorkspace({
       return;
     }
     let alive = true;
-    setDiffText(null);
-    setFileText(null);
-    setDiffError(null);
-    setDiffLoading(true);
+    const key = fileKeyRef.current;
+    // 같은 파일을 wipNonce로 다시 읽는 경우(폴링, 쓰기 직후)는 옛 diff를 띄워 둔 채 읽고,
+    // 내용이 실제로 달라졌을 때만 바꾼다. 다른 파일을 편집할 때마다 열린 diff가 깜빡이고
+    // 줄 선택이 풀리는 것을 막는다
+    const soft = key !== null && diffKeyRef.current === key && diffTextRef.current !== null;
+    if (!soft) {
+      setDiffText(null);
+      setFileText(null);
+      setDiffError(null);
+      setDiffLoading(true);
+    }
     const pending =
       openFile.area === null
         ? getFileDiff(repo.path, selectedSha, openFile.file.path, openFile.file.oldPath)
         : getWipFileDiff(repo.path, openFile.file.path, openFile.area);
     pending
       .then((text) => {
-        if (alive) {
-          setDiffText(text);
+        if (!alive) {
+          return;
         }
+        diffKeyRef.current = key;
+        if (soft && text === diffTextRef.current) {
+          return;
+        }
+        if (soft) {
+          // 전문 뷰도 옛 내용이다. 비우면 File View가 다시 요청한다
+          setFileText(null);
+        }
+        setDiffText(text);
       })
       .catch((err: unknown) => {
         if (alive) {
@@ -2064,6 +2185,57 @@ export function RepoWorkspace({
     return getLastCommitMessage(repo.path);
   }, [repo]);
 
+  /** 적용 직전 diff 재확인이 도는 중. 그 사이 두 번째 클릭이 같은 패치를 또 보내지 않게 한다 */
+  const [patchChecking, setPatchChecking] = useState(false);
+  const patchCheckingRef = useRef(false);
+
+  /**
+   * 패치를 보내기 직전에 열린 파일의 diff를 다시 읽어 화면의 diff와 그대로 같은지 본다.
+   * 폴링(5초) 사이에 파일이 바뀌면 화면의 hunk는 디스크에 없는 내용이다. 인덱스 쪽 적용은
+   * 워킹 트리를 보지 않으므로 git apply가 거절하지 못한다 (audit-state M1, audit-patch M3).
+   * 달라졌으면 적용하지 않고 diff를 새로 읽게 한 뒤 다시 보라고 알린다
+   */
+  const guardedApplyPatch = useCallback(
+    async (patch: string, cached: boolean, reverse: boolean, scope?: string): Promise<void> => {
+      const current = repoRef.current;
+      const open = openFileRef.current;
+      const shown = diffTextRef.current;
+      if (current === null || open === null || open.area === null || shown === null) {
+        return;
+      }
+      if (patchCheckingRef.current) {
+        return;
+      }
+      patchCheckingRef.current = true;
+      setPatchChecking(true);
+      let fresh: string;
+      try {
+        fresh = await getWipFileDiff(current.path, open.file.path, open.area);
+      } catch (err) {
+        showError(errorMessage(err));
+        return;
+      } finally {
+        patchCheckingRef.current = false;
+        setPatchChecking(false);
+      }
+      // 확인하는 사이 다른 파일이나 다른 레포로 옮겨 갔으면 그 패치는 의미가 없다
+      if (repoRef.current?.path !== current.path || openFileRef.current !== open) {
+        return;
+      }
+      if (fresh !== diffTextRef.current) {
+        fileTextCache.current.clear();
+        setWipNonce((n) => n + 1);
+        showToast(
+          "The file changed since the diff was loaded. The diff was reloaded, review it and try again.",
+          "info",
+        );
+        return;
+      }
+      await actions.applyPatch(patch, cached, reverse, scope);
+    },
+    [actions, showError, showToast],
+  );
+
   /**
    * hunk 단위 스테이징은 워킹 트리 diff에서만 된다.
    * 커밋 diff에 주면 과거 커밋에 Stage hunk 버튼이 뜨고, untracked는
@@ -2074,8 +2246,8 @@ export function RepoWorkspace({
     if (area === null || area === "untracked") {
       return null;
     }
-    return { area, applyPatch: actions.applyPatch, busy: actions.busy };
-  }, [openFile, actions]);
+    return { area, applyPatch: guardedApplyPatch, busy: actions.busy || patchChecking };
+  }, [openFile, actions.busy, guardedApplyPatch, patchChecking]);
 
   /** WIP 의사 행 클릭. 센티널을 선택으로 넣으면 오른쪽이 WIP 패널로 바뀐다 */
   const selectWip = useCallback(() => setSelectedSha(WIP_SHA), []);

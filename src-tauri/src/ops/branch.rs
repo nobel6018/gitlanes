@@ -13,6 +13,10 @@ use super::run::{
 ///
 /// `create_local`은 원격 브랜치를 눌렀을 때만 의미가 있다. 켜면 같은 이름의 추적
 /// 브랜치를 만들어 옮기고, 끄면 그 커밋으로 detached HEAD가 된다.
+///
+/// 모든 checkout 인자 끝에 `--`를 붙인다. 없으면 git은 ref를 못 찾았을 때 같은 이름의
+/// **경로**를 인덱스에서 복원한다. 다른 창에서 `docs` 브랜치를 지운 뒤 낡은 사이드바에서
+/// 누르면 `docs/` 아래 수정이 사라지고 `ok=true`라 성공 토스트까지 뜬다.
 #[tauri::command]
 pub fn git_checkout(path: String, target: String, create_local: bool) -> Result<OpResult, String> {
     let target = validate_ref_name(&path, &target)?;
@@ -24,11 +28,11 @@ pub fn git_checkout(path: String, target: String, create_local: bool) -> Result<
             if !rest.is_empty() && remotes(&path).iter().any(|known| known == remote) {
                 // 두 번째부터는 추적 브랜치가 이미 있으니 그냥 옮긴다
                 if local_branch_exists(&path, rest) {
-                    return run_op(&path, &["checkout", rest], LOCAL_TIMEOUT);
+                    return run_op(&path, &["checkout", rest, "--"], LOCAL_TIMEOUT);
                 }
                 return run_op(
                     &path,
-                    &["checkout", "--track", target.as_str()],
+                    &["checkout", "--track", target.as_str(), "--"],
                     LOCAL_TIMEOUT,
                 );
             }
@@ -37,7 +41,7 @@ pub fn git_checkout(path: String, target: String, create_local: bool) -> Result<
 
     // create_local이 꺼져 있으면 가리키는 것을 그대로 체크아웃한다.
     // 원격 ref나 sha면 detached HEAD가 되고, 그게 호출자가 고른 동작이다.
-    run_op(&path, &["checkout", target.as_str()], LOCAL_TIMEOUT)
+    run_op(&path, &["checkout", target.as_str(), "--"], LOCAL_TIMEOUT)
 }
 
 #[tauri::command]
@@ -65,6 +69,9 @@ pub fn git_create_branch(
     };
     if let Some(start) = start.as_deref() {
         args.push(start);
+    }
+    if checkout {
+        args.push("--");
     }
 
     run_op(&path, &args, LOCAL_TIMEOUT)
@@ -168,6 +175,27 @@ mod tests {
         let result = git_checkout(repo.path(), "topic".to_string(), false).unwrap();
         assert!(result.ok, "{result:?}");
         assert_eq!(current_branch(&repo.path()).as_deref(), Some("topic"));
+    }
+
+    /// 사이드바 목록이 낡아 이미 지워진 브랜치를 누른 상황. 같은 이름의 디렉토리가 있으면
+    /// `git checkout docs`는 ref 대신 경로로 해석해 docs/ 아래 수정을 인덱스로 되돌린다.
+    #[test]
+    fn 없는_브랜치_checkout은_같은_이름의_경로를_되돌리지_않는다() {
+        let repo = TempRepo::init("gitlanes-checkout-path");
+        repo.write("docs/guide.md", "원본\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("docs/guide.md", "아직 커밋 안 한 작업\n");
+
+        for create_local in [false, true] {
+            let result = git_checkout(repo.path(), "docs".to_string(), create_local).unwrap();
+            assert!(!result.ok, "없는 브랜치인데 성공했다: {result:?}");
+            assert_eq!(
+                std::fs::read_to_string(format!("{}/docs/guide.md", repo.path())).unwrap(),
+                "아직 커밋 안 한 작업\n",
+                "checkout이 경로로 해석돼 작업 내용을 버렸다"
+            );
+        }
     }
 
     #[test]

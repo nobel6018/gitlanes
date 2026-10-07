@@ -96,6 +96,10 @@ pub fn git_push(
             .ok_or_else(|| "detached HEAD 상태에서는 푸시할 수 없습니다".to_string())?,
     };
 
+    if force_with_lease {
+        check_force_push_support(crate::git::version())?;
+    }
+
     let has_upstream = upstream_of_head(&path).is_some();
     let args = push_args(
         remote.as_deref(),
@@ -115,6 +119,12 @@ pub fn git_push(
 ///
 /// remote와 branch를 명시하는 경우가 아니면 인자를 덧붙이지 않는다. 그래야 `push.default`
 /// 설정과 upstream 추적이 평소대로 동작한다.
+///
+/// `--force-with-lease`에는 `--force-if-includes`를 언제나 함께 붙인다. lease 값은 원격 추적
+/// ref라서 툴바 Fetch가 그걸 갱신하면, 통합하지 않은 동료 커밋이 있어도 lease 검사를 통과해
+/// 덮어쓴다. `--force-if-includes`는 원격 추적 ref의 끝이 로컬 브랜치 reflog에 있을 때만,
+/// 즉 내가 한 번 받아 본 상태에서 고쳐 쓴 것일 때만 허용한다. 이 옵션을 모르는 git은
+/// 호출 전에 [`check_force_push_support`]가 막는다.
 fn push_args(
     remote: Option<&str>,
     branch: &str,
@@ -126,6 +136,7 @@ fn push_args(
     let mut args = vec!["push".to_string()];
     if force_with_lease {
         args.push("--force-with-lease".to_string());
+        args.push("--force-if-includes".to_string());
     }
     if tags {
         args.push("--tags".to_string());
@@ -141,6 +152,22 @@ fn push_args(
         args.push(branch.to_string());
     }
     args
+}
+
+/// `push --force-if-includes`가 들어온 git 버전.
+const FORCE_IF_INCLUDES_SINCE: (u32, u32) = (2, 30);
+
+/// force push를 해도 되는 git인지 판정한다. 버전은 테스트가 주입하도록 인자로 받는다.
+///
+/// 2.30 미만이거나 버전을 못 읽으면 **거절한다**. 옵션만 빼고 lease로 밀면 확인창의
+/// "통합하지 않은 원격 커밋이 있으면, 방금 Fetch했더라도 거절된다"는 약속이 거짓이 되고,
+/// 사용자는 그 문구를 믿고 동료 커밋을 덮는다. 안전 장치의 폴백은 약한 보호로 진행하는 것이
+/// 아니라 멈추고 이유를 말하는 것이다. 일반 push는 이 판정을 거치지 않는다.
+fn check_force_push_support(git_version: Option<(u32, u32)>) -> Result<(), String> {
+    if git_version.is_some_and(|version| version >= FORCE_IF_INCLUDES_SINCE) {
+        return Ok(());
+    }
+    Err("Force push needs git 2.30 or newer. Update git and try again.".to_string())
 }
 
 /// 다른 모듈의 통합 테스트가 공유하는 로컬 리모트 픽스처.
@@ -343,18 +370,42 @@ mod tests {
         assert!(!result.needs_auth, "{result:?}");
     }
 
+    fn remote_log(origin: &crate::testrepo::TempRepo) -> String {
+        crate::git::run(origin.path(), &["log", "--format=%s", "main"]).unwrap()
+    }
+
+    /// 툴바 Fetch가 lease 값(원격 추적 ref)을 갱신해 버리면 `--force-with-lease`만으로는
+    /// `--force`와 다를 바 없다. 통합하지 않은 동료 커밋이 있으면 거절해야 한다.
     #[test]
-    fn force_with_lease는_fetch로_lease를_갱신한_뒤에만_통한다() {
+    fn force_with_lease는_fetch만_하고_통합하지_않은_원격_커밋을_덮지_않는다() {
         let (origin, repo) = remote_fixture();
-        diverge(&origin, &repo);
+        push_remote_commit(&origin, "teammate-work");
+        repo.git(&["commit", "-q", "--amend", "-m", "c1-amended"]);
 
         // 원격 추적 ref가 낡아서 lease 검사에 걸린다
         let stale = git_push(repo.path(), None, None, false, true, false).unwrap();
         assert!(!stale.ok, "{stale:?}");
 
+        // Fetch로 lease가 최신이 됐어도 teammate-work를 통합하지 않았으니 거절이다
         assert!(fetch_all(&repo).ok);
-        let fresh = git_push(repo.path(), None, None, false, true, false).unwrap();
-        assert!(fresh.ok, "{fresh:?}");
+        let fetched = git_push(repo.path(), None, None, false, true, false).unwrap();
+        assert!(!fetched.ok, "통합 안 한 원격 커밋을 덮었다: {fetched:?}");
+        assert!(
+            remote_log(&origin).contains("teammate-work"),
+            "{}",
+            remote_log(&origin)
+        );
+    }
+
+    /// 내가 올린 커밋을 amend해 다시 올리는 평범한 force push는 그대로 통한다.
+    #[test]
+    fn force_with_lease는_내_커밋을_고쳐_올리는_것은_허용한다() {
+        let (origin, repo) = remote_fixture();
+        repo.git(&["commit", "-q", "--amend", "-m", "c1-amended"]);
+
+        let result = git_push(repo.path(), None, None, false, true, false).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(remote_log(&origin).trim(), "c1-amended");
     }
 
     #[test]
@@ -414,11 +465,11 @@ mod tests {
                                 !args.iter().any(|arg| arg == "--force" || arg == "-f"),
                                 "{args:?}"
                             );
-                            assert_eq!(
-                                args.iter().any(|arg| arg == "--force-with-lease"),
-                                force_with_lease,
-                                "{args:?}"
-                            );
+                            let lease = args.iter().any(|arg| arg == "--force-with-lease");
+                            let includes = args.iter().any(|arg| arg == "--force-if-includes");
+                            assert_eq!(lease, force_with_lease, "{args:?}");
+                            // lease면 --force-if-includes가 반드시 함께 있다. lease만 나가는 조합은 없다
+                            assert_eq!(includes, lease, "{args:?}");
                         }
                     }
                 }
@@ -432,12 +483,32 @@ mod tests {
             ["push", "-u", "origin", "feature"]
         );
         assert_eq!(
-            push_args(Some("upstream"), "feature", true, false, false, false),
+            push_args(Some("upstream"), "feature", true, false, false, false,),
             ["push", "upstream", "feature"]
         );
         assert_eq!(
             push_args(None, "main", true, false, false, true),
             ["push", "--tags"]
+        );
+    }
+
+    #[test]
+    fn force_push는_git_2_29와_못_읽은_버전에서_거절되고_2_30부터_진행한다() {
+        let refusal = "Force push needs git 2.30 or newer. Update git and try again.";
+        assert_eq!(
+            check_force_push_support(Some((2, 29))).unwrap_err(),
+            refusal
+        );
+        assert_eq!(
+            check_force_push_support(Some((1, 99))).unwrap_err(),
+            refusal
+        );
+        assert_eq!(check_force_push_support(None).unwrap_err(), refusal);
+        assert!(check_force_push_support(Some((2, 30))).is_ok());
+        assert!(check_force_push_support(Some((3, 0))).is_ok());
+        assert_eq!(
+            push_args(None, "main", true, false, true, false),
+            ["push", "--force-with-lease", "--force-if-includes"]
         );
     }
 }

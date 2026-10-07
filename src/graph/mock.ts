@@ -362,6 +362,7 @@ export function makeMockGraph(rowCount: number): GraphData {
             changedFiles: 3 + (rowCount % 7),
             stagedFiles: rowCount % 4,
             untrackedFiles: rowCount % 3,
+            contentToken: `mock-${rowCount}`,
           }
         : null,
   };
@@ -389,7 +390,7 @@ const SCENARIO_PENDING_ROW = 3;
 export function makeMockScenario(rowCount: number): MockScenario {
   const data = makeMockGraph(rowCount);
   // 배지 3종이 항상 한 화면에 나오도록 못 박는다. unstaged는 7 - 3 - 2 = 2로 떨어진다
-  data.wip = { changedFiles: 7, stagedFiles: 3, untrackedFiles: 2 };
+  data.wip = { changedFiles: 7, stagedFiles: 3, untrackedFiles: 2, contentToken: "mock" };
 
   const pick = (index: number): string => {
     const row = data.rows[Math.min(index, data.rows.length - 1)];
