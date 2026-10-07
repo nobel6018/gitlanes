@@ -23,6 +23,8 @@ export interface DrawParams {
   dropRow?: number;
   /** 진행 중인 머지/리베이스 대상 커밋의 행 인덱스. 없으면 -1 */
   pendingRow?: number;
+  /** 다중 선택된 커밋 sha. 경로 강조 밖이어도 점을 흐리지 않는다. 없으면 null */
+  multi?: Set<string> | null;
 }
 
 /** 화면 밖 한 행씩 여유를 둬서 절단된 곡선이 보이지 않게 한다 */
@@ -240,6 +242,7 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
   ctx.textBaseline = "middle";
   ctx.font = AVATAR_FONT;
   const pendingRow = p.pendingRow ?? -1;
+  const multi = p.multi ?? null;
   for (let i = first; i <= last; i++) {
     const row = rows[i];
     const x = laneX(row.lane);
@@ -247,7 +250,8 @@ export function drawGraph(canvas: HTMLCanvasElement, p: DrawParams): void {
     const ring = laneColor(row.color);
     // 드롭 후보와 진행 중 행은 경로 강조 밖이어도 또렷하게 둔다. 액션 대상이
     // 흐릿하면 "여기에 놓으면 된다"가 읽히지 않는다
-    const actionRow = i === dropRow || i === pendingRow;
+    // 다중 선택도 같은 이유다. DOM 행은 dim을 빼는데 점만 흐리면 행과 점이 따로 논다
+    const actionRow = i === dropRow || i === pendingRow || (multi !== null && multi.has(row.sha));
     ctx.globalAlpha = isLit(i) || actionRow ? 1 : DIM_ALPHA;
 
     // 배경을 불투명하게 채워 레인 배경 띠를 덮어야 이니셜이 묻히지 않는다.
