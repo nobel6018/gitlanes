@@ -105,6 +105,10 @@ mod tests {
         get_sync_state(repo.path()).unwrap().stash_count
     }
 
+    // Windows는 파일명에 `*`를 쓸 수 없어 이 파일을 만들 수조차 없다. 그러니 별표가 glob으로
+    // 풀리는 사고도 Windows에서는 일어나지 않는다. 같은 수정(GIT_LITERAL_PATHSPECS)은 Windows에서도
+    // 쓸 수 있는 `[` 이름 테스트(`data[1].csv`, `pages/[id].tsx`)가 지킨다.
+    #[cfg(not(windows))]
     #[test]
     fn 부분_스태시는_별표_이름을_glob으로_풀지_않는다() {
         let (_origin, repo) = remote_fixture();
