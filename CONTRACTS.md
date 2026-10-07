@@ -919,3 +919,75 @@ CI는 macOS에서만 돌고 Windows는 릴리스 때 처음 테스트된다. v0.
 동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지.
 Rust 패키지는 하나라 공유 target 문제는 없지만, 감독도 같은 target을 쓰니 rust16은 `/Users/levit/leedo/target-rust16`을 쓴다.
 보고: `~/leedo/gitlanes-audit-2026-10/handoff-<패키지>.md`. 세션이 자주 끊기니 **단계마다 커밋**한다(`wip:` 접두 가능).
+
+---
+
+# v0.17.0 - 자동 fetch, 작업 되돌리기, 그래프 다중 선택
+
+> 2026-10-07. 감사 기능 공백 상위 3개. 테스트 픽스처 규칙(v0.16.1 절)은 계속 적용한다.
+
+## 1. 자동 fetch
+
+ahead/behind 배지가 수동 Fetch 전까지 낡아 있다. GitKraken은 기본 1분마다 fetch한다.
+
+- 설정 `autoFetchMinutes`: 0(끔), 1, 5, 10, 15, 30. 기본 5. Preferences의 General 탭
+- 활성 탭만, 창이 보일 때만. 쓰기가 진행 중이면 그 주기는 건너뛴다. 쓰기와 같은 직렬 큐로 실행해 사용자 작업과 겹치지 않게 한다
+- `git_fetch(remote=null, prune=false, allRemotes=true, tags=false)`를 그대로 쓴다. 성공하면 조용히 새로고침
+- 실패하면 토스트를 띄우지 않는다. `needsAuth`면 그 레포의 자동 fetch를 멈추고 툴바 Fetch 버튼에 작은 표시("Auto-fetch paused: sign-in needed")를 단다. 사용자가 수동 Fetch에 성공하면 다시 켠다. 그 밖의 실패는 3번 연속이면 같은 방식으로 표시
+- Fetch 버튼 툴팁에 마지막 fetch 시각("Fetched 3 min ago")
+
+## 2. 작업 되돌리기 (types.ts `RefSnapshot`, `UndoKind`, `UndoEntry`)
+
+- 되돌릴 수 있는 쓰기(UndoKind)는 액션 계층이 실행 전후로 `get_ref_snapshot`을 찍어 `UndoEntry`를 탭별 스택(메모리, 최대 20)에 쌓는다. 실패한 작업은 쌓지 않는다
+- 툴바에 Undo 버튼(라벨은 `entry.label`), 단축키 ⌘Z(텍스트 입력에 포커스가 없을 때만, 모달이 열려 있으면 무시). Edit 메뉴의 Undo는 텍스트 편집용이라 건드리지 않는다
+- 되돌리기는 확인 없이 실행하되 결과를 토스트로 알린다. `git_undo`가 상태 불일치로 거절하면 그 항목을 스택에서 버리고 이유를 보여준다
+- 레포를 바꾸면 스택을 비운다
+
+## 3. 그래프 다중 선택
+
+GraphViewProps에 선택 prop 추가(전부 선택, 넘기지 않으면 지금과 같다):
+```ts
+/** 다중 선택. 커밋 행만(WIP, 스태시 제외). selectedSha는 그대로 "주 선택"이다 */
+selectedShas?: string[];
+/** ⌘/Ctrl 클릭은 토글, Shift 클릭은 주 선택부터 범위. 일반 클릭은 다중 선택을 비우고 onSelect */
+onSelectionChange?: (shas: string[]) => void;
+```
+
+여러 커밋을 고르면:
+- 우클릭 메뉴: Cherry-pick N commits(오래된 것부터), Revert N commits(최신부터), Squash N commits, Create patch files, Copy SHAs
+- Squash는 현재 브랜치에서 연속된 커밋일 때만. 가장 오래된 선택의 부모를 base로 `get_rebase_steps`를 불러, 선택 범위가 목록 안에서 연속인지 확인하고, 가장 오래된 것은 pick, 나머지는 squash로 표시해 RebaseEditor를 연다(사용자가 확인하고 실행)
+- 상세 패널은 커밋 하나 대신 선택 목록(짧은 sha, 제목, 작성자)과 위 동작 버튼
+
+`src/shell/multiSelect.ts`(ui17-b)의 공개 API (ui17-a가 배선한다):
+```ts
+import type { CommitRow, RebaseStep } from "../types";
+/** 그래프 행 순서 기준. 오래된 것이 먼저 */
+export function orderOldestFirst(shas: string[], rows: CommitRow[]): string[];
+/** 최신이 먼저 */
+export function orderNewestFirst(shas: string[], rows: CommitRow[]): string[];
+/** 가장 오래된 선택 커밋의 첫 부모. 로드 범위 밖이거나 루트면 null */
+export function squashBase(shas: string[], rows: CommitRow[]): string | null;
+/** get_rebase_steps 결과에 squash 표시. 선택이 목록 안에서 연속이 아니면 { error } */
+export function markSquash(steps: RebaseStep[], shas: string[]): { steps: RebaseStep[] } | { error: string };
+```
+`src/shell/MultiCommitPanel.tsx`(ui17-b):
+```ts
+export interface MultiCommitPanelProps {
+  rows: CommitRow[];               // 선택된 커밋들(그래프 순서)
+  busy: boolean;
+  onCherryPick(): void; onRevert(): void; onSquash(): void; onCreatePatch(): void; onCopyShas(): void;
+  onClear(): void;
+}
+```
+
+## 소유권
+
+| 패키지 | 소유 파일 | 항목 |
+|---|---|---|
+| rust17 | `src-tauri/**` | `get_ref_snapshot`, `git_undo` |
+| graph17 | `src/graph/**` | 다중 선택(⌘/Shift 클릭, 선택 행 강조, 키보드 Shift+↑↓ 확장) |
+| ui17-a | `src/shell/{RepoWorkspace,Toolbar,Preferences,devApp,ShortcutsOverlay}.tsx`, `src/shell/{actions,api,prefs}.ts` | 자동 fetch, 되돌리기 스택과 버튼과 ⌘Z, 다중 선택 배선(메뉴, 상세 패널 전환, squash 흐름, patch 디렉토리 선택) |
+| ui17-b | 신규 `src/shell/{multiSelect.ts,MultiCommitPanel.tsx,multi.css}` | 위 공개 API와 패널, 순수 함수 단위 검증 |
+
+동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지. rust17은 `/Users/levit/leedo/target-rust17`.
+**세션이 자주 끊긴다. 단계마다 커밋한다.** 추가 지시를 받으면 끝났을 때 한 줄로 알린다.
