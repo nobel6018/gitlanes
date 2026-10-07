@@ -9,6 +9,7 @@ import { COMMITS_PER_PAGE, WIP_SHA } from "../constants";
 import type {
   ConflictFile,
   FileChange,
+  FileHistoryEntry,
   RebaseStep,
   GraphData,
   RefEntry,
@@ -30,6 +31,10 @@ import {
   getFileContent,
   getLastCommitMessage,
   getFileDiff,
+  getFileHistory,
+  getBlame,
+  compareRefs,
+  getCompareFileDiff,
   getRemoteUrl,
   getRebaseSteps,
   getSyncState,
@@ -155,6 +160,64 @@ function freshAutoFetch(path: string): AutoFetchState {
 }
 /** search_commits가 돌려줄 최대 매치 수 (계약 상한) */
 const GLOBAL_SEARCH_LIMIT = 500;
+/** 파일 히스토리와 비교 커밋 목록의 상한. 넘으면 비교 화면이 truncated를 알린다 */
+const HISTORY_LIMIT = 1000;
+const COMPARE_LIMIT = 1000;
+
+/**
+ * 오른쪽 상세 패널 자리를 차지하는 목록 화면 (v0.18). 둘 다 "목록은 오른쪽, 고른 파일의 diff는
+ * 가운데"라 커밋 상세 패널과 같은 흐름이다. 열려 있는 동안 커밋, WIP, 다중 선택 패널보다 앞선다
+ */
+type SideView =
+  | { kind: "history"; file: string; rev: string | null }
+  | { kind: "compare"; base: string; head: string; baseLabel: string; headLabel: string };
+
+/** blame 대상. 가운데 diff 자리에 DiffPanel 대신 뜬다. rev가 null이면 워킹트리 기준 */
+interface BlameTarget {
+  file: string;
+  rev: string | null;
+}
+
+/**
+ * key가 바뀌면 값을 비우고(로딩) 다시 읽고, nonce만 바뀌면 옛 값을 띄워 둔 채 다시 읽는다.
+ * 폴링이나 쓰기 뒤 새로고침마다 목록이 깜빡이지 않게 하려는 것이다. key가 null이면 아무것도 읽지 않는다
+ */
+function useSoftLoad<T>(
+  key: string | null,
+  load: () => Promise<T>,
+  nonce: number,
+): { data: T | null; error: string | null } {
+  const [state, setState] = useState<{ key: string | null; data: T | null; error: string | null }>(
+    { key: null, data: null, error: null },
+  );
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useEffect(() => {
+    if (key === null) {
+      setState({ key: null, data: null, error: null });
+      return;
+    }
+    let alive = true;
+    setState((prev) => (prev.key === key ? prev : { key, data: null, error: null }));
+    loadRef
+      .current()
+      .then((data) => {
+        if (alive) {
+          setState({ key, data, error: null });
+        }
+      })
+      .catch((err: unknown) => {
+        if (alive) {
+          setState({ key, data: null, error: errorMessage(err) });
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [key, nonce]);
+  // key가 막 바뀐 렌더에서는 effect가 돌기 전이라 옛 key의 값이 남아 있다. 그 값은 보여주지 않는다
+  return state.key === key ? { data: state.data, error: state.error } : { data: null, error: null };
+}
 
 /**
  * 5초 폴링이 매번 새 객체를 돌려주므로, 내용이 같으면 상태를 갈지 않는다.
@@ -387,12 +450,30 @@ type MenuState =
   | { kind: "repo"; x: number; y: number };
 
 /**
- * 메인 영역 뷰어가 펼친 파일. area가 null이면 커밋 파일,
- * 값이 있으면 워킹 트리(WIP) 파일이다
+ * 메인 영역 뷰어가 펼친 파일. 출처는 셋이다.
+ *  - 워킹 트리(WIP): area에 영역, sha와 compare는 null
+ *  - 커밋: sha에 그 커밋. 커밋 상세에서 열면 선택 커밋, 히스토리에서 열면 그 항목의 커밋 (v0.18)
+ *  - 비교: compare에 양 끝. base...head 세 점 diff (v0.18)
+ * area가 null이면 쓰기(hunk 스테이지)가 꺼진다. 기존 area 판정은 그대로 맞는다
  */
 interface OpenFile {
   file: FileChange;
   area: WipArea | null;
+  sha: string | null;
+  compare: { base: string; head: string } | null;
+  /** 히스토리나 비교 목록에서 연 파일. 그 목록을 닫으면 같이 닫는다 */
+  fromSide: boolean;
+}
+
+/** 뷰어 캐시 키. 출처와 경로가 같으면 같은 내용이다 */
+function openFileKey(open: OpenFile): string {
+  const source =
+    open.area !== null
+      ? `wip:${open.area}`
+      : open.compare !== null
+        ? `cmp:${open.compare.base}...${open.compare.head}`
+        : `sha:${open.sha ?? ""}`;
+  return `${source}\u0000${open.file.path}`;
 }
 
 /** 입력창(xterm의 textarea 포함)에 포커스가 있는가 */
@@ -476,6 +557,10 @@ export function RepoWorkspace({
   const [quickOpen, setQuickOpen] = useState(false);
   /** 메인 영역에 펼친 파일. null이면 그래프(또는 필터 목록)를 보여준다 */
   const [openFile, setOpenFile] = useState<OpenFile | null>(null);
+  /** 오른쪽 자리의 히스토리/비교 목록 (v0.18). null이면 지금까지의 상세 패널 */
+  const [sideView, setSideView] = useState<SideView | null>(null);
+  /** 가운데 자리의 blame (v0.18). 열려 있으면 DiffPanel 대신 뜨고, 닫으면 그 diff로 돌아온다 */
+  const [blameTarget, setBlameTarget] = useState<BlameTarget | null>(null);
   const [wipDetails, setWipDetails] = useState<WipDetails | null>(null);
   const [wipLoading, setWipLoading] = useState(false);
   /** wip 요약이 바뀔 때마다 오른다. WIP 상세와 열린 WIP diff를 다시 읽는 트리거 */
@@ -803,6 +888,8 @@ export function RepoWorkspace({
         stateReq.current += 1;
         stateWip.current = null;
         setOpenFile(null);
+        setSideView(null);
+        setBlameTarget(null);
         pendingJump.current = null;
         setGraph(null);
         setRefs([]);
@@ -1366,6 +1453,9 @@ export function RepoWorkspace({
     setOpenFile({
       file: { path, oldPath: null, status: "M", additions: 0, deletions: 0 },
       area: "unstaged",
+      sha: null,
+      compare: null,
+      fromSide: false,
     });
   }, []);
 
@@ -2102,6 +2192,7 @@ export function RepoWorkspace({
 
   /** 그래프 밖(필터 목록)에서 고른 단일 선택. 다중 선택은 일반 클릭처럼 풀린다 */
   const selectSingle = useCallback((sha: string | null) => {
+    setSideView(null);
     setSelectedShas([]);
     setSelectedSha(sha);
   }, []);
@@ -2233,6 +2324,221 @@ export function RepoWorkspace({
     return items;
   }, [repo, remotes, worktrees, showToast, showError]);
 
+  // ── 파일 히스토리, blame, 비교 (v0.18) ─────────────────────
+
+  const historyView = sideView?.kind === "history" ? sideView : null;
+  const compareView = sideView?.kind === "compare" ? sideView : null;
+
+  const history = useSoftLoad(
+    repo === null || historyView === null
+      ? null
+      : `${repo.path}\u0000${historyView.file}\u0000${historyView.rev ?? ""}`,
+    () => getFileHistory(repo!.path, historyView!.file, historyView!.rev, HISTORY_LIMIT),
+    // HEAD 기준 히스토리는 새 커밋이 생기면 늘어난다
+    historyView?.rev === null ? reloadKey : 0,
+  );
+
+  const blame = useSoftLoad(
+    repo === null || blameTarget === null
+      ? null
+      : `${repo.path}\u0000${blameTarget.file}\u0000${blameTarget.rev ?? ""}`,
+    () => getBlame(repo!.path, blameTarget!.file, blameTarget!.rev),
+    // 워킹트리 blame은 파일을 고칠 때마다 커밋 안 된 구간이 달라진다
+    blameTarget?.rev === null ? wipNonce + reloadKey : 0,
+  );
+
+  const comparison = useSoftLoad(
+    repo === null || compareView === null
+      ? null
+      : `${repo.path}\u0000${compareView.base}\u0000${compareView.head}`,
+    () => compareRefs(repo!.path, compareView!.base, compareView!.head, COMPARE_LIMIT),
+    // 브랜치 이름으로 비교하면 fetch나 커밋으로 끝이 움직인다
+    reloadKey,
+  );
+
+  /** 목록 화면을 닫는다. 그 목록에서 연 diff도 같이 닫아 원래 상세 패널 흐름으로 돌아간다 */
+  const closeSideView = useCallback(() => {
+    setSideView(null);
+    setBlameTarget(null);
+    setOpenFile((prev) => (prev !== null && prev.fromSide ? null : prev));
+  }, []);
+
+  /** 그래프에서 직접 고르면 목록 화면을 닫고 그 커밋(또는 WIP)의 상세 패널로 돌아간다 */
+  const selectFromGraph = useCallback((sha: string | null) => {
+    setSideView(null);
+    setSelectedSha(sha);
+  }, []);
+
+  /** 열린 diff 파일의 히스토리. 커밋 diff는 그 커밋부터, WIP diff는 HEAD부터 */
+  const showHistory = useCallback(() => {
+    const open = openFileRef.current;
+    if (open === null || open.compare !== null) {
+      return;
+    }
+    setBlameTarget(null);
+    setSideView({ kind: "history", file: open.file.path, rev: open.area === null ? open.sha : null });
+  }, []);
+
+  /** 열린 diff 파일의 blame. 커밋 diff는 그 커밋 시점, WIP diff는 워킹트리 기준 */
+  const showBlame = useCallback(() => {
+    const open = openFileRef.current;
+    if (open === null || open.compare !== null) {
+      return;
+    }
+    setBlameTarget({ file: open.file.path, rev: open.area === null ? open.sha : null });
+  }, []);
+
+  const closeBlame = useCallback(() => setBlameTarget(null), []);
+
+  /** 히스토리 항목을 고르면 그 커밋에서의 그 파일 diff. rename이면 그 시점 경로와 원래 경로로 */
+  const openHistoryEntry = useCallback((entry: FileHistoryEntry) => {
+    setBlameTarget(null);
+    setOpenFile({
+      file: {
+        path: entry.path,
+        oldPath: entry.oldPath,
+        status: entry.status,
+        additions: 0,
+        deletions: 0,
+      },
+      area: null,
+      sha: entry.sha,
+      compare: null,
+      fromSide: true,
+    });
+  }, []);
+
+  /**
+   * 그래프에서 그 커밋으로 이동한다. 로드 범위 밖이면 검색 점프와 같은 길을 탄다:
+   * search_commits로 행 번호를 얻고 그 지점까지 append한 뒤 pendingJump가 점프한다.
+   * 전체 sha는 sha prefix 검색에 정확히 하나 걸린다
+   */
+  const jumpToCommit = useCallback(
+    async (sha: string) => {
+      if (loadedShas.has(sha)) {
+        jumpTo(sha);
+        return;
+      }
+      const current = repoRef.current;
+      if (current === null) {
+        return;
+      }
+      let found: SearchMatch[];
+      try {
+        found = await searchCommits(current.path, sha, 5);
+      } catch (err) {
+        showError(errorMessage(err));
+        return;
+      }
+      if (repoRef.current?.path !== current.path) {
+        return;
+      }
+      const hit = found.find((match) => match.sha === sha);
+      if (hit === undefined || hit.index < rowCount.current) {
+        showError(`Commit ${shortSha(sha)} is not in the graph.`);
+        return;
+      }
+      pendingJump.current = sha;
+      setPage({ skip: rowCount.current, limit: hit.index + COMMITS_PER_PAGE });
+    },
+    [loadedShas, jumpTo, showError],
+  );
+
+  /**
+   * blame 구간을 누르면 blame, diff, 목록을 모두 닫고 그 커밋을 선택한다. 가운데가 그래프로,
+   * 오른쪽이 그 커밋의 상세 패널로 돌아와 "이 줄을 만든 커밋"을 바로 읽을 수 있다
+   */
+  const jumpFromBlame = useCallback(
+    (sha: string) => {
+      setBlameTarget(null);
+      setOpenFile(null);
+      setSideView(null);
+      void jumpToCommit(sha);
+    },
+    [jumpToCommit],
+  );
+
+  /**
+   * 비교 목록의 커밋은 그래프에서 위치만 보여준다. 목록은 그대로 둔다(여러 커밋을 차례로 짚어 보는 흐름).
+   * 선택이 바뀌면 열린 비교 diff는 기존 규칙대로 닫혀 가운데가 그래프로 돌아온다
+   */
+  const selectCompareCommit = useCallback(
+    (sha: string) => {
+      setOpenFile(null);
+      void jumpToCommit(sha);
+    },
+    [jumpToCommit],
+  );
+
+  const openCompareFile = useCallback(
+    (file: FileChange) => {
+      // 응답에 실린 양 끝을 쓴다. 목록을 만든 시점의 기준이라 이름이 그새 움직여도 목록과 diff가 맞는다
+      const result = comparison.data;
+      if (result === null) {
+        return;
+      }
+      setBlameTarget(null);
+      setOpenFile({
+        file,
+        area: null,
+        sha: null,
+        compare: { base: result.base, head: result.head },
+        fromSide: true,
+      });
+    },
+    [comparison.data],
+  );
+
+  const openCompare = useCallback(
+    (base: string, head: string, baseLabel: string, headLabel: string) => {
+      setBlameTarget(null);
+      setOpenFile((prev) => (prev !== null && prev.fromSide ? null : prev));
+      setSideView({ kind: "compare", base, head, baseLabel, headLabel });
+    },
+    [],
+  );
+
+  /** 사이드바 브랜치 우클릭. base는 현재 브랜치, head는 그 브랜치 */
+  const compareWithCurrent = useCallback(
+    (name: string) => {
+      const current = refs.find((entry) => entry.kind === "localBranch" && entry.isHead)?.name;
+      if (current === undefined) {
+        showError("No branch is checked out to compare with.");
+        return;
+      }
+      openCompare(current, name, current, name);
+    },
+    [refs, openCompare, showError],
+  );
+
+  /** 그래프 다중 선택이 정확히 둘일 때. 오래된 쪽이 base라 head에만 있는 커밋이 "그 사이에 생긴 것"이다 */
+  const compareSelected = useCallback(() => {
+    if (multiShas.length !== 2) {
+      return;
+    }
+    const [base, head] = orderOldestFirst(multiShas, data.rows);
+    openCompare(base, head, shortSha(base), shortSha(head));
+  }, [multiShas, data.rows, openCompare]);
+
+  const swapCompare = useCallback(() => {
+    setOpenFile((prev) => (prev !== null && prev.fromSide ? null : prev));
+    setSideView((prev) =>
+      prev === null || prev.kind !== "compare"
+        ? prev
+        : {
+            kind: "compare",
+            base: prev.head,
+            head: prev.base,
+            baseLabel: prev.headLabel,
+            headLabel: prev.baseLabel,
+          },
+    );
+  }, []);
+
+  // TODO(v0.18 통합): 5단계에서 부품을 붙이면 지운다. 그 전까지 noUnusedLocals 빌드를 통과시키는 자리
+  void [history, blame, showHistory, showBlame, closeBlame, openHistoryEntry];
+  void [jumpFromBlame, selectCompareCommit, openCompareFile, swapCompare];
+
   const menuItems: MenuItem[] = useMemo(() => {
     if (menu === null) {
       return [];
@@ -2244,6 +2550,17 @@ export function RepoWorkspace({
     // 다중 선택 안의 행을 우클릭하면 선택 전체에 대한 메뉴다. 밖의 행이면 그 행 하나의 메뉴다
     if (multiActive && multiShas.includes(sha)) {
       const n = multiShas.length;
+      const compareItems: MenuItem[] =
+        n === 2
+          ? [
+              {
+                label: "Compare these commits",
+                separatorBefore: true,
+                title: "Lists the commits and files that differ, with the older commit as the base",
+                onSelect: compareSelected,
+              },
+            ]
+          : [];
       return [
         {
           label: `Cherry-pick ${n} commits`,
@@ -2272,6 +2589,7 @@ export function RepoWorkspace({
           onSelect: createPatchesForSelected,
         },
         { label: "Copy SHAs", onSelect: copySelectedShas },
+        ...compareItems,
       ];
     }
     // WIP 의사 행과 스태시 행은 진짜 커밋이 아니라 쓰기 대상이 될 수 없다
@@ -2396,6 +2714,7 @@ export function RepoWorkspace({
     squashSelected,
     createPatchesForSelected,
     copySelectedShas,
+    compareSelected,
   ]);
 
   const previewWidth = useCallback((name: "sidebar" | "detail", width: number) => {
@@ -2561,16 +2880,14 @@ export function RepoWorkspace({
   }, [selectedSha, data.rows, data.stashes, showToast, showError]);
 
   /** 지금 뷰어가 보여주는 파일의 캐시 키. 늦게 온 응답을 버리는 데 쓴다 */
-  const fileKey =
-    repo === null || openFile === null || selectedSha === null
-      ? null
-      : `${selectedSha}\u0000${openFile.area ?? ""}\u0000${openFile.file.path}`;
+  const fileKey = repo === null || openFile === null ? null : openFileKey(openFile);
   const fileKeyRef = useRef(fileKey);
   fileKeyRef.current = fileKey;
 
-  // 다른 커밋을 고르거나 선택을 풀면 열린 파일도 닫는다
+  // 다른 커밋을 고르거나 선택을 풀면 열린 파일도 닫는다. 그 파일 위에 띄운 blame도 같이 닫는다
   useEffect(() => {
     setOpenFile(null);
+    setBlameTarget(null);
   }, [selectedSha]);
 
   /** 지금 diffText가 어느 파일의 diff인가. 같은 파일을 다시 읽을 때 화면을 비우지 않으려고 쓴다 */
@@ -2582,9 +2899,9 @@ export function RepoWorkspace({
   const openFileRef = useRef<OpenFile | null>(null);
   openFileRef.current = openFile;
 
-  // 파일이 열리면 그 커밋 기준 unified diff를 읽는다
+  // 파일이 열리면 출처(커밋, 워킹 트리, 비교)에 맞는 unified diff를 읽는다
   useEffect(() => {
-    if (repo === null || openFile === null || selectedSha === null) {
+    if (repo === null || openFile === null) {
       diffKeyRef.current = null;
       setDiffText(null);
       setFileText(null);
@@ -2604,12 +2921,14 @@ export function RepoWorkspace({
       setDiffError(null);
       setDiffLoading(true);
     }
+    const { file, area, compare } = openFile;
     const pending: Promise<WipDiff> =
-      openFile.area === null
-        ? getFileDiff(repo.path, selectedSha, openFile.file.path, openFile.file.oldPath).then(
-            (text) => ({ text, encoding: "utf8" }),
-          )
-        : getWipFileDiff(repo.path, openFile.file.path, openFile.area);
+      area !== null
+        ? getWipFileDiff(repo.path, file.path, area)
+        : (compare !== null
+            ? getCompareFileDiff(repo.path, compare.base, compare.head, file.path, file.oldPath)
+            : getFileDiff(repo.path, openFile.sha ?? "", file.path, file.oldPath)
+          ).then((text): WipDiff => ({ text, encoding: "utf8" }));
     pending
       .then(({ text, encoding }) => {
         if (!alive) {
@@ -2640,14 +2959,14 @@ export function RepoWorkspace({
       alive = false;
     };
     // wipNonce: 워킹 트리가 바뀌면 열린 WIP diff를 다시 읽는다
-  }, [repo, openFile, selectedSha, wipNonce]);
+  }, [repo, openFile, wipNonce]);
 
   /** File View/split이 파일 전문을 필요로 할 때만 get_file_content를 부른다 */
   const handleRequestFileText = useCallback(() => {
-    if (repo === null || openFile === null || selectedSha === null) {
+    if (repo === null || openFile === null) {
       return;
     }
-    const key = `${selectedSha}\u0000${openFile.area ?? ""}\u0000${openFile.file.path}`;
+    const key = openFileKey(openFile);
     const cached = fileTextCache.current.get(key);
     if (cached !== undefined) {
       setFileText(cached);
@@ -2658,10 +2977,15 @@ export function RepoWorkspace({
     }
     fileTextReq.current = key;
     setDiffLoading(true);
+    // 비교 diff의 전문은 head 쪽 파일이다. split 뷰의 오른쪽이 head라서다
     const pending =
-      openFile.area === null
-        ? getFileContent(repo.path, selectedSha, openFile.file.path)
-        : getWipFileContent(repo.path, openFile.file.path);
+      openFile.area !== null
+        ? getWipFileContent(repo.path, openFile.file.path)
+        : getFileContent(
+            repo.path,
+            openFile.compare !== null ? openFile.compare.head : (openFile.sha ?? ""),
+            openFile.file.path,
+          );
     pending
       .then((text) => {
         fileTextCache.current.set(key, text);
@@ -2683,7 +3007,7 @@ export function RepoWorkspace({
           setDiffLoading(false);
         }
       });
-  }, [repo, openFile, selectedSha]);
+  }, [repo, openFile]);
 
   const isWipSelected = selectedSha === WIP_SHA;
 
@@ -2735,12 +3059,15 @@ export function RepoWorkspace({
     }
   }, [wipDetails, openFile]);
 
-  const openCommitFile = useCallback((file: FileChange) => {
-    setOpenFile({ file, area: null });
-  }, []);
+  const openCommitFile = useCallback(
+    (file: FileChange) => {
+      setOpenFile({ file, area: null, sha: selectedSha, compare: null, fromSide: false });
+    },
+    [selectedSha],
+  );
 
   const openWipFile = useCallback((file: FileChange, area: WipArea) => {
-    setOpenFile({ file, area });
+    setOpenFile({ file, area, sha: null, compare: null, fromSide: false });
   }, []);
 
   const closeFile = useCallback(() => setOpenFile(null), []);
@@ -2818,8 +3145,11 @@ export function RepoWorkspace({
     return { area, applyPatch: guardedApplyPatch, busy: actions.busy || patchChecking };
   }, [openFile, actions.busy, guardedApplyPatch, patchChecking]);
 
-  /** WIP 의사 행 클릭. 센티널을 선택으로 넣으면 오른쪽이 WIP 패널로 바뀐다 */
-  const selectWip = useCallback(() => setSelectedSha(WIP_SHA), []);
+  /** WIP 의사 행 클릭. 센티널을 선택으로 넣으면 오른쪽이 WIP 패널로 바뀐다. 목록 화면은 닫는다 */
+  const selectWip = useCallback(() => {
+    setSideView(null);
+    setSelectedSha(WIP_SHA);
+  }, []);
 
 
   /**
@@ -2839,8 +3169,16 @@ export function RepoWorkspace({
       // 사이드바/탭 컨텍스트 메뉴와 오버레이는 자기 Esc 핸들러가 닫는다. 여기서 더 나가지 않는다
       return true;
     }
+    if (blameTarget !== null) {
+      setBlameTarget(null);
+      return true;
+    }
     if (openFile !== null) {
       setOpenFile(null);
+      return true;
+    }
+    if (sideView !== null) {
+      closeSideView();
       return true;
     }
     if (query !== "") {
@@ -2852,7 +3190,17 @@ export function RepoWorkspace({
       return true;
     }
     return false;
-  }, [quickOpen, menu, openFile, query, handleClearSearch, selectedSha]);
+  }, [
+    quickOpen,
+    menu,
+    blameTarget,
+    openFile,
+    sideView,
+    closeSideView,
+    query,
+    handleClearSearch,
+    selectedSha,
+  ]);
 
   // 워크스페이스 단축키. 활성 탭에서만 반응한다 (탭마다 하나씩 등록돼 있다)
   useEffect(() => {
@@ -3067,6 +3415,7 @@ export function RepoWorkspace({
               onSelectRef={handleSelectRef}
               onCopyRefName={handleCopyRefName}
               onOpenRefOnRemote={remoteUrl === null ? undefined : handleOpenRefOnRemote}
+              onCompareWithCurrent={compareWithCurrent}
               filterInputRef={sidebarFilterRef}
             />
             <SplitHandle
@@ -3112,7 +3461,7 @@ export function RepoWorkspace({
               dropTargetSha={dropTargetSha}
               pendingSha={syncState?.pending == null ? null : repo.headSha}
               selectedSha={selectedSha}
-              onSelect={setSelectedSha}
+              onSelect={selectFromGraph}
               selectedShas={selectedShas}
               onSelectionChange={setSelectedShas}
               onLoadMore={handleLoadMore}
@@ -3128,7 +3477,7 @@ export function RepoWorkspace({
             />
           )}
         </div>
-        {(selectedSha !== null || multiActive) && (
+        {(selectedSha !== null || multiActive || sideView !== null) && (
           <SplitHandle
             label="상세 패널 폭 조절"
             getWidth={() => layout.detail}

@@ -95,6 +95,8 @@ export interface SidebarContextMenuProps {
   onOpenOnRemote?: (ref: RefEntry) => void;
   /** 항목 클릭(=커밋 점프)과 같은 동작 */
   onJumpToCommit: (sha: string) => void;
+  /** 현재 브랜치(base)와 이 브랜치(head)를 비교한다 (v0.18). undefined면 항목을 넣지 않는다 */
+  onCompareWithCurrent?: (name: string) => void;
   /** 워크트리를 새 탭으로 연다. undefined면 항목을 비활성 */
   onOpenWorktree?: (path: string) => void;
   onClose: () => void;
@@ -198,6 +200,7 @@ function localBranchItems(props: SidebarContextMenuProps, entry: RefEntry): Menu
       onSelect: () => fire(() => actions!.rebase(name)),
     });
   }
+  items.push(...compareItems(props, name, isCurrent));
 
   items.push({
     label: `Push "${name}"`,
@@ -272,6 +275,7 @@ function remoteBranchItems(props: SidebarContextMenuProps, entry: RefEntry): Men
       onSelect: () => fire(() => actions!.rebase(name)),
     });
   }
+  items.push(...compareItems(props, name, false));
 
   items.push({
     label: "Delete Remote Branch…",
@@ -326,6 +330,25 @@ function tagItems(props: SidebarContextMenuProps, entry: RefEntry): MenuItem[] {
   items.push(...createHereItems(props, name));
   items.push(...commonRefItems(props, entry));
   return items;
+}
+
+/**
+ * 비교는 읽기 전용이라 쓰기 잠금(busy)과 무관하다. 현재 브랜치가 없거나(detached) 자기 자신이면 넣지 않는다.
+ * base가 현재 브랜치라 목록의 "head에만 있는 커밋"이 곧 이 브랜치를 머지하면 들어올 커밋이다
+ */
+function compareItems(props: SidebarContextMenuProps, name: string, isCurrent: boolean): MenuItem[] {
+  const { currentBranch, onCompareWithCurrent } = props;
+  if (onCompareWithCurrent === undefined || currentBranch === null || isCurrent) {
+    return [];
+  }
+  return [
+    {
+      label: "Compare with current branch",
+      separatorBefore: true,
+      title: `Commits and files that differ between "${currentBranch}" and "${name}"`,
+      onSelect: () => onCompareWithCurrent(name),
+    },
+  ];
 }
 
 /** 이 ref를 start point로 삼는 생성 항목들 */
