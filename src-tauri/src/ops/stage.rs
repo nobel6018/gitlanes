@@ -5,7 +5,7 @@
 use crate::git;
 use crate::model::OpResult;
 
-use super::run::{lines_of, run_op, run_op_with_input, validate_paths, LOCAL_TIMEOUT};
+use super::run::{run_op, run_op_with_input, validate_paths, LOCAL_TIMEOUT};
 
 /// 인덱스에 올린다. 추적되지 않는 파일도 `add`가 그대로 받는다.
 #[tauri::command]
@@ -71,9 +71,18 @@ pub fn git_discard(path: String, files: Vec<String>, area: String) -> Result<OpR
 }
 
 /// 추적되지 않는 파일 경로 집합. `git_discard`가 되돌릴지 지울지 가르는 데 쓴다.
+///
+/// `-z`로 받아 `\0`로만 나눈다. 줄 단위로 읽고 trim하면 ` a.txt`가 `a.txt`로 바뀌어
+/// untracked 판정에서 빠지고, clean 대신 restore로 가서 아무것도 안 지운 채 성공한다.
+/// 개행이 든 파일 이름도 `-z`여야 한 덩어리로 온다.
 fn untracked_set(repo: &str) -> std::collections::HashSet<String> {
-    git::run(repo, &["ls-files", "--others", "--exclude-standard"])
-        .map(|out| lines_of(&out).into_iter().collect())
+    git::run(repo, &["ls-files", "-z", "--others", "--exclude-standard"])
+        .map(|out| {
+            out.split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -203,6 +212,7 @@ pub fn git_create_patch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::run::lines_of;
     use crate::testrepo::TempRepo;
 
     /// 커밋 하나와 그 위의 변경 하나를 가진 저장소.
@@ -483,6 +493,36 @@ mod tests {
         let result = git_stage(repo.path(), vec!["pages/[id].tsx".to_string()]).unwrap();
         assert!(result.ok, "{result:?}");
         assert_eq!(staged_files(&repo), ["pages/[id].tsx"]);
+    }
+
+    #[test]
+    fn 앞에_공백이_있는_경로는_공백_없는_파일과_다른_파일이다() {
+        let repo = TempRepo::init("gitlanes-space");
+        repo.write("a.txt", "a\n");
+        repo.write(" a.txt", "a\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("a.txt", "중요한 수정\n");
+        repo.write(" a.txt", "버릴 수정\n");
+        repo.write(" fresh.txt", "버릴 새 파일\n");
+
+        let result = git_discard(
+            repo.path(),
+            vec![" a.txt".to_string(), " fresh.txt".to_string()],
+            "worktree".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(read(&repo, " a.txt"), "a\n");
+        assert_eq!(
+            read(&repo, "a.txt"),
+            "중요한 수정\n",
+            "trim 때문에 다른 파일(a.txt)을 되돌렸다"
+        );
+        assert!(
+            !exists(&repo, " fresh.txt"),
+            "untracked 판정이 trim으로 어긋나 clean이 아니라 restore로 갔다"
+        );
     }
 
     /// 파일 두 군데를 고친 뒤 한 hunk만 스테이지한다. hunk 단위 스테이징의 핵심 시나리오다.

@@ -424,12 +424,24 @@ pub fn validate_remote(repo: &str, remote: &str) -> Result<String, String> {
 
 /// 파일 경로 목록을 검증한다. `--` 뒤에 놓더라도 빈 문자열은 git이 싫어한다.
 ///
+/// 경로는 **바이트 그대로** 쓴다. trim하면 ` a.txt`(앞에 공백)를 discard할 때 `a.txt`를
+/// 되돌린다. 공백으로 시작하거나 끝나는 파일 이름은 합법이고, 그 파일을 고른 것은 사용자다.
+///
+/// NUL은 프로세스 인자에 실을 수 없어 spawn이 "git이 설치되어 있는지 확인하세요"로 실패한다.
+/// 엉뚱한 안내가 뜨지 않게 여기서 먼저 거절한다.
+///
 /// `-` 시작 경로까지 막는 이유는 호출자가 `--`를 빠뜨렸을 때의 사고를 줄이기 위해서다.
 pub fn validate_paths(files: &[String]) -> Result<Vec<String>, String> {
+    if let Some(bad) = files.iter().find(|file| file.contains('\0')) {
+        return Err(format!(
+            "경로에 NUL 문자가 있습니다: {}",
+            bad.replace('\0', "\\0")
+        ));
+    }
     let cleaned: Vec<String> = files
         .iter()
-        .map(|file| file.trim().to_string())
         .filter(|file| !file.is_empty())
+        .cloned()
         .collect();
 
     if cleaned.is_empty() {
@@ -698,11 +710,13 @@ mod tests {
     #[test]
     fn 경로_검증은_빈_목록과_옵션처럼_보이는_경로를_막는다() {
         assert!(validate_paths(&[]).is_err());
-        assert!(validate_paths(&["  ".to_string()]).is_err());
+        assert!(validate_paths(&[String::new()]).is_err());
         assert!(validate_paths(&["--cached".to_string()]).is_err());
+        assert!(validate_paths(&["a\0b".to_string()]).is_err());
+        // 앞뒤 공백은 이름의 일부다. 빈 문자열만 버린다
         assert_eq!(
             validate_paths(&[" a.txt ".to_string(), String::new(), "b/c.txt".to_string()]).unwrap(),
-            ["a.txt", "b/c.txt"]
+            [" a.txt ", "b/c.txt"]
         );
     }
 }

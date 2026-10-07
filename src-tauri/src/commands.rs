@@ -709,8 +709,10 @@ fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
 }
 
 /// 파일 경로가 옵션으로 해석되지 않도록 막는다. `<sha>:<file>` 조립 전에 거른다.
+///
+/// trim하지 않는다. ` a.txt`의 wip diff를 물었는데 `a.txt`의 diff가 오면, 프론트는 그걸로
+/// 패치를 만들어 엉뚱한 파일에 적용한다(ops/run.rs `validate_paths`와 같은 이유).
 fn validate_pathspec(file: &str) -> Result<String, String> {
-    let file = file.trim();
     if file.is_empty() {
         return Err("파일 경로가 비어 있습니다".to_string());
     }
@@ -1789,6 +1791,22 @@ mod integration_tests {
             !diff.contains("pages/i.tsx"),
             "다른 파일의 diff가 섞였다. 프론트는 이걸 한 파일 diff로 알고 패치를 만든다:\n{diff}"
         );
+    }
+
+    #[test]
+    fn wip_diff는_앞에_공백이_있는_경로를_그대로_쓴다() {
+        let repo = TempRepo::init("gitlanes-wip-space");
+        repo.write("a.txt", "a\n");
+        repo.write(" a.txt", "a\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("a.txt", "공백 없는 쪽\n");
+        repo.write(" a.txt", "공백 있는 쪽\n");
+
+        let diff =
+            get_wip_file_diff(repo.path(), " a.txt".to_string(), "unstaged".to_string()).unwrap();
+        assert!(diff.contains("+공백 있는 쪽"), "{diff}");
+        assert!(!diff.contains("공백 없는 쪽"), "trim으로 다른 파일의 diff가 왔다:\n{diff}");
     }
 
     #[test]
