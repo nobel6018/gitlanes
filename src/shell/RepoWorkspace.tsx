@@ -1033,12 +1033,17 @@ export function RepoWorkspace({
    * get_repo_state 하나로 그래프를 다시 읽을지 정한다 (CONTRACTS v0.15.2 4번).
    * graphToken이 바뀌었으면 그래프와 refs를 처음부터 다시 읽고, 같으면 행 배열은 그대로 두고
    * data.wip만 바꾼다. 행 참조가 그대로라 GraphView가 레인 레이아웃을 다시 계산하지 않는다.
-   * 돌려주는 값은 WIP 내용이 바뀌었는지(폴링이 WIP 상세를 다시 읽을지 정한다).
+   * contentChanged는 WIP 내용이 바뀌었는지(폴링이 WIP 상세를 다시 읽을지 정한다),
+   * reloaded는 그래프 전체 리로드를 걸었는지다.
    * afterWrite가 아니면(폴링) 응답이 왔을 때 쓰기가 진행 중이면 버린다. 쓰기 도중의 중간 상태라
    * 곧 쓰기 뒤 새로고침이 덮어쓴다
    */
   const syncRepoState = useCallback(
-    async (path: string, afterWrite: boolean): Promise<boolean> => {
+    async (
+      path: string,
+      afterWrite: boolean,
+    ): Promise<{ contentChanged: boolean; reloaded: boolean }> => {
+      const none = { contentChanged: false, reloaded: false };
       const reqId = stateReq.current + 1;
       stateReq.current = reqId;
       ioSeq.current += 1;
@@ -1051,16 +1056,16 @@ export function RepoWorkspace({
           // 지문을 못 읽었으니 무엇이 바뀌었는지 모른다. 예전처럼 전부 다시 읽는다
           searchCache.current.clear();
           reloadFromStart();
-          return true;
+          return { contentChanged: true, reloaded: true };
         }
         // 폴링 실패는 조용히 넘긴다. 다음 주기에 다시 시도한다
-        return false;
+        return none;
       }
       if (stateReq.current !== reqId || repoRef.current?.path !== path) {
-        return false;
+        return none;
       }
       if (!afterWrite && writingRef.current > 0) {
-        return false;
+        return none;
       }
       const token = wipContentToken(state.wip);
       const contentChanged = token !== contentTokenRef.current || !sameWip(state.wip, wipRef.current);
@@ -1070,12 +1075,12 @@ export function RepoWorkspace({
         // 커밋 위치와 인덱스가 달라진 검색 결과는 쓸 수 없다
         searchCache.current.clear();
         reloadFromStart();
-        return contentChanged;
+        return { contentChanged, reloaded: true };
       }
       setGraph((prev) =>
         prev === null || sameWipInfo(prev.wip, state.wip) ? prev : { ...prev, wip: state.wip },
       );
-      return contentChanged;
+      return { contentChanged, reloaded: false };
     },
     [reloadFromStart],
   );
@@ -1092,11 +1097,16 @@ export function RepoWorkspace({
     // 다시 읽는 것뿐이라 WIP 쪽 전문 캐시는 항상 버린다. 커밋 쪽은 sha가 같으면 내용도 같다
     dropWipFileText();
     setWipNonce((n) => n + 1);
-    setWriteNonce((n) => n + 1);
     if (current === null) {
       return;
     }
-    await Promise.all([syncRepoState(current.path, true), loadSyncData(current.path)]);
+    const sync = loadSyncData(current.path);
+    const { reloaded } = await syncRepoState(current.path, true);
+    if (!reloaded) {
+      // 그래프 리로드(reloadKey)가 걸렸으면 remote, 워크트리도 그쪽에서 이미 다시 읽는다
+      setWriteNonce((n) => n + 1);
+    }
+    await sync;
   }, [dropWipFileText, syncRepoState, loadSyncData]);
 
   /**
@@ -1685,7 +1695,7 @@ export function RepoWorkspace({
       return;
     }
     void loadSyncData(repo.path);
-    void syncRepoState(repo.path, false).then((contentChanged) => {
+    void syncRepoState(repo.path, false).then(({ contentChanged }) => {
       if (contentChanged) {
         dropWipFileText();
         setWipNonce((n) => n + 1);
