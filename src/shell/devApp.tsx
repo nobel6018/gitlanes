@@ -13,6 +13,7 @@ import type {
   GraphData,
   OpResult,
   PendingOp,
+  RebaseStep,
   RefEntry,
   RemoteInfo,
   RepoInfo,
@@ -452,7 +453,9 @@ function mockSearch(query: string, limit: number): SearchMatch[] {
   if (needle === "") {
     return [];
   }
-  const rows = mockGraph(TOTAL_COMMITS, 0).rows;
+  // 화면이 이미 읽어 둔 가장 긴 그래프를 쓴다. 전체(1만여 행) 레이아웃을 새로 만들지 않는다
+  const loaded = Math.max(0, ...graphCache.keys());
+  const rows = mockGraph(loaded > 0 ? loaded : 500, 0).rows;
   const out: SearchMatch[] = [];
   for (let i = 0; i < rows.length && out.length < limit; i++) {
     const row = rows[i];
@@ -687,6 +690,7 @@ function installForcedUpdate(): void {
 //   ?denied=<계정>    위 실패에 403 stderr와 deniedAccount를 붙인다 (계정 힌트 검증)
 //   ?slow=1           쓰기마다 1.2초 지연 (스피너/중복 클릭 방지 검증)
 //   ?slow=6000        숫자를 주면 그 밀리초만큼 지연 (5초 폴링 틱이 쓰기 도중에 걸리게 할 때)
+//   ?rebaseErr=1      get_rebase_steps가 Err를 돌려준다 (리베이스 에디터가 열리지 않고 토스트만)
 //
 // 콘솔: __mockEdit()  파일 수는 그대로, 내용만 바꾼다 (contentToken + unstaged diff 변경)
 //       __mockCalls, __mockCallsDuringWrite, __mockResetCalls()  command 호출 횟수
@@ -704,6 +708,8 @@ const FAIL_ALL = FAIL_SET.has("all");
 const FORCE_AUTH = PARAMS.get("auth") === "1";
 /** ?denied=<계정>. 실패가 HTTPS 403으로 그 계정을 밝힌 것처럼 꾸민다 */
 const DENIED_ACCOUNT = PARAMS.get("denied");
+/** ?rebaseErr=1. get_rebase_steps를 거절시킨다 */
+const REBASE_STEPS_ERR = PARAMS.get("rebaseErr") === "1";
 const SLOW_PARAM = Number(PARAMS.get("slow") ?? "0");
 const SLOW_WRITES = SLOW_PARAM > 0;
 /** ?slow=1은 기존대로 1.2초, 그보다 큰 숫자는 밀리초로 읽는다 */
@@ -746,6 +752,30 @@ function changesRefs(cmd: string, payload: unknown): boolean {
     default:
       return false;
   }
+}
+
+/** HEAD에서 첫 부모를 따라 base까지 내려가며 todo 순서(과거가 위)로 모은다 */
+function mockRebaseSteps(base: string): RebaseStep[] {
+  // 화면이 이미 읽어 둔 가장 긴 그래프를 쓴다. 전체(1만여 행) 레이아웃을 새로 만들지 않는다
+  const loaded = Math.max(0, ...graphCache.keys());
+  const rows = mockGraph(loaded > 0 ? loaded : 500, 0).rows;
+  const bySha = new Map(rows.map((row) => [row.sha, row]));
+  const head = rows.find((row) => row.isHead) ?? rows[0];
+  const range: CommitRow[] = [];
+  let cur: CommitRow | undefined = head;
+  while (cur !== undefined && cur.sha !== base) {
+    if (cur.isMerge) {
+      throw `The range ${base.slice(0, 7)}..HEAD contains a merge commit (${cur.shortSha}). Interactive rebase can't keep merges.`;
+    }
+    range.push(cur);
+    cur = bySha.get(cur.parents[0] ?? "");
+  }
+  if (cur === undefined) {
+    throw `${base.slice(0, 7)} is not an ancestor of HEAD, so there is nothing to rebase onto it.`;
+  }
+  return range
+    .reverse()
+    .map((row) => ({ sha: row.sha, action: "pick", subject: row.subject, message: null }));
 }
 
 /** 진행 중인 작업. ?conflict=1|am|conflicts면 처음부터 켜져 있다 */
@@ -1657,6 +1687,17 @@ mockIPC(async (cmd, payload) => {
     case "list_worktrees":
       await sleep(35);
       return worktreeStore.map((tree) => ({ ...tree }));
+
+    case "get_rebase_steps": {
+      // 실제 Rust는 `git rev-list --reverse --first-parent base..HEAD`에 가깝다. 목업은 이미 만든
+      // 그래프에서 HEAD부터 첫 부모를 따라가며 base를 찾는다. 다른 브랜치 커밋은 섞이지 않는다
+      await sleep(SLOW_WRITES ? WRITE_DELAY_MS : 120);
+      const base = String(readArg(payload, "base") ?? "");
+      if (REBASE_STEPS_ERR) {
+        throw `${base.slice(0, 7)} is not an ancestor of HEAD, so there is nothing to rebase onto it.`;
+      }
+      return mockRebaseSteps(base);
+    }
 
     case "get_last_commit_message":
       await sleep(30);

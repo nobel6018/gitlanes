@@ -29,6 +29,7 @@ import {
   getLastCommitMessage,
   getFileDiff,
   getRemoteUrl,
+  getRebaseSteps,
   getSyncState,
   getWipDetails,
   getWipFileContent,
@@ -1482,28 +1483,44 @@ export function RepoWorkspace({
     }
   }, [showError]);
 
+  /** getRebaseSteps 응답을 기다리는 중인가. 메뉴를 연달아 눌러 요청이 겹치는 것을 막는다 */
+  const rebaseLoadingRef = useRef(false);
+
   /**
-   * "Interactive rebase from here". 클릭한 커밋이 base로 남고 그 위의 커밋들이 편집 대상이다.
-   * 그래프는 최신이 위지만 todo는 과거가 위라서 여기서 한 번만 뒤집는다.
-   * (onSubmit으로 돌아오는 배열은 이미 todo 순서라 다시 뒤집지 않는다)
+   * "Interactive rebase from here". 클릭한 커밋이 base로 남고 `base..HEAD`가 편집 대상이다.
+   * 목록은 그래프 행이 아니라 git에게 묻는다(get_rebase_steps). 그래프에는 다른 브랜치 커밋이
+   * 섞여 있고 페이징 때문에 범위를 다 알 수도 없다. 반환값은 이미 todo 순서(과거가 위)라 뒤집지 않는다.
+   * base가 HEAD의 조상이 아니거나 범위에 머지 커밋이 있으면 Err이고, 에디터를 열지 않고 이유를 알린다
    */
   const openRebaseEditor = useCallback(
-    (sha: string) => {
-      const index = data.rows.findIndex((row) => row.sha === sha);
-      if (index < 0) {
+    async (sha: string) => {
+      const path = repoRef.current?.path;
+      if (path === undefined || rebaseLoadingRef.current) {
         return;
       }
-      if (index === 0) {
+      rebaseLoadingRef.current = true;
+      let steps: RebaseStep[];
+      try {
+        steps = await getRebaseSteps(path, sha);
+      } catch (err) {
+        if (repoRef.current?.path === path) {
+          showError(`Can't rebase from this commit: ${errorMessage(err)}`);
+        }
+        return;
+      } finally {
+        rebaseLoadingRef.current = false;
+      }
+      // 기다리는 사이 탭이 다른 레포로 바뀌었거나 에디터가 이미 열려 있으면 버린다
+      if (repoRef.current?.path !== path || rebaseRef.current !== null) {
+        return;
+      }
+      if (steps.length === 0) {
         showError("There are no commits above this one to rebase.");
         return;
       }
-      const steps: RebaseStep[] = data.rows
-        .slice(0, index)
-        .reverse()
-        .map((row) => ({ sha: row.sha, action: "pick", subject: row.subject, message: null }));
       setRebase({ base: sha, steps });
     },
-    [data.rows, showError],
+    [showError],
   );
 
   const closeRebaseEditor = useCallback(() => setRebase(null), []);
@@ -1921,7 +1938,7 @@ export function RepoWorkspace({
         {
           label: "Interactive rebase from here\u2026",
           title: "Reorder, squash or drop the commits above this one",
-          onSelect: () => openRebaseEditor(sha),
+          onSelect: () => void openRebaseEditor(sha),
         },
         {
           label: "Merge into current branch\u2026",
