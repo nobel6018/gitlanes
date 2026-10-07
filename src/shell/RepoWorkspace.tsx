@@ -64,6 +64,7 @@ import {
   refNameProblem,
 } from "./ActionDialogs";
 import { ConflictPanel } from "./ConflictPanel";
+import { ConflictCompare } from "./ConflictCompare";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
@@ -458,6 +459,11 @@ export function RepoWorkspace({
   const [syncState, setSyncState] = useState<SyncState | null>(null);
   /** 진행 중인 작업의 충돌 파일. pending이 없으면 항상 빈 배열 */
   const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
+  /**
+   * 3-way 비교 화면에 띄운 충돌 파일. 레포 경로를 같이 들고 있어야 탭이 다른 레포로 바뀐 뒤
+   * 같은 경로의 파일을 엉뚱한 레포 것으로 보여주지 않는다
+   */
+  const [compare, setCompare] = useState<{ repoPath: string; file: string } | null>(null);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
@@ -1272,6 +1278,37 @@ export function RepoWorkspace({
       area: "unstaged",
     });
   }, []);
+
+  const openConflictCompare = useCallback((file: ConflictFile) => {
+    const path = repoRef.current?.path;
+    if (path !== undefined) {
+      setCompare({ repoPath: path, file: file.path });
+    }
+  }, []);
+
+  const closeConflictCompare = useCallback(() => setCompare(null), []);
+
+  /**
+   * 비교 화면에 띄울 충돌 항목. Use ours/theirs, Mark resolved는 성공해도 실패해도 resolve되므로
+   * 결과를 직접 보지 않는다. 해결되면 get_conflicts에서 빠지고, 그때 이 값이 null이 되어 화면이 닫힌다
+   */
+  const compareEntry = useMemo(() => {
+    if (compare === null || repo === null || compare.repoPath !== repo.path) {
+      return null;
+    }
+    if (syncState?.pending == null) {
+      return null;
+    }
+    return conflicts.find((file) => file.path === compare.file) ?? null;
+  }, [compare, repo, syncState, conflicts]);
+
+  // 대상이 사라졌으면(해결됨, 작업 중단, 레포 전환) 상태도 비운다. 다음에 같은 경로가 다시
+  // 충돌해도 저절로 열리지 않게 한다
+  useEffect(() => {
+    if (compare !== null && compareEntry === null) {
+      setCompare(null);
+    }
+  }, [compare, compareEntry]);
 
   /** 실패는 액션 계층이 이미 토스트로 알렸다. 여기서는 unhandled rejection만 막는다 */
   const fire = useCallback((pending: Promise<void>) => {
@@ -2657,6 +2694,7 @@ export function RepoWorkspace({
         files={conflicts}
         actions={actions}
         onOpenFile={openConflictFile}
+        onCompare={openConflictCompare}
       />
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
@@ -3036,6 +3074,16 @@ export function RepoWorkspace({
               }
             });
           }}
+        />
+      )}
+
+      {compareEntry !== null && repo !== null && syncState?.pending != null && (
+        <ConflictCompare
+          repoPath={repo.path}
+          file={compareEntry}
+          kind={syncState.pending.kind}
+          actions={actions}
+          onClose={closeConflictCompare}
         />
       )}
 
