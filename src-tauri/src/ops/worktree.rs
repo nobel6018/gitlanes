@@ -210,6 +210,9 @@ mod tests {
         let result =
             git_remove_worktree(repo.path(), format!("{}-nope", repo.path()), false).unwrap();
         assert!(!result.ok, "{result:?}");
-        assert!(git_remove_worktree(repo.path(), "  ".to_string(), false).is_err());
+        assert!(git_remove_worktree(repo.path(), String::new(), false).is_err());
+        // 공백뿐인 이름도 합법 경로라 호출 오류가 아니다. 그런 워크트리가 없으니 git이 거절한다
+        let blank = git_remove_worktree(repo.path(), "  ".to_string(), false).unwrap();
+        assert!(!blank.ok, "{blank:?}");
     }
 }
