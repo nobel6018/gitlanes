@@ -9,7 +9,7 @@ use crate::git;
 use crate::layout::assign_lanes;
 use crate::model::{
     short_sha, CommitDetails, CommitRow, FileChange, FileStatus, GraphData, RefEntry, RefInfo,
-    RepoInfo, RepoState, SearchMatch, Signature, WipDetails, WipInfo,
+    RepoInfo, RepoState, SearchMatch, Signature, WipDetails, WipDiff, WipInfo,
 };
 use crate::parse::{
     graph_token, parse_commit_meta, parse_file_changes, parse_log_record, parse_ref_entries,
@@ -77,17 +77,17 @@ const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
 #[tauri::command(async)]
 pub fn open_repo(path: String) -> Result<RepoInfo, String> {
     if path.trim().is_empty() {
-        return Err("저장소 경로가 비어 있습니다".to_string());
+        return Err("No repository path was given.".to_string());
     }
 
     let root = git::run(&path, &["rev-parse", "--show-toplevel"])
-        .map_err(|e| format!("git 저장소를 열지 못했습니다: {e}"))?
+        .map_err(|e| format!("Not a git repository: {e}"))?
         .trim()
         .to_string();
 
     if root.is_empty() {
         return Err(format!(
-            "작업 트리가 없는 저장소입니다(bare repository): {path}"
+            "This is a bare repository with no working tree: {path}"
         ));
     }
 
@@ -99,7 +99,7 @@ pub fn open_repo(path: String) -> Result<RepoInfo, String> {
         .unwrap_or_else(|| "HEAD".to_string());
 
     let head_sha = git::run(&root, &["rev-parse", "HEAD"])
-        .map_err(|_| format!("커밋이 아직 없는 저장소입니다: {root}"))?
+        .map_err(|_| format!("This repository has no commits yet: {root}"))?
         .trim()
         .to_string();
 
@@ -169,7 +169,7 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
                 ],
             );
             let log_result = log.join().unwrap_or_else(|_| {
-                Err("커밋 목록을 읽는 중 내부 오류가 발생했습니다".to_string())
+                Err("Internal error while reading the commit list.".to_string())
             });
             (log_result, outputs)
         })
@@ -239,7 +239,7 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
 /// git 호출은 for-each-ref 1회다.
 #[tauri::command(async)]
 pub fn list_refs(path: String) -> Result<Vec<RefEntry>, String> {
-    let out = git::run(&path, &REF_ARGS).map_err(|e| format!("ref 목록을 읽지 못했습니다: {e}"))?;
+    let out = git::run(&path, &REF_ARGS).map_err(|e| format!("Could not read refs: {e}"))?;
 
     Ok(parse_ref_entries(&out))
 }
@@ -301,7 +301,7 @@ pub fn search_commits(
             }
         },
     )
-    .map_err(|e| format!("커밋을 검색하지 못했습니다: {e}"))?;
+    .map_err(|e| format!("Could not search commits: {e}"))?;
 
     match failure {
         Some(message) => Err(message),
@@ -358,7 +358,7 @@ fn stream_commits(path: &str, args: &[&str], want: usize) -> Result<Vec<RawCommi
             }
         },
     )
-    .map_err(|e| format!("커밋 목록을 읽지 못했습니다: {e}"))?;
+    .map_err(|e| format!("Could not read the commit list: {e}"))?;
 
     match failure {
         Some(message) => Err(message),
@@ -386,7 +386,7 @@ pub fn get_repo_state(path: String) -> Result<RepoState, String> {
         <[_; 4]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
 
     // 저장소 자체가 아니면 for-each-ref가 실패한다. 폴링이 조용히 성공하면 안 된다
-    let ref_out = ref_out.map_err(|e| format!("저장소 상태를 읽지 못했습니다: {e}"))?;
+    let ref_out = ref_out.map_err(|e| format!("Could not read the repository state: {e}"))?;
     let head_sha = head_out.map(|s| s.trim().to_string()).unwrap_or_default();
     // load_graph와 같게, 실패하면 스태시가 없는 것으로 본다
     let stash_out = stash_out.unwrap_or_default();
@@ -472,7 +472,7 @@ pub fn get_commit_details(path: String, sha: String) -> Result<CommitDetails, St
     let sha = validate_rev(&sha)?;
 
     let meta_out = git::run(&path, &["show", "-s", META_FORMAT, sha.as_str()])
-        .map_err(|e| format!("커밋 정보를 읽지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Could not read the commit: {e}"))?;
     let meta = parse_commit_meta(&meta_out)?;
 
     let files = load_file_changes(&path, &meta.sha, meta.parents.len() > 1)?;
@@ -507,7 +507,7 @@ pub fn get_file_diff(
 ) -> Result<String, String> {
     let sha = validate_rev(&sha)?;
     if file.trim().is_empty() {
-        return Err("파일 경로가 비어 있습니다".to_string());
+        return Err("No file path was given.".to_string());
     }
 
     let parents = first_line_parents(&path, &sha)?;
@@ -547,7 +547,7 @@ pub fn get_file_diff(
     }
     args.push(file.as_str());
 
-    git::run(&path, &args).map_err(|e| format!("diff를 읽지 못했습니다: {e}"))
+    git::run(&path, &args).map_err(|e| format!("Could not read the diff: {e}"))
 }
 
 /// 커밋 시점의 파일 전문. `git show <sha>:<file>`이다.
@@ -567,7 +567,7 @@ pub fn get_file_content(path: String, sha: String, file: String) -> Result<Strin
         .map(|out| String::from_utf8_lossy(&out).trim().to_string())?;
     let size: usize = size
         .parse()
-        .map_err(|_| format!("파일 크기를 읽지 못했습니다: {size}"))?;
+        .map_err(|_| format!("Could not read the file size: {size}"))?;
     if size > MAX_FILE_BYTES {
         return Err("too large".to_string());
     }
@@ -600,9 +600,9 @@ pub fn get_wip_details(path: String) -> Result<WipDetails, String> {
     let [staged_out, unstaged_out, untracked_out] =
         <[_; 3]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
 
-    let staged = staged_out.map_err(|e| format!("staged 변경을 읽지 못했습니다: {e}"))?;
-    let unstaged = unstaged_out.map_err(|e| format!("unstaged 변경을 읽지 못했습니다: {e}"))?;
-    let untracked = untracked_out.map_err(|e| format!("untracked 목록을 읽지 못했습니다: {e}"))?;
+    let staged = staged_out.map_err(|e| format!("Could not read staged changes: {e}"))?;
+    let unstaged = unstaged_out.map_err(|e| format!("Could not read unstaged changes: {e}"))?;
+    let untracked = untracked_out.map_err(|e| format!("Could not read untracked files: {e}"))?;
 
     Ok(WipDetails {
         staged: parse_file_changes(&staged),
@@ -613,7 +613,7 @@ pub fn get_wip_details(path: String) -> Result<WipDetails, String> {
 
 /// WIP 파일 하나의 unified diff. `area`는 `WipArea`("staged"/"unstaged"/"untracked").
 #[tauri::command(async)]
-pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<String, String> {
+pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<WipDiff, String> {
     let file = validate_pathspec(&file)?;
 
     let head: &[&str] = match area.as_str() {
@@ -622,7 +622,7 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Str
         // 추적되지 않는 파일은 인덱스에 없어 일반 diff로 안 나온다. 빈 파일과 비교해
         // 전체를 추가로 보여준다.
         "untracked" => &["diff", "--no-index"],
-        other => return Err(format!("알 수 없는 WIP 영역입니다: {other}")),
+        other => return Err(format!("Unknown change area: {other}")),
     };
     let mut args: Vec<&str> = PATCH_SOURCE_CONFIG_ARGS.to_vec();
     args.extend(head);
@@ -632,9 +632,10 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Str
     if area == "untracked" {
         args.push("/dev/null");
         args.push(file.as_str());
-        // --no-index는 차이가 있으면 종료 코드가 1이라 run_allow_diff를 쓴다
-        return git::run_allow_diff(&path, &args)
-            .map_err(|e| format!("untracked diff를 읽지 못했습니다: {e}"));
+        // --no-index는 차이가 있으면 종료 코드가 1이라 run_bytes_allow_diff를 쓴다
+        return git::run_bytes_allow_diff(&path, &args)
+            .map(WipDiff::from_bytes)
+            .map_err(|e| format!("Could not read the untracked diff: {e}"));
     }
     // 스테이지된 rename은 새 경로만 넣으면 `-M`이 짝을 못 찾아 "새 파일 전체 추가"로 나온다.
     // 원 경로를 같이 넣어야 rename 헤더와 실제로 바뀐 줄만 담긴 hunk가 나온다.
@@ -651,7 +652,9 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Str
         args.push(old);
     }
     args.push(file.as_str());
-    git::run(&path, &args).map_err(|e| format!("{area} diff를 읽지 못했습니다: {e}"))
+    git::run_bytes(&path, &args)
+        .map(WipDiff::from_bytes)
+        .map_err(|e| format!("Could not read the {area} diff: {e}"))
 }
 
 /// 워킹 트리의 현재 파일 내용. 커밋이 아니라 디스크를 읽는다.
@@ -661,13 +664,13 @@ pub fn get_wip_file_content(path: String, file: String) -> Result<String, String
 
     // 상한을 넘는 파일을 메모리에 올리지 않으려고 크기를 먼저 본다
     let size = std::fs::metadata(&target)
-        .map_err(|e| format!("파일 정보를 읽지 못했습니다: {e}"))?
+        .map_err(|e| format!("Could not read file info: {e}"))?
         .len();
     if size > MAX_FILE_BYTES as u64 {
         return Err("too large".to_string());
     }
 
-    decode_text(std::fs::read(&target).map_err(|e| format!("파일을 읽지 못했습니다: {e}"))?)
+    decode_text(std::fs::read(&target).map_err(|e| format!("Could not read the file: {e}"))?)
 }
 
 /// `ls-files -z` 출력을 FileChange 목록으로 바꾼다. 줄 수는 디스크에서 직접 센다.
@@ -715,19 +718,19 @@ fn count_lines(repo: &str, file: &str) -> u64 {
 /// 경로를 trim하지 않는다. ` a.txt`는 `a.txt`와 다른 파일이다(v0.15.1 H4와 같은 이유).
 fn resolve_in_repo(repo: &str, file: &str) -> Result<PathBuf, String> {
     if file.is_empty() {
-        return Err("파일 경로가 비어 있습니다".to_string());
+        return Err("No file path was given.".to_string());
     }
 
     let root = Path::new(repo)
         .canonicalize()
-        .map_err(|e| format!("저장소 경로를 확인하지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Could not resolve the repository path: {e}"))?;
     let target = root
         .join(file)
         .canonicalize()
-        .map_err(|_| format!("파일을 찾을 수 없습니다: {file}"))?;
+        .map_err(|_| format!("File not found: {file}"))?;
 
     if !target.starts_with(&root) {
-        return Err(format!("저장소 밖의 경로입니다: {file}"));
+        return Err(format!("Path is outside the repository: {file}"));
     }
     Ok(target)
 }
@@ -810,7 +813,7 @@ fn load_file_changes(path: &str, sha: &str, is_merge: bool) -> Result<Vec<FileCh
             ],
         )
     }
-    .map_err(|e| format!("변경 파일 목록을 읽지 못했습니다: {e}"))?;
+    .map_err(|e| format!("Could not read the changed files: {e}"))?;
 
     Ok(parse_file_changes(&out))
 }
@@ -818,7 +821,7 @@ fn load_file_changes(path: &str, sha: &str, is_merge: bool) -> Result<Vec<FileCh
 /// `git rev-list --parents -n 1`로 부모 목록만 얻는다.
 fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
     let out = git::run(path, &["rev-list", "--parents", "--max-count=1", sha])
-        .map_err(|e| format!("커밋을 찾지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Commit not found: {e}"))?;
     let mut tokens = out.split_whitespace();
     tokens.next(); // 첫 토큰은 커밋 자신
     Ok(tokens.map(str::to_string).collect())
@@ -830,10 +833,10 @@ fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
 /// 패치를 만들어 엉뚱한 파일에 적용한다(ops/run.rs `validate_paths`와 같은 이유).
 fn validate_pathspec(file: &str) -> Result<String, String> {
     if file.is_empty() {
-        return Err("파일 경로가 비어 있습니다".to_string());
+        return Err("No file path was given.".to_string());
     }
     if file.starts_with('-') {
-        return Err(format!("파일 경로 형식이 올바르지 않습니다: {file}"));
+        return Err(format!("Invalid file path: {file}"));
     }
     Ok(file.to_string())
 }
@@ -842,10 +845,10 @@ fn validate_pathspec(file: &str) -> Result<String, String> {
 fn validate_rev(sha: &str) -> Result<String, String> {
     let sha = sha.trim();
     if sha.is_empty() {
-        return Err("커밋 sha가 비어 있습니다".to_string());
+        return Err("No commit sha was given.".to_string());
     }
     if sha.starts_with('-') {
-        return Err(format!("커밋 sha 형식이 올바르지 않습니다: {sha}"));
+        return Err(format!("Invalid commit sha: {sha}"));
     }
     Ok(sha.to_string())
 }
@@ -922,7 +925,7 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::model::{FileStatus, RefKind};
+    use crate::model::{DiffEncoding, FileStatus, RefKind};
     use crate::testrepo::TempRepo;
     use std::process::Command;
 
@@ -1001,7 +1004,7 @@ mod integration_tests {
             .unwrap();
         if !out.status.success() {
             let err = open_repo(dir.to_string_lossy().into_owned()).unwrap_err();
-            assert!(err.contains("git 저장소를 열지 못했습니다"), "{err}");
+            assert!(err.contains("Not a git repository"), "{err}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1149,7 +1152,7 @@ mod integration_tests {
     fn 없는_커밋은_오류_메시지를_돌려준다() {
         let repo = fixture();
         let err = get_commit_details(repo.path(), "deadbeefdeadbeef".to_string()).unwrap_err();
-        assert!(err.contains("커밋 정보를 읽지 못했습니다"), "{err}");
+        assert!(err.contains("Could not read the commit"), "{err}");
     }
 
     #[test]
@@ -1454,7 +1457,7 @@ mod integration_tests {
     #[test]
     fn get_repo_state는_저장소가_아니면_오류다() {
         let err = get_repo_state("/definitely/not/a/repo/gitlanes".to_string()).unwrap_err();
-        assert!(err.contains("저장소 상태를 읽지 못했습니다"), "{err}");
+        assert!(err.contains("Could not read the repository state"), "{err}");
     }
 
     #[test]
@@ -1665,7 +1668,7 @@ mod integration_tests {
     #[test]
     fn list_refs는_저장소가_아니면_오류다() {
         let err = list_refs("/definitely/not/a/repo/gitlanes".to_string()).unwrap_err();
-        assert!(err.contains("ref 목록을 읽지 못했습니다"), "{err}");
+        assert!(err.contains("Could not read refs"), "{err}");
     }
 
     #[test]
@@ -1914,17 +1917,22 @@ mod integration_tests {
     fn wip_diff는_area마다_다른_명령을_쓴다() {
         let repo = wip_fixture();
 
-        let staged =
-            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string()).unwrap();
+        let staged = get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert!(staged.contains("+staged"), "{staged}");
 
         // 같은 파일이라도 unstaged 영역에는 변경이 없다
         let unstaged_of_staged =
-            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "unstaged".to_string()).unwrap();
+            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "unstaged".to_string())
+                .unwrap()
+                .text;
         assert!(unstaged_of_staged.is_empty(), "{unstaged_of_staged}");
 
         let unstaged =
-            get_wip_file_diff(repo.path(), "keep.txt".to_string(), "unstaged".to_string()).unwrap();
+            get_wip_file_diff(repo.path(), "keep.txt".to_string(), "unstaged".to_string())
+                .unwrap()
+                .text;
         assert!(unstaged.contains("+4"), "{unstaged}");
         assert!(unstaged.contains("keep.txt"), "{unstaged}");
     }
@@ -1938,7 +1946,8 @@ mod integration_tests {
             "fresh.txt".to_string(),
             "untracked".to_string(),
         )
-        .unwrap();
+        .unwrap()
+        .text;
         assert!(diff.contains("fresh.txt"), "{diff}");
         assert!(diff.contains("+a"), "{diff}");
         assert!(diff.contains("+b"), "{diff}");
@@ -1959,7 +1968,8 @@ mod integration_tests {
             "pages/[id].tsx".to_string(),
             "unstaged".to_string(),
         )
-        .unwrap();
+        .unwrap()
+        .text;
         assert!(diff.contains("+id 수정"), "{diff}");
         assert!(
             !diff.contains("pages/i.tsx"),
@@ -2083,8 +2093,9 @@ mod integration_tests {
         let repo = hostile_diff_config();
         repo.write("f.txt", &with_secret());
 
-        let unstaged =
-            get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string()).unwrap();
+        let unstaged = get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string())
+            .unwrap()
+            .text;
         assert_patch_source(&unstaged, "unstaged");
         assert!(unstaged.contains("--- a/f.txt"), "{unstaged}");
         // l5 앞뒤로 context 3줄씩: l2..l4, l6..l8
@@ -2098,8 +2109,9 @@ mod integration_tests {
         );
 
         repo.git(&["add", "f.txt"]);
-        let staged =
-            get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string()).unwrap();
+        let staged = get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert_patch_source(&staged, "staged");
         assert!(staged.contains("--- a/f.txt"), "{staged}");
         assert!(staged.contains("@@ -2,7 +2,7 @@"), "{staged}");
@@ -2110,7 +2122,8 @@ mod integration_tests {
             "fresh.txt".to_string(),
             "untracked".to_string(),
         )
-        .unwrap();
+        .unwrap()
+        .text;
         assert_patch_source(&untracked, "untracked");
     }
 
@@ -2125,16 +2138,18 @@ mod integration_tests {
         repo.git(&["commit", "-qm", "base"]);
         repo.write("f.txt", "a\n\nB\n");
 
-        let unstaged =
-            get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string()).unwrap();
+        let unstaged = get_wip_file_diff(repo.path(), "f.txt".to_string(), "unstaged".to_string())
+            .unwrap()
+            .text;
         assert!(
             unstaged.contains("\n a\n \n-b\n+B\n"),
             "빈 context 줄의 공백 접두가 사라졌다:\n{unstaged:?}"
         );
 
         repo.git(&["add", "f.txt"]);
-        let staged =
-            get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string()).unwrap();
+        let staged = get_wip_file_diff(repo.path(), "f.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert!(staged.contains("\n a\n \n-b\n+B\n"), "{staged:?}");
     }
 
@@ -2160,8 +2175,9 @@ mod integration_tests {
         repo.write("a.txt", "공백 없는 쪽\n");
         repo.write(" a.txt", "공백 있는 쪽\n");
 
-        let diff =
-            get_wip_file_diff(repo.path(), " a.txt".to_string(), "unstaged".to_string()).unwrap();
+        let diff = get_wip_file_diff(repo.path(), " a.txt".to_string(), "unstaged".to_string())
+            .unwrap()
+            .text;
         assert!(diff.contains("+공백 있는 쪽"), "{diff}");
         assert!(
             !diff.contains("공백 없는 쪽"),
@@ -2208,7 +2224,7 @@ mod integration_tests {
             // Linux는 파일 뒤의 `..`(keep.txt/..)를 ENOTDIR로 먼저 실패시키고 macOS realpath는
             // 통과시켜 prefix 검사에서 걸린다. 둘 다 안전한 거부이므로 어느 메시지든 허용한다
             assert!(
-                error.contains("저장소 밖의 경로") || error.contains("찾을 수 없습니다"),
+                error.contains("outside the repository") || error.contains("not found"),
                 "{candidate}: {error}"
             );
         }
@@ -2234,7 +2250,7 @@ mod integration_tests {
         std::os::unix::fs::symlink(&outside, format!("{}/escape.txt", repo.path())).unwrap();
 
         let error = get_wip_file_content(repo.path(), "escape.txt".to_string()).unwrap_err();
-        assert!(error.contains("저장소 밖의 경로"), "{error}");
+        assert!(error.contains("outside the repository"), "{error}");
 
         // 목록에는 올라오지만 줄 수는 셀 수 없어 0이다
         let wip = get_wip_details(repo.path()).unwrap();
@@ -2259,6 +2275,9 @@ mod integration_tests {
     }
 
     /// v0.15.1 H4와 같은 원인. trim하면 ` a.txt`의 전문을 물었는데 `a.txt`를 읽는다.
+    // Windows는 파일명 끝의 공백을 잘라 버려 `a.txt `를 만들 수 없다(앞 공백은 가능하지만
+    // 이 테스트는 앞뒤를 함께 본다).
+    #[cfg(not(windows))]
     #[test]
     fn wip_전문은_앞뒤_공백이_있는_경로를_그대로_읽는다() {
         let repo = TempRepo::init("gitlanes-content-space");
@@ -2293,8 +2312,9 @@ mod integration_tests {
         repo.write("other.txt", "other 수정\n");
         repo.git(&["add", "-A"]);
 
-        let diff =
-            get_wip_file_diff(repo.path(), "new.txt".to_string(), "staged".to_string()).unwrap();
+        let diff = get_wip_file_diff(repo.path(), "new.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert!(diff.contains("rename from old.txt"), "{diff}");
         assert!(diff.contains("rename to new.txt"), "{diff}");
         assert!(!diff.contains("new file mode"), "{diff}");
@@ -2305,7 +2325,9 @@ mod integration_tests {
         assert!(diff.starts_with("diff --git a/old.txt b/new.txt"), "{diff}");
 
         // 이 diff를 통째로 reverse 적용하면 rename과 수정이 함께 인덱스에서 내려간다
-        let undone = crate::ops::stage::git_apply_patch(repo.path(), diff, true, true).unwrap();
+        let undone =
+            crate::ops::stage::git_apply_patch(repo.path(), diff, true, true, "utf8".to_string())
+                .unwrap();
         assert!(undone.ok, "{undone:?}");
         let staged = git::run(repo.path(), &["diff", "--cached", "--name-only"]).unwrap();
         assert_eq!(staged, "other.txt\n");
@@ -2315,8 +2337,113 @@ mod integration_tests {
     #[test]
     fn rename이_아닌_staged_diff는_그대로다() {
         let repo = wip_fixture();
-        let diff =
-            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string()).unwrap();
+        let diff = get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string())
+            .unwrap()
+            .text;
         assert!(diff.starts_with("diff --git a/mod.txt b/mod.txt"), "{diff}");
+    }
+
+    /// EUC-KR("한글")과 Latin-1("café") 바이트가 섞인, UTF-8이 아닌 파일. 위아래 두 hunk가 나온다.
+    /// 파일명은 ASCII다. 비UTF-8 파일명은 APFS(macOS)와 NTFS(Windows) 모두 만들 수 없어 쓰지 않는다
+    fn non_utf8_base() -> Vec<u8> {
+        let mut base = Vec::new();
+        for i in 1..=20 {
+            base.extend_from_slice(format!("line {i} ").as_bytes());
+            base.extend_from_slice(b"\xc7\xd1\xb1\xdb caf\xe9\n");
+        }
+        base
+    }
+
+    #[test]
+    fn 비utf8_파일의_hunk를_스테이지하면_원래_바이트가_인덱스에_들어간다() {
+        let repo = TempRepo::init("gitlanes-wip-latin1");
+        let base = non_utf8_base();
+        repo.write_bytes("euc.txt", &base);
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+
+        let top = b"line 2 \xc7\xd1\xb1\xdb caf\xe9\n";
+        let top_changed = b"line 2 \xbc\xf6\xc1\xa4 na\xefve\n";
+        let bottom = b"line 19 \xc7\xd1\xb1\xdb caf\xe9\n";
+        let bottom_changed = b"line 19 \xff\xfe\n";
+        let replace = |src: &[u8], from: &[u8], to: &[u8]| -> Vec<u8> {
+            let at = src.windows(from.len()).position(|w| w == from).unwrap();
+            [&src[..at], to, &src[at + from.len()..]].concat()
+        };
+        let staged_expected = replace(&base, top, top_changed);
+        repo.write_bytes(
+            "euc.txt",
+            &replace(&staged_expected, bottom, bottom_changed),
+        );
+
+        let diff =
+            get_wip_file_diff(repo.path(), "euc.txt".to_string(), "unstaged".to_string()).unwrap();
+        assert_eq!(diff.encoding, DiffEncoding::Latin1);
+        let diff = diff.text;
+        let hunks: Vec<&str> = diff.split("\n@@").collect();
+        assert_eq!(hunks.len(), 3, "hunk 두 개를 기대했다:\n{diff}");
+        let patch = format!("{}\n@@{}", hunks[0], hunks[1]);
+
+        let result = crate::ops::stage::git_apply_patch(
+            repo.path(),
+            patch,
+            true,
+            false,
+            "latin1".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        let index = git::run_bytes(repo.path(), &["show", ":euc.txt"]).unwrap();
+        assert_eq!(index, staged_expected, "인덱스 바이트가 원본과 다르다");
+
+        // 스테이지된 쪽 diff도 latin1이고, reverse로 내리면 인덱스가 base로 돌아간다
+        let staged =
+            get_wip_file_diff(repo.path(), "euc.txt".to_string(), "staged".to_string()).unwrap();
+        assert_eq!(staged.encoding, DiffEncoding::Latin1);
+        let undone = crate::ops::stage::git_apply_patch(
+            repo.path(),
+            staged.text,
+            true,
+            true,
+            "latin1".to_string(),
+        )
+        .unwrap();
+        assert!(undone.ok, "{undone:?}");
+        let index = git::run_bytes(repo.path(), &["show", ":euc.txt"]).unwrap();
+        assert_eq!(index, base);
+    }
+
+    #[test]
+    fn 비utf8_untracked_파일의_diff는_latin1로_바이트를_보존한다() {
+        let repo = wip_fixture();
+        repo.write_bytes("new-euc.txt", b"\xc7\xd1\xb1\xdb\n");
+        let diff = get_wip_file_diff(
+            repo.path(),
+            "new-euc.txt".to_string(),
+            "untracked".to_string(),
+        )
+        .unwrap();
+        assert_eq!(diff.encoding, DiffEncoding::Latin1);
+        assert!(
+            diff.text.contains("+\u{c7}\u{d1}\u{b1}\u{db}\n"),
+            "{:?}",
+            diff.text
+        );
+    }
+
+    #[test]
+    fn utf8_파일의_diff는_utf8로_온다() {
+        let repo = wip_fixture();
+        let diff =
+            get_wip_file_diff(repo.path(), "keep.txt".to_string(), "unstaged".to_string()).unwrap();
+        assert_eq!(diff.encoding, DiffEncoding::Utf8);
+        assert!(diff.text.contains("+4"), "{}", diff.text);
+        let untracked = get_wip_file_diff(
+            repo.path(),
+            "fresh.txt".to_string(),
+            "untracked".to_string(),
+        )
+        .unwrap();
+        assert_eq!(untracked.encoding, DiffEncoding::Utf8);
     }
 }

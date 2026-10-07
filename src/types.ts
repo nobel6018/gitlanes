@@ -202,7 +202,18 @@ export type WipArea = "staged" | "unstaged" | "untracked";
  */
 export type DiscardArea = "worktree" | "all";
 
-// get_wip_file_diff(path, file, area) -> string
+/**
+ * get_wip_file_diff 응답 (v0.16.1). 파일 내용이 UTF-8이 아니면 diff를 latin1로 디코딩해 보낸다.
+ * latin1은 바이트 하나가 글자 하나(코드 0~255)라서, 패치 엔진이 문자열을 자르고 붙인 뒤 다시
+ * 바이트로 바꾸면 원래 바이트가 손실 없이 돌아온다. 화면 표시는 깨져 보인다(손실 디코딩도 깨져
+ * 보이기는 마찬가지였다). 이 diff로 만든 패치는 git_apply_patch에 같은 encoding으로 보낸다
+ */
+export interface WipDiff {
+  text: string;
+  encoding: "utf8" | "latin1";
+}
+
+// get_wip_file_diff(path, file, area) -> WipDiff   (v0.16.1에서 string에서 바뀜)
 //   staged: git diff --cached -- file / unstaged: git diff -- file /
 //   untracked: git diff --no-index /dev/null file. rename은 file=새 경로.
 // get_wip_file_content(path, file) -> string
@@ -349,7 +360,8 @@ export interface CommitOptions {
 //       //             Staged 영역과 파일 단위 전체 discard가 이걸 쓴다
 //       // 두 모드 모두 untracked는 clean -fd로 삭제한다
 //   git_stage_all(path)  /  git_unstage_all(path)
-//   git_apply_patch(path, patch: string, cached: boolean, reverse: boolean)
+//   git_apply_patch(path, patch: string, cached: boolean, reverse: boolean, encoding: "utf8" | "latin1")
+//       // v0.16.1: encoding은 패치를 만든 WipDiff.encoding 그대로. latin1이면 Rust가 글자를 바이트로 되돌린다
 //       // hunk/line 단위 스테이징의 유일한 원시 연산.
 //       // 스테이지: cached=true, reverse=false / 언스테이지: cached=true, reverse=true
 //       // 워킹트리에서 되돌리기: cached=false, reverse=true

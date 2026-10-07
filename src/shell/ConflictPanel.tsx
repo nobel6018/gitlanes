@@ -41,7 +41,7 @@ const SKIP_LABEL: Partial<Record<PendingKind, { label: string; title: string }>>
   am: { label: "Skip patch", title: "Drop the patch being applied and move on to the next one" },
 };
 
-const FILE_KIND_LABEL: Record<ConflictFile["kind"], string> = {
+export const FILE_KIND_LABEL: Record<ConflictFile["kind"], string> = {
   bothModified: "both modified",
   bothAdded: "both added",
   deletedByUs: "deleted by us",
@@ -54,7 +54,7 @@ const FILE_KIND_LABEL: Record<ConflictFile["kind"], string> = {
  * 리베이스는 "올라타는 쪽"을 체크아웃한 다음 내 커밋을 그 위에 다시 얹기 때문에,
  * 이 시점의 HEAD(= ours)는 내 브랜치가 아니라 upstream이다.
  */
-function sideTooltip(side: "ours" | "theirs", kind: PendingKind): string {
+export function sideTooltip(side: "ours" | "theirs", kind: PendingKind): string {
   const rebasing = kind === "rebase";
   if (side === "ours") {
     return rebasing
@@ -78,9 +78,17 @@ export interface ConflictPanelProps {
   actions: ConflictActions;
   /** 파일을 외부 편집기나 diff 패널에서 연다 */
   onOpenFile?: (path: string) => void;
+  /** base, ours, theirs 3-way 비교 화면(ConflictCompare)을 연다 */
+  onCompare?: (file: ConflictFile) => void;
 }
 
-export function ConflictPanel({ pending, files, actions, onOpenFile }: ConflictPanelProps) {
+export function ConflictPanel({
+  pending,
+  files,
+  actions,
+  onOpenFile,
+  onCompare,
+}: ConflictPanelProps) {
   if (pending === null) {
     return null;
   }
@@ -176,6 +184,15 @@ export function ConflictPanel({ pending, files, actions, onOpenFile }: ConflictP
                   : `${FILE_KIND_LABEL[file.kind]} - no markers left, resolved by hand`}
               </span>
               <span className="cfp-row-actions">
+                {onCompare !== undefined && (
+                  <button
+                    className="cfp-mini"
+                    title="Compare base, ours and theirs side by side"
+                    onClick={() => onCompare(file)}
+                  >
+                    Compare
+                  </button>
+                )}
                 <button
                   className="cfp-mini"
                   disabled={busy}

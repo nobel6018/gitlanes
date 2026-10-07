@@ -13,6 +13,7 @@ import type {
   PendingKind,
   PullMode,
   RebaseStep,
+  WipDiff,
 } from "../types";
 import * as api from "./api";
 import { basename } from "./format";
@@ -51,8 +52,15 @@ export interface RepoActions {
    * 워킹 트리에서 버리는 경우(!cached && reverse)만 확인창을 띄운다.
    * scope는 확인창에 보여줄 영향 범위("2 lines in src/a.ts" 같은 것). 선택 인자라
    * 아직 넘기지 않는 호출 측도 그대로 컴파일된다 (v0.15.1)
+   * encoding은 패치를 만든 WipDiff.encoding 그대로 넘긴다. 생략하면 "utf8" (v0.16.1)
    */
-  applyPatch(patch: string, cached: boolean, reverse: boolean, scope?: string): Promise<void>;
+  applyPatch(
+    patch: string,
+    cached: boolean,
+    reverse: boolean,
+    scope?: string,
+    encoding?: WipDiff["encoding"],
+  ): Promise<void>;
   clean(paths: string[]): Promise<void>;
   // 커밋
   commit(options: CommitOptions): Promise<void>;
@@ -380,7 +388,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
       // 워킹 트리에서 버리기는 파일 단위 discard와 같은 효과다. 실수로 옆 버튼을 눌러도
       // 미커밋 변경이 사라지지 않게 확인을 받는다 (audit-state H2). 인덱스 쪽 조작은
       // 워킹 트리에 내용이 남아 있어 되돌릴 수 있으므로 묻지 않는다
-      applyPatch: (patch, cached, reverse, scope) =>
+      applyPatch: (patch, cached, reverse, scope, encoding) =>
         exec({
           success: null,
           failure: "Applying the patch failed",
@@ -395,7 +403,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
                   danger: true,
                 }
               : undefined,
-          call: () => api.gitApplyPatch(path, patch, cached, reverse),
+          call: () => api.gitApplyPatch(path, patch, cached, reverse, encoding ?? "utf8"),
         }),
 
       clean: (paths) =>

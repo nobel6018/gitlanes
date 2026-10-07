@@ -59,15 +59,15 @@ pub fn parse_log_record(record: &str) -> Result<Option<RawCommit>, String> {
     let (Some(parents), Some(author), Some(email), Some(ts), Some(subject)) =
         (parents, author, email, ts, subject)
     else {
-        return Err(format!("git log 출력을 해석하지 못했습니다: {record:?}"));
+        return Err(format!("Could not parse git log output: {record:?}"));
     };
     if sha.is_empty() {
-        return Err("git log 출력에 커밋 해시가 없습니다".to_string());
+        return Err("git log output has no commit hash.".to_string());
     }
     let timestamp = ts
         .trim()
         .parse::<i64>()
-        .map_err(|_| format!("git log의 author timestamp를 숫자로 읽지 못했습니다: {ts:?}"))?;
+        .map_err(|_| format!("git log author timestamp is not a number: {ts:?}"))?;
 
     Ok(Some(RawCommit {
         sha: sha.to_string(),
@@ -98,7 +98,7 @@ pub fn parse_commit_meta(out: &str) -> Result<CommitMeta, String> {
     let record = out.trim_start_matches(['\n', '\r']);
     let fields: Vec<&str> = record.splitn(10, FIELD).collect();
     if fields.len() < 10 || fields[0].is_empty() {
-        return Err("git show의 커밋 메타데이터를 해석하지 못했습니다".to_string());
+        return Err("Could not parse commit metadata from git show.".to_string());
     }
     let author_timestamp = parse_ts(fields[3], "author")?;
     let committer_timestamp = parse_ts(fields[6], "committer")?;
@@ -120,7 +120,7 @@ pub fn parse_commit_meta(out: &str) -> Result<CommitMeta, String> {
 fn parse_ts(raw: &str, which: &str) -> Result<i64, String> {
     raw.trim()
         .parse::<i64>()
-        .map_err(|_| format!("{which} timestamp를 숫자로 읽지 못했습니다: {raw:?}"))
+        .map_err(|_| format!("{which} timestamp is not a number: {raw:?}"))
 }
 
 /// `git for-each-ref` 출력을 대상 커밋 sha → refs 맵으로 만든다.
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn 필드가_모자란_레코드는_오류다() {
         let err = parse_log("abc\u{1f}\u{1f}T\u{1e}\n").unwrap_err();
-        assert!(err.contains("해석하지 못했습니다"), "{err}");
+        assert!(err.contains("Could not parse"), "{err}");
     }
 
     #[test]
@@ -893,6 +893,6 @@ mod tests {
     #[test]
     fn 메타데이터_필드가_모자라면_오류다() {
         let err = parse_commit_meta("abc\u{1f}T").unwrap_err();
-        assert!(err.contains("해석하지 못했습니다"), "{err}");
+        assert!(err.contains("Could not parse"), "{err}");
     }
 }

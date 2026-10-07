@@ -491,28 +491,28 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
 /// 전체 재설정은 accelerator를 다시 등록하면서 `fix_shift_accelerators` 보정이 날아가고,
 /// macOS에서 메뉴바가 한 번 깜빡인다. 항목 교체는 그런 부작용이 없다.
 pub fn apply_recent<R: Runtime>(app: &AppHandle<R>, entries: &[RecentEntry]) -> Result<(), String> {
-    let menu = app.menu().ok_or("앱 메뉴가 아직 설치되지 않았습니다")?;
-    let file = submenu(menu.get(FILE_MENU_ID)).ok_or("File 메뉴를 찾지 못했습니다")?;
-    let recent = submenu(file.get(RECENT_MENU_ID)).ok_or("Open Recent 메뉴를 찾지 못했습니다")?;
+    let menu = app.menu().ok_or("The app menu is not ready yet.")?;
+    let file = submenu(menu.get(FILE_MENU_ID)).ok_or("File menu not found.")?;
+    let recent = submenu(file.get(RECENT_MENU_ID)).ok_or("Open Recent menu not found.")?;
 
     // remove_at(0)을 항목 수만큼 반복한다. 빈 서브메뉴에 계속 호출하는 것을 피하려고
     // 먼저 개수를 읽는다.
     let count = recent
         .items()
-        .map_err(|error| format!("Open Recent 항목을 읽지 못했습니다: {error}"))?
+        .map_err(|error| format!("Could not read Open Recent items: {error}"))?
         .len();
     for _ in 0..count {
         recent
             .remove_at(0)
-            .map_err(|error| format!("Open Recent 항목을 지우지 못했습니다: {error}"))?;
+            .map_err(|error| format!("Could not clear Open Recent items: {error}"))?;
     }
 
     let items = recent_items(app, entries)
-        .map_err(|error| format!("Open Recent 항목을 만들지 못했습니다: {error}"))?;
+        .map_err(|error| format!("Could not build Open Recent items: {error}"))?;
     let refs: Vec<&dyn IsMenuItem<R>> = items.iter().map(|item| item.as_ref()).collect();
     recent
         .append_items(&refs)
-        .map_err(|error| format!("Open Recent 항목을 넣지 못했습니다: {error}"))
+        .map_err(|error| format!("Could not add Open Recent items: {error}"))
 }
 
 /// Open Recent에 들어갈 항목들. 비었으면 비활성 안내 한 줄, 있으면 경로 + 구분선 + Clear Menu.

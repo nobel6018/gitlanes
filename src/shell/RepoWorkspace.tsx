@@ -18,6 +18,7 @@ import type {
   SearchMatch,
   SyncState,
   WipArea,
+  WipDiff,
   WipDetails,
   WipInfo,
   WorktreeInfo,
@@ -63,6 +64,7 @@ import {
   refNameProblem,
 } from "./ActionDialogs";
 import { ConflictPanel } from "./ConflictPanel";
+import { ConflictCompare } from "./ConflictCompare";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import { ConfirmDialog, PromptDialog } from "./Dialogs";
@@ -244,6 +246,9 @@ const TERM_WRITE_DELAY_MS = 120;
  * 안내까지 수동으로 닫게 하면 성가시다. git stderr를 실은 쓰기 실패만 남긴다
  */
 const NOTICE_ERROR_MS = 8000;
+
+/** get_rebase_steps가 이보다 오래 걸릴 때만 진행 토스트를 띄운다 */
+const REBASE_PROGRESS_DELAY_MS = 300;
 
 /** 확인 다이얼로그 한 건. resolve로 사용자의 선택을 액션 계층에 돌려준다 */
 interface PendingConfirm {
@@ -443,6 +448,8 @@ export function RepoWorkspace({
   /** wip 요약이 바뀔 때마다 오른다. WIP 상세와 열린 WIP diff를 다시 읽는 트리거 */
   const [wipNonce, setWipNonce] = useState(0);
   const [diffText, setDiffText] = useState<string | null>(null);
+  /** diffText의 인코딩. 커밋 diff는 항상 utf8, WIP diff는 get_wip_file_diff가 알려 준다 */
+  const [diffEncoding, setDiffEncoding] = useState<WipDiff["encoding"]>("utf8");
   const [fileText, setFileText] = useState<string | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
@@ -452,6 +459,11 @@ export function RepoWorkspace({
   const [syncState, setSyncState] = useState<SyncState | null>(null);
   /** 진행 중인 작업의 충돌 파일. pending이 없으면 항상 빈 배열 */
   const [conflicts, setConflicts] = useState<ConflictFile[]>([]);
+  /**
+   * 3-way 비교 화면에 띄운 충돌 파일. 레포 경로를 같이 들고 있어야 탭이 다른 레포로 바뀐 뒤
+   * 같은 경로의 파일을 엉뚱한 레포 것으로 보여주지 않는다
+   */
+  const [compare, setCompare] = useState<{ repoPath: string; file: string } | null>(null);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
@@ -1267,6 +1279,37 @@ export function RepoWorkspace({
     });
   }, []);
 
+  const openConflictCompare = useCallback((file: ConflictFile) => {
+    const path = repoRef.current?.path;
+    if (path !== undefined) {
+      setCompare({ repoPath: path, file: file.path });
+    }
+  }, []);
+
+  const closeConflictCompare = useCallback(() => setCompare(null), []);
+
+  /**
+   * 비교 화면에 띄울 충돌 항목. Use ours/theirs, Mark resolved는 성공해도 실패해도 resolve되므로
+   * 결과를 직접 보지 않는다. 해결되면 get_conflicts에서 빠지고, 그때 이 값이 null이 되어 화면이 닫힌다
+   */
+  const compareEntry = useMemo(() => {
+    if (compare === null || repo === null || compare.repoPath !== repo.path) {
+      return null;
+    }
+    if (syncState?.pending == null) {
+      return null;
+    }
+    return conflicts.find((file) => file.path === compare.file) ?? null;
+  }, [compare, repo, syncState, conflicts]);
+
+  // 대상이 사라졌으면(해결됨, 작업 중단, 레포 전환) 상태도 비운다. 다음에 같은 경로가 다시
+  // 충돌해도 저절로 열리지 않게 한다
+  useEffect(() => {
+    if (compare !== null && compareEntry === null) {
+      setCompare(null);
+    }
+  }, [compare, compareEntry]);
+
   /** 실패는 액션 계층이 이미 토스트로 알렸다. 여기서는 unhandled rejection만 막는다 */
   const fire = useCallback((pending: Promise<void>) => {
     pending.catch(() => undefined);
@@ -1485,6 +1528,8 @@ export function RepoWorkspace({
 
   /** getRebaseSteps 응답을 기다리는 중인가. 메뉴를 연달아 눌러 요청이 겹치는 것을 막는다 */
   const rebaseLoadingRef = useRef(false);
+  /** 같은 값을 화면에 보이는 쪽. 기다리는 동안 메뉴 항목을 비활성으로 그린다 */
+  const [rebaseLoading, setRebaseLoading] = useState(false);
 
   /**
    * "Interactive rebase from here". 클릭한 커밋이 base로 남고 `base..HEAD`가 편집 대상이다.
@@ -1499,6 +1544,15 @@ export function RepoWorkspace({
         return;
       }
       rebaseLoadingRef.current = true;
+      setRebaseLoading(true);
+      // 큰 레포에서는 rev-list가 수 초 걸린다. 메뉴는 클릭과 함께 닫히므로 아무 반응이 없어
+      // 보인다. 금방 끝나는 경우 깜빡임만 남지 않게 잠깐 기다렸다가 진행 토스트를 띄우고,
+      // 끝나면 직접 걷어 낸다(durationMs 0은 자동으로 사라지지 않는다)
+      let progressToast: number | null = null;
+      const progressTimer = window.setTimeout(() => {
+        pushToast({ message: "Reading the commits to rebase\u2026", tone: "info", durationMs: 0 });
+        progressToast = toastSeq.current;
+      }, REBASE_PROGRESS_DELAY_MS);
       let steps: RebaseStep[];
       try {
         steps = await getRebaseSteps(path, sha);
@@ -1508,7 +1562,12 @@ export function RepoWorkspace({
         }
         return;
       } finally {
+        window.clearTimeout(progressTimer);
+        if (progressToast !== null) {
+          dismissToast(progressToast);
+        }
         rebaseLoadingRef.current = false;
+        setRebaseLoading(false);
       }
       // 기다리는 사이 탭이 다른 레포로 바뀌었거나 에디터가 이미 열려 있으면 버린다
       if (repoRef.current?.path !== path || rebaseRef.current !== null) {
@@ -1520,7 +1579,7 @@ export function RepoWorkspace({
       }
       setRebase({ base: sha, steps });
     },
-    [showError],
+    [showError, pushToast, dismissToast],
   );
 
   const closeRebaseEditor = useCallback(() => setRebase(null), []);
@@ -1937,7 +1996,10 @@ export function RepoWorkspace({
         },
         {
           label: "Interactive rebase from here\u2026",
-          title: "Reorder, squash or drop the commits above this one",
+          disabled: rebaseLoading,
+          title: rebaseLoading
+            ? "Still reading the commits for the previous request"
+            : "Reorder, squash or drop the commits above this one",
           onSelect: () => void openRebaseEditor(sha),
         },
         {
@@ -1994,6 +2056,7 @@ export function RepoWorkspace({
     openNewBranchPrompt,
     openNewTagPrompt,
     openRebaseEditor,
+    rebaseLoading,
   ]);
 
   const previewWidth = useCallback((name: "sidebar" | "detail", width: number) => {
@@ -2175,6 +2238,8 @@ export function RepoWorkspace({
   const diffKeyRef = useRef<string | null>(null);
   const diffTextRef = useRef<string | null>(null);
   diffTextRef.current = diffText;
+  const diffEncodingRef = useRef<WipDiff["encoding"]>("utf8");
+  diffEncodingRef.current = diffEncoding;
   const openFileRef = useRef<OpenFile | null>(null);
   openFileRef.current = openFile;
 
@@ -2200,17 +2265,19 @@ export function RepoWorkspace({
       setDiffError(null);
       setDiffLoading(true);
     }
-    const pending =
+    const pending: Promise<WipDiff> =
       openFile.area === null
-        ? getFileDiff(repo.path, selectedSha, openFile.file.path, openFile.file.oldPath)
+        ? getFileDiff(repo.path, selectedSha, openFile.file.path, openFile.file.oldPath).then(
+            (text) => ({ text, encoding: "utf8" }),
+          )
         : getWipFileDiff(repo.path, openFile.file.path, openFile.area);
     pending
-      .then((text) => {
+      .then(({ text, encoding }) => {
         if (!alive) {
           return;
         }
         diffKeyRef.current = key;
-        if (soft && text === diffTextRef.current) {
+        if (soft && text === diffTextRef.current && encoding === diffEncodingRef.current) {
           return;
         }
         if (soft) {
@@ -2218,6 +2285,7 @@ export function RepoWorkspace({
           setFileText(null);
         }
         setDiffText(text);
+        setDiffEncoding(encoding);
       })
       .catch((err: unknown) => {
         if (alive) {
@@ -2369,7 +2437,7 @@ export function RepoWorkspace({
       }
       patchCheckingRef.current = true;
       setPatchChecking(true);
-      let fresh: string;
+      let fresh: WipDiff;
       try {
         fresh = await getWipFileDiff(current.path, open.file.path, open.area);
       } catch (err) {
@@ -2383,7 +2451,8 @@ export function RepoWorkspace({
       if (repoRef.current?.path !== current.path || openFileRef.current !== open) {
         return;
       }
-      if (fresh !== diffTextRef.current) {
+      // 같은 글자라도 인코딩이 바뀌었으면 화면의 패치를 바이트로 되돌리는 방법이 달라진다
+      if (fresh.text !== diffTextRef.current || fresh.encoding !== diffEncodingRef.current) {
         fileTextCache.current.clear();
         setWipNonce((n) => n + 1);
         showToast(
@@ -2392,7 +2461,7 @@ export function RepoWorkspace({
         );
         return;
       }
-      await actions.applyPatch(patch, cached, reverse, scope);
+      await actions.applyPatch(patch, cached, reverse, scope, fresh.encoding);
     },
     [actions, showError, showToast],
   );
@@ -2625,6 +2694,7 @@ export function RepoWorkspace({
         files={conflicts}
         actions={actions}
         onOpenFile={openConflictFile}
+        onCompare={openConflictCompare}
       />
       {graphLoading && <div className="progress" role="progressbar" aria-label="Loading graph" />}
 
@@ -2675,6 +2745,7 @@ export function RepoWorkspace({
               badge={openFile.area ?? undefined}
               hunkActions={hunkActions}
               diffText={diffText}
+              diffEncoding={diffEncoding}
               fileText={fileText}
               onRequestFileText={handleRequestFileText}
               loading={diffLoading}
@@ -3001,6 +3072,16 @@ export function RepoWorkspace({
               }
             });
           }}
+        />
+      )}
+
+      {compareEntry !== null && repo !== null && syncState?.pending != null && (
+        <ConflictCompare
+          repoPath={repo.path}
+          file={compareEntry}
+          kind={syncState.pending.kind}
+          actions={actions}
+          onClose={closeConflictCompare}
         />
       )}
 

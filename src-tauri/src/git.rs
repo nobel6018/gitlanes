@@ -104,7 +104,7 @@ where
 fn failure_message(stderr: &[u8]) -> String {
     let stderr = String::from_utf8_lossy(stderr).trim().to_string();
     if stderr.is_empty() {
-        "git 명령이 실패했습니다".to_string()
+        "git command failed.".to_string()
     } else {
         stderr
     }
@@ -118,16 +118,17 @@ fn timeout_message<S: AsRef<OsStr>>(args: &[S], timeout: Duration) -> String {
         .find(|arg| !arg.starts_with('-'))
         .unwrap_or_default();
     format!(
-        "git {verb} 명령이 {}초 안에 끝나지 않아 중단했습니다. 저장소가 매우 크거나 git이 응답하지 않습니다",
+        "git {verb} did not finish in {} seconds and was stopped. The repository may be very large, or git is not responding.",
         timeout.as_secs()
     )
 }
 
-/// git을 실행해 stdout을 돌려주되, 종료 코드 1을 성공으로 본다.
+/// git을 실행해 stdout을 바이트 그대로 돌려주되, 종료 코드 1을 성공으로 본다.
 ///
 /// `git diff --no-index`는 두 파일이 다르면 1로 끝난다. 그게 정상 결과라서 [`run`]의
 /// 실패 판정(성공 아니면 오류)을 그대로 쓸 수 없다. 2 이상만 실제 오류로 본다.
-pub fn run_allow_diff<P, S>(repo: P, args: &[S]) -> Result<String, String>
+/// diff 본문의 인코딩을 호출자가 판정하도록 lossy 변환은 하지 않는다.
+pub fn run_bytes_allow_diff<P, S>(repo: P, args: &[S]) -> Result<Vec<u8>, String>
 where
     P: AsRef<OsStr>,
     S: AsRef<OsStr>,
@@ -136,7 +137,7 @@ where
     if !matches!(output.code, Some(0 | 1)) {
         return Err(failure_message(&output.stderr));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }
 
 /// 설치된 git의 (major, minor). 읽지 못하면 None.
@@ -265,7 +266,7 @@ where
     runner::isolate_group(&mut command);
     let mut child = command
         .spawn()
-        .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
+        .map_err(|e| format!("Could not run git. Check that git is installed: {e}"))?;
 
     let deadline = Instant::now() + timeout;
     let mut watchdog = Watchdog::start(child.id(), timeout);
@@ -278,7 +279,7 @@ where
         runner::kill_group(child.id());
         let _ = child.kill();
         let _ = child.wait();
-        return Err("git 출력을 열지 못했습니다".to_string());
+        return Err("Could not open git output.".to_string());
     };
     let mut reader = BufReader::new(stdout);
     let mut record = Vec::new();
@@ -290,7 +291,7 @@ where
         let read = match reader.read_until(separator, &mut record) {
             Ok(read) => read,
             Err(error) => {
-                read_error = Some(format!("git 출력을 읽지 못했습니다: {error}"));
+                read_error = Some(format!("Could not read git output: {error}"));
                 break;
             }
         };
@@ -339,7 +340,7 @@ where
                 let _ = child.wait();
                 return Err(timeout_message(args, timeout));
             }
-            Err(e) => return Err(format!("git 종료를 기다리지 못했습니다: {e}")),
+            Err(e) => return Err(format!("Could not wait for git to exit: {e}")),
         }
     };
     let errors =
@@ -378,7 +379,7 @@ where
                 .map(|handle| {
                     handle
                         .join()
-                        .unwrap_or_else(|_| Err("git 호출 중 내부 오류가 발생했습니다".to_string()))
+                        .unwrap_or_else(|_| Err("Internal error while running git.".to_string()))
                 })
                 .collect()
         })
@@ -556,7 +557,7 @@ mod tests {
             started.elapsed()
         );
         assert!(
-            err.contains("git stuck 명령이 3초 안에 끝나지 않아"),
+            err.contains("git stuck did not finish in 3 seconds"),
             "{err}"
         );
         assert_sleeper_dead(&mark);
@@ -581,7 +582,7 @@ mod tests {
             "상한 3초인데 {:?} 걸렸다",
             started.elapsed()
         );
-        assert!(err.contains("3초 안에 끝나지 않아"), "{err}");
+        assert!(err.contains("did not finish in 3 seconds"), "{err}");
         assert_sleeper_dead(&mark);
     }
 
@@ -592,7 +593,9 @@ mod tests {
         repo.write("x.txt", "a\n");
         repo.write("y.txt", "b\n");
         let diff =
-            run_allow_diff(repo.path(), &["diff", "--no-index", "--", "x.txt", "y.txt"]).unwrap();
+            run_bytes_allow_diff(repo.path(), &["diff", "--no-index", "--", "x.txt", "y.txt"])
+                .unwrap();
+        let diff = String::from_utf8(diff).unwrap();
         assert!(diff.contains("-a") && diff.contains("+b"), "{diff}");
         // 실패는 stderr가 오류가 된다
         let err = run(repo.path(), &["rev-parse", "--verify", "nope"]).unwrap_err();

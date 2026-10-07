@@ -13,6 +13,7 @@
 //! - **인증 실패는 따로 표시한다.** 프롬프트를 막았다는 것은 ssh-agent나 keychain이
 //!   없는 환경에서 반드시 실패한다는 뜻이다. 그 경우 [`OpResult::needs_auth`]를 켜고
 //!   실행한 인자를 [`OpResult::command`]에 담아 프론트가 내장 터미널로 넘기게 한다.
+//!   예외로 gpg 서명이 비밀번호를 물으려다 실패한 경우는 로컬 명령이어도 같이 켠다.
 //! - **`--force`는 쓰지 않는다.** push는 `--force-with-lease`만 허용한다.
 //!
 //! @see CONTRACTS.md
@@ -78,13 +79,22 @@ const AUTH_MARKERS: [&str; 10] = [
 /// 재시도할 수 있으므로 needs_auth로 둔다. 어느 계정이 거절됐는지는 `denied_account`가 알린다.
 const AUTH_MARKERS_403: [&str; 2] = ["returned error: 403", "403 forbidden"];
 
-/// 자격증명을 쓰는 명령. needs_auth는 여기서만 판정한다.
+/// 자격증명을 쓰는 명령. 네트워크 인증 실패는 여기서만 판정한다(gpg 서명 실패는 별도).
 ///
 /// 로컬 명령도 stderr에 `Permission denied`를 쓴다(`chmod 000` 파일을 add하면
 /// `error: open("x"): Permission denied`). 이걸 인증 실패로 보면 스테이징 실패 토스트에
 /// "터미널에서 실행"이 뜨는데, 터미널에서도 똑같이 실패한다.
 /// 원격 브랜치 삭제와 태그 push는 `push`로 나간다.
 const NETWORK_VERBS: [&str; 4] = ["fetch", "pull", "push", "ls-remote"];
+
+/// 서명 실패. git이 gpg 오류 앞에 붙이는 문구라 commit, merge, tag, rebase 어디서 서명하든 같다.
+const SIGNING_FAILED_MARKER: &str = "gpg failed to sign the data";
+
+/// 서명 키 자체가 없다. 터미널에서 pinentry가 떠도 똑같이 실패하므로 핸드오프하지 않는다
+const NO_SECRET_KEY_MARKER: &str = "no secret key";
+
+/// gpg가 `--status-fd`로 쓰는 기계용 상태 줄의 접두
+const GPG_STATUS_PREFIX: &str = "[GNUPG:]";
 
 /// 바이트 그대로의 실행 결과. 읽기 경로(`git::run_bytes`)는 lossy 변환 전 바이트가 필요하다.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,7 +318,7 @@ fn execute_blocking(
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
+        .map_err(|e| format!("Could not run git. Check that git is installed: {e}"))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -339,7 +349,7 @@ fn execute_blocking(
             Ok(None) => {}
             Err(error) => {
                 kill_tree(&mut child);
-                return Err(format!("git 종료를 기다리지 못했습니다: {error}"));
+                return Err(format!("Could not wait for git to exit: {error}"));
             }
         }
         if Instant::now() >= deadline {
@@ -487,7 +497,7 @@ pub fn run_chain(repo: &str, steps: &[Vec<&str>], timeout: Duration) -> Result<O
             break;
         }
     }
-    merged.ok_or_else(|| "실행할 명령이 없습니다".to_string())
+    merged.ok_or_else(|| "No command to run.".to_string())
 }
 
 fn join_output(first: &str, second: &str) -> String {
@@ -521,16 +531,43 @@ pub fn finish(repo: &str, args: &[&str], outcome: Outcome, timeout: Duration) ->
     } else {
         None
     };
+    let network_auth =
+        judged && (denied_account.is_some() || looks_like_auth_failure(&outcome.stderr));
+    // 서명은 네트워크 명령이 아니어도 TTY가 있는 내장 터미널에서만 풀린다. 판정은 원문으로 한다
+    let signing_prompt = !ok && looks_like_signing_prompt_failure(&outcome.stderr);
     OpResult {
-        needs_auth: judged
-            && (denied_account.is_some() || looks_like_auth_failure(&outcome.stderr)),
+        needs_auth: network_auth || signing_prompt,
         denied_account,
         ok,
         stdout: clip_output(&outcome.stdout),
-        stderr: clip_output(&outcome.stderr),
+        stderr: clip_output(&drop_gpg_status_lines(&outcome.stderr)),
         conflicts,
         command,
     }
+}
+
+/// gpg가 비밀번호를 물으려다 TTY가 없어 실패했는지 본다.
+///
+/// 앱은 stdin을 막고 터미널 없이 git을 돌려서, 비밀번호가 걸린 키는 pinentry(curses/tty)가
+/// 뜨지 못하고 곧바로 exit 128로 끝난다(멈추지는 않는다). 내장 터미널에는 TTY가 있어
+/// 같은 명령을 거기서 돌리면 비밀번호를 묻는다. 키가 아예 없는 경우는 터미널에서도
+/// 똑같이 실패하므로 뺀다.
+pub fn looks_like_signing_prompt_failure(stderr: &str) -> bool {
+    let lowered = stderr.to_lowercase();
+    lowered.contains(SIGNING_FAILED_MARKER) && !lowered.contains(NO_SECRET_KEY_MARKER)
+}
+
+/// gpg의 `[GNUPG:]` 상태 줄을 뺀다. 지문과 내부 코드뿐이라 사용자에게는 소음이고,
+/// 사람이 읽을 이유(`gpg: signing failed: ...`)를 토스트 아래로 밀어낸다.
+/// 원문이 필요하면 `command`를 내장 터미널에서 다시 실행하면 그대로 보인다.
+fn drop_gpg_status_lines(stderr: &str) -> String {
+    if !stderr.contains(GPG_STATUS_PREFIX) {
+        return stderr.to_string();
+    }
+    stderr
+        .split_inclusive('\n')
+        .filter(|line| !line.trim_start().starts_with(GPG_STATUS_PREFIX))
+        .collect()
 }
 
 /// stderr가 자격증명 문제로 보이는지 본다.
@@ -639,21 +676,21 @@ fn last_overwrite(line: &str) -> &str {
 pub fn validate_ref_name(repo: &str, name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("이름이 비어 있습니다".to_string());
+        return Err("Name is empty.".to_string());
     }
     if name.starts_with('-') {
-        return Err(format!("이름 형식이 올바르지 않습니다: {name}"));
+        return Err(format!("Invalid name: {name}"));
     }
 
     let expanded = git::run(repo, &["check-ref-format", "--branch", name])
-        .map_err(|_| format!("git이 허용하지 않는 이름입니다: {name}"))?;
+        .map_err(|_| format!("git does not allow this name: {name}"))?;
 
     // `--branch`는 `@{-1}`(직전 브랜치), `@{u}`(upstream)를 실제 이름으로 풀어 성공한다.
     // 확인 다이얼로그에는 `@{-1}`이 보이는데 git은 다른 브랜치를 지우게 된다.
     // 사용자가 적은 글자 그대로가 이름일 때만 받는다.
     if expanded.trim() != name {
         return Err(format!(
-            "다른 브랜치를 가리키는 표기는 쓸 수 없습니다: {name} → {}",
+            "Use the branch name itself, not a shorthand: {name} points to {}",
             expanded.trim()
         ));
     }
@@ -668,15 +705,15 @@ pub fn validate_ref_name(repo: &str, name: &str) -> Result<String, String> {
 pub fn validate_commitish(repo: &str, rev: &str) -> Result<String, String> {
     let rev = rev.trim();
     if rev.is_empty() {
-        return Err("대상 커밋이 비어 있습니다".to_string());
+        return Err("No target commit was given.".to_string());
     }
     if rev.starts_with('-') {
-        return Err(format!("대상 형식이 올바르지 않습니다: {rev}"));
+        return Err(format!("Invalid target: {rev}"));
     }
 
     let spec = format!("{rev}^{{commit}}");
     git::run(repo, &["rev-parse", "--verify", "--quiet", spec.as_str()])
-        .map_err(|_| format!("가리키는 커밋을 찾을 수 없습니다: {rev}"))?;
+        .map_err(|_| format!("Commit not found: {rev}"))?;
 
     Ok(rev.to_string())
 }
@@ -685,14 +722,14 @@ pub fn validate_commitish(repo: &str, rev: &str) -> Result<String, String> {
 pub fn validate_remote(repo: &str, remote: &str) -> Result<String, String> {
     let remote = remote.trim();
     if remote.is_empty() {
-        return Err("remote 이름이 비어 있습니다".to_string());
+        return Err("Remote name is empty.".to_string());
     }
     if remote.starts_with('-') {
-        return Err(format!("remote 이름 형식이 올바르지 않습니다: {remote}"));
+        return Err(format!("Invalid remote name: {remote}"));
     }
 
     if !remotes(repo).iter().any(|known| known == remote) {
-        return Err(format!("등록되지 않은 remote입니다: {remote}"));
+        return Err(format!("Unknown remote: {remote}"));
     }
     Ok(remote.to_string())
 }
@@ -709,7 +746,7 @@ pub fn validate_remote(repo: &str, remote: &str) -> Result<String, String> {
 pub fn validate_paths(files: &[String]) -> Result<Vec<String>, String> {
     if let Some(bad) = files.iter().find(|file| file.contains('\0')) {
         return Err(format!(
-            "경로에 NUL 문자가 있습니다: {}",
+            "Path contains a NUL character: {}",
             bad.replace('\0', "\\0")
         ));
     }
@@ -720,10 +757,10 @@ pub fn validate_paths(files: &[String]) -> Result<Vec<String>, String> {
         .collect();
 
     if cleaned.is_empty() {
-        return Err("대상 파일이 없습니다".to_string());
+        return Err("No files were selected.".to_string());
     }
     if let Some(bad) = cleaned.iter().find(|file| file.starts_with('-')) {
-        return Err(format!("경로 형식이 올바르지 않습니다: {bad}"));
+        return Err(format!("Invalid path: {bad}"));
     }
     Ok(cleaned)
 }
@@ -943,6 +980,57 @@ mod tests {
             let result = finish(&nowhere(), args, failed(ssh), NETWORK_TIMEOUT);
             assert!(result.needs_auth, "{args:?}");
         }
+    }
+
+    /// 비밀번호가 걸린 키를 pinentry가 물을 TTY 없이 쓰면 이렇게 끝난다(감독 실측, 2026-10-07)
+    const GPG_PASSPHRASE: &str = "error: gpg failed to sign the data:\n[GNUPG:] KEY_CONSIDERED 0123456789ABCDEF0123456789ABCDEF01234567 2\n[GNUPG:] BEGIN_SIGNING H10\n[GNUPG:] PINENTRY_LAUNCHED 4242 curses 1.2.1 - - - - 0/0 0\ngpg: signing failed: Inappropriate ioctl for device\n[GNUPG:] FAILURE sign 83918950\ngpg: signing failed: Inappropriate ioctl for device\n\nfatal: failed to write commit object";
+
+    /// user.signingkey가 가리키는 비밀 키가 없다. 터미널에서도 똑같이 실패한다
+    const GPG_NO_SECRET_KEY: &str = "error: gpg failed to sign the data:\n[GNUPG:] KEY_CONSIDERED 0123456789ABCDEF0123456789ABCDEF01234567 0\ngpg: skipped \"DEADBEEF\": No secret key\n[GNUPG:] INV_SGNR 9 DEADBEEF\n[GNUPG:] FAILURE sign 17\ngpg: signing failed: No secret key\n\nfatal: failed to write commit object";
+
+    #[test]
+    fn gpg_비밀번호_실패는_로컬_명령이어도_needs_auth다() {
+        for args in [
+            &["commit", "--gpg-sign", "-m", "x"][..],
+            &["commit", "-m", "x"],
+            &["merge", "--no-ff", "side"],
+            &["tag", "-s", "v1", "-m", "v1"],
+        ] {
+            let result = finish(&nowhere(), args, failed(GPG_PASSPHRASE), LOCAL_TIMEOUT);
+            assert!(result.needs_auth, "{args:?}");
+            assert!(result.denied_account.is_none());
+        }
+    }
+
+    #[test]
+    fn gpg_비밀_키가_없으면_needs_auth가_아니다() {
+        let args = ["commit", "--gpg-sign", "-m", "x"];
+        let result = finish(&nowhere(), &args, failed(GPG_NO_SECRET_KEY), LOCAL_TIMEOUT);
+        assert!(!result.needs_auth, "{result:?}");
+    }
+
+    #[test]
+    fn gpg_상태_줄은_stderr에서_빠지고_사람이_읽을_줄은_남는다() {
+        for raw in [GPG_PASSPHRASE, GPG_NO_SECRET_KEY] {
+            let args = ["commit", "--gpg-sign", "-m", "x"];
+            let result = finish(&nowhere(), &args, failed(raw), LOCAL_TIMEOUT);
+            assert!(!result.stderr.contains("[GNUPG:]"), "{}", result.stderr);
+            assert!(result.stderr.contains("gpg failed to sign the data"));
+            assert!(result.stderr.contains("gpg: signing failed"));
+            assert!(result
+                .stderr
+                .contains("fatal: failed to write commit object"));
+        }
+    }
+
+    #[test]
+    fn gpg_실패를_가르는_판정은_stderr만_본다() {
+        assert!(looks_like_signing_prompt_failure(GPG_PASSPHRASE));
+        assert!(!looks_like_signing_prompt_failure(GPG_NO_SECRET_KEY));
+        assert!(!looks_like_signing_prompt_failure(""));
+        assert!(!looks_like_signing_prompt_failure(
+            "error: Your local changes would be overwritten by merge."
+        ));
     }
 
     const GITHUB_403: &str = "remote: Permission to nobel6018/gitlanes.git denied to younghoon-lee-ilevit-com.\nfatal: unable to access 'https://github.com/nobel6018/gitlanes.git/': The requested URL returned error: 403";

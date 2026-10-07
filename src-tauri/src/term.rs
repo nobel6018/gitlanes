@@ -50,7 +50,7 @@ pub fn term_open(
 ) -> Result<String, String> {
     let cwd = path.trim();
     if !Path::new(cwd).is_dir() {
-        return Err(format!("터미널을 열 디렉토리가 아닙니다: {cwd}"));
+        return Err(format!("Not a directory to open a terminal in: {cwd}"));
     }
 
     // 0을 넘기면 PTY가 만들어지지 않는다. 프론트가 아직 크기를 못 재는 순간이 있다.
@@ -63,23 +63,23 @@ pub fn term_open(
 
     let pair = native_pty_system()
         .openpty(size)
-        .map_err(|e| format!("PTY를 열지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Could not open a PTY: {e}"))?;
 
     let mut child = pair
         .slave
         .spawn_command(shell_command(cwd))
-        .map_err(|e| format!("셸을 실행하지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Could not start the shell: {e}"))?;
     // slave를 계속 들고 있으면 셸이 끝나도 reader가 EOF를 못 본다
     drop(pair.slave);
 
     let reader = pair
         .master
         .try_clone_reader()
-        .map_err(|e| format!("PTY 출력을 열지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Could not open PTY output: {e}"))?;
     let writer = pair
         .master
         .take_writer()
-        .map_err(|e| format!("PTY 입력을 열지 못했습니다: {e}"))?;
+        .map_err(|e| format!("Could not open PTY input: {e}"))?;
     let killer = child.clone_killer();
 
     let id = format!("term-{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
@@ -120,7 +120,7 @@ pub fn term_write(terminals: State<'_, Terminals>, id: String, data: String) -> 
         .writer
         .write_all(data.as_bytes())
         .and_then(|()| session.writer.flush())
-        .map_err(|e| format!("터미널에 입력을 보내지 못했습니다: {e}"))
+        .map_err(|e| format!("Could not send input to the terminal: {e}"))
 }
 
 /// 창 크기를 셸에 알린다. 모르는 id는 조용히 무시한다.
@@ -145,7 +145,7 @@ pub fn term_resize(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| format!("터미널 크기를 바꾸지 못했습니다: {e}"))
+        .map_err(|e| format!("Could not resize the terminal: {e}"))
 }
 
 /// 세션을 닫는다. 모르는 id는 조용히 무시한다.
@@ -254,7 +254,7 @@ fn pick_shell(env_shell: Option<&str>) -> String {
 
 /// 세션 맵 뮤텍스가 오염된 경우. 읽기 스레드는 맵을 잠근 채 패닉할 일이 없어 사실상 안 난다.
 fn lock_error<E>(_: E) -> String {
-    "터미널 상태를 잠그지 못했습니다".to_string()
+    "Could not lock the terminal state.".to_string()
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 //! @see CONTRACTS.md
 
 use crate::git;
-use crate::model::OpResult;
+use crate::model::{DiffEncoding, OpResult};
 
 use super::run::{run_op, run_op_with_input, validate_paths, LOCAL_TIMEOUT};
 
@@ -62,7 +62,7 @@ pub fn git_discard(path: String, files: Vec<String>, area: String) -> Result<OpR
             &["restore", "--source=HEAD", "--staged", "--worktree", "--"]
         }
         "all" => &["rm", "-q", "-f", "--"],
-        other => return Err(format!("알 수 없는 discard 범위입니다: {other}")),
+        other => return Err(format!("Unknown discard scope: {other}")),
     };
 
     let files = validate_paths(&files)?;
@@ -266,15 +266,20 @@ pub fn git_clean(path: String, paths: Vec<String>) -> Result<OpResult, String> {
 /// `-U3`으로 고정했으므로(commands.rs `PATCH_SOURCE_DIFF_ARGS`) 엔진이 만드는 패치에는
 /// context가 남고, 이 옵션이 필요 없다.
 /// `--whitespace=nowarn`은 원본에 이미 있던 공백 문제로 스테이징이 실패하지 않게 한다.
+///
+/// `encoding`은 패치를 만든 `WipDiff.encoding` 그대로다. latin1이면 글자마다 바이트 하나로
+/// 되돌려서, UTF-8이 아닌 파일의 원래 바이트가 인덱스에 들어간다.
 #[tauri::command(async)]
 pub fn git_apply_patch(
     path: String,
     patch: String,
     cached: bool,
     reverse: bool,
+    encoding: String,
 ) -> Result<OpResult, String> {
+    let encoding = DiffEncoding::parse(&encoding)?;
     if patch.trim().is_empty() {
-        return Err("패치가 비어 있습니다".to_string());
+        return Err("The patch is empty.".to_string());
     }
 
     let mut args: Vec<&str> = vec!["apply", "--whitespace=nowarn"];
@@ -295,7 +300,7 @@ pub fn git_apply_patch(
         format!("{patch}\n")
     };
 
-    run_op_with_input(&path, &args, LOCAL_TIMEOUT, body.into_bytes())
+    run_op_with_input(&path, &args, LOCAL_TIMEOUT, encoding.encode(body)?)
 }
 
 /// 패치 파일을 적용한다. `git_apply_patch`와 달리 디스크의 파일을 읽는다.
@@ -327,7 +332,7 @@ pub fn git_create_patch(
     out_dir: String,
 ) -> Result<OpResult, String> {
     if shas.is_empty() {
-        return Err("대상 커밋이 없습니다".to_string());
+        return Err("No commits were selected.".to_string());
     }
     let out_dir = validate_paths(&[out_dir])?.remove(0);
     let shas: Vec<String> = shas
@@ -698,7 +703,7 @@ mod tests {
         // 헤더 + 첫 hunk만 남긴 패치를 재구성한다
         let patch = format!("{}\n@@{}", hunks[0], hunks[1]);
 
-        let result = git_apply_patch(repo.path(), patch, true, false).unwrap();
+        let result = git_apply_patch(repo.path(), patch, true, false, "utf8".to_string()).unwrap();
         assert!(result.ok, "{result:?}");
         assert!(result.command.contains(&"--cached".to_string()));
 
@@ -724,7 +729,8 @@ mod tests {
         repo.git(&["add", "-A"]);
 
         let staged_diff = git::run(repo.path(), &["diff", "--cached"]).unwrap();
-        let result = git_apply_patch(repo.path(), staged_diff, true, true).unwrap();
+        let result =
+            git_apply_patch(repo.path(), staged_diff, true, true, "utf8".to_string()).unwrap();
         assert!(result.ok, "{result:?}");
         assert!(result.command.contains(&"--reverse".to_string()));
         assert!(git::run(repo.path(), &["diff", "--cached"])
@@ -756,9 +762,10 @@ mod tests {
         )
         .unwrap();
 
-        let first = git_apply_patch(repo.path(), patch.clone(), true, false).unwrap();
+        let first =
+            git_apply_patch(repo.path(), patch.clone(), true, false, "utf8".to_string()).unwrap();
         assert!(first.ok, "{first:?}");
-        let second = git_apply_patch(repo.path(), patch, true, false).unwrap();
+        let second = git_apply_patch(repo.path(), patch, true, false, "utf8".to_string()).unwrap();
         assert!(!second.ok, "이미 적용된 패치가 또 적용됐다: {second:?}");
 
         let index = git::run(repo.path(), &["show", ":f.txt"]).unwrap();
@@ -766,15 +773,50 @@ mod tests {
     }
 
     #[test]
+    fn latin1_패치에_255를_넘는_글자가_있으면_git을_부르지_않고_err다() {
+        let repo = dirty();
+        let err = git_apply_patch(
+            repo.path(),
+            "diff --git a/a b/a\n+한\n".to_string(),
+            true,
+            false,
+            "latin1".to_string(),
+        )
+        .unwrap_err();
+        assert!(err.contains("Latin-1"), "{err}");
+        assert!(git_apply_patch(
+            repo.path(),
+            "x\n".to_string(),
+            true,
+            false,
+            "utf16".to_string()
+        )
+        .is_err());
+    }
+
+    #[test]
     fn 깨진_패치는_ok_false로_돌아온다() {
         let repo = dirty();
-        let result =
-            git_apply_patch(repo.path(), "이건 패치가 아니다\n".to_string(), true, false).unwrap();
+        let result = git_apply_patch(
+            repo.path(),
+            "이건 패치가 아니다\n".to_string(),
+            true,
+            false,
+            "utf8".to_string(),
+        )
+        .unwrap();
         assert!(!result.ok, "{result:?}");
         assert!(!result.stderr.is_empty(), "{result:?}");
         assert!(!result.needs_auth);
 
-        assert!(git_apply_patch(repo.path(), "   ".to_string(), true, false).is_err());
+        assert!(git_apply_patch(
+            repo.path(),
+            "   ".to_string(),
+            true,
+            false,
+            "utf8".to_string()
+        )
+        .is_err());
     }
 
     #[test]
@@ -853,6 +895,8 @@ mod tests {
     }
 
     /// R-M7의 두 번째 재현. `-z` 없이 읽으면 git이 `"say\"hi\".txt"`로 C 인용해 판정이 어긋난다.
+    // Windows는 파일명에 `"`를 쓸 수 없어 이 파일을 만들 수조차 없다.
+    #[cfg(not(windows))]
     #[test]
     fn discard는_따옴표가_든_untracked_파일을_지운다() {
         let repo = dirty();

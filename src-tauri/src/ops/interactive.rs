@@ -46,11 +46,11 @@ pub fn git_rebase_interactive(
     let base = validate_commitish(&path, &base)?;
     let steps = validate_steps(&path, &base, &steps)?;
 
-    let dir = git_dir(&path).ok_or_else(|| "git 디렉토리를 찾지 못했습니다".to_string())?;
+    let dir = git_dir(&path).ok_or_else(|| "Could not find the .git directory.".to_string())?;
     // 진행 중인 리베이스가 있으면 git이 어차피 거절한다. 그 전에 아래에서 작업 디렉토리를
     // 비우면 진행 중인 리베이스의 reword 메시지가 사라지므로 먼저 막는다.
     if dir.join("rebase-merge").is_dir() || dir.join("rebase-apply").is_dir() {
-        return Err("이미 진행 중인 리베이스가 있습니다".to_string());
+        return Err("A rebase is already in progress. Continue or abort it first.".to_string());
     }
 
     let workspace = Workspace::create(&dir)?;
@@ -137,14 +137,14 @@ struct Planned {
 #[cfg(not(target_os = "windows"))]
 fn validate_steps(repo: &str, base: &str, steps: &[RebaseStep]) -> Result<Vec<Planned>, String> {
     if steps.is_empty() {
-        return Err("리베이스할 커밋이 없습니다".to_string());
+        return Err("No commits to rebase.".to_string());
     }
 
     let mut planned = Vec::with_capacity(steps.len());
     for step in steps {
         let action = step.action.trim().to_string();
         if !ACTIONS.contains(&action.as_str()) {
-            return Err(format!("알 수 없는 리베이스 동작입니다: {action}"));
+            return Err(format!("Unknown rebase action: {action}"));
         }
         let sha = validate_commitish(repo, &step.sha)?;
         let message = step
@@ -155,7 +155,7 @@ fn validate_steps(repo: &str, base: &str, steps: &[RebaseStep]) -> Result<Vec<Pl
             .map(str::to_string);
 
         if action == "reword" && message.is_none() {
-            return Err(format!("reword에는 새 메시지가 필요합니다: {sha}"));
+            return Err(format!("Reword needs a new message: {sha}"));
         }
         planned.push(Planned {
             action,
@@ -175,7 +175,7 @@ fn validate_steps(repo: &str, base: &str, steps: &[RebaseStep]) -> Result<Vec<Pl
         .find(|step| step.action != "drop")
         .map(|step| step.action.as_str());
     if matches!(first, Some("squash") | Some("fixup")) {
-        return Err("첫 커밋을 squash하거나 fixup할 수 없습니다".to_string());
+        return Err("The first commit cannot be squashed or fixed up.".to_string());
     }
 
     Ok(planned)
@@ -198,7 +198,7 @@ fn check_in_range(repo: &str, base: &str, planned: &mut [Planned]) -> Result<(),
     let resolved = git::run(repo, &args)?;
     let full: Vec<&str> = resolved.lines().map(str::trim).collect();
     if full.len() != planned.len() {
-        return Err("커밋을 확인하지 못했습니다".to_string());
+        return Err("Could not verify the commits.".to_string());
     }
 
     // 에디터 초기 목록(get_rebase_steps)과 같은 함수로 범위를 구한다. 기준이 다르면
@@ -213,11 +213,11 @@ fn check_in_range(repo: &str, base: &str, planned: &mut [Planned]) -> Result<(),
         match in_range.get(sha) {
             None => {
                 return Err(format!(
-                    "현재 브랜치의 {base} 이후 커밋이 아닙니다: {}",
+                    "Not a commit on the current branch after {base}: {}",
                     step.sha
                 ))
             }
-            Some(true) => return Err(format!("머지 커밋은 리베이스할 수 없습니다: {}", step.sha)),
+            Some(true) => return Err(format!("Merge commits cannot be rebased: {}", step.sha)),
             Some(false) => step.sha = sha.to_string(),
         }
     }
@@ -325,7 +325,7 @@ impl Workspace {
         // 없다는 것은 호출자가 확인했다.
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root)
-            .map_err(|error| format!("작업 디렉토리를 만들지 못했습니다: {error}"))?;
+            .map_err(|error| format!("Could not create a working directory: {error}"))?;
         Ok(Self { root })
     }
 
@@ -364,7 +364,7 @@ impl Workspace {
 #[cfg(not(target_os = "windows"))]
 fn write(path: &std::path::Path, body: &str) -> Result<(), String> {
     std::fs::write(path, body)
-        .map_err(|error| format!("{}를 쓰지 못했습니다: {error}", path.display()))
+        .map_err(|error| format!("Could not write {}: {error}", path.display()))
 }
 
 /// 셸에 넘길 경로를 작은따옴표로 감싼다. 임시 경로에 공백이 있어도 한 인자로 간다.
@@ -712,7 +712,7 @@ mod tests {
             vec![step(&one, "pick", None), step(&merge, "pick", None)],
         );
         let error = result.expect_err("머지 커밋은 pick할 수 없다");
-        assert!(error.contains("머지"), "{error}");
+        assert!(error.contains("Merge commits"), "{error}");
         assert_eq!(crate::ops::sync::detect_pending(&repo.path()), None);
     }
 

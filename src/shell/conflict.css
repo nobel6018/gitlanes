@@ -1,0 +1,211 @@
+/* 3-way 충돌 비교 화면 (ConflictCompare.tsx) */
+
+.ov-backdrop.cfc-backdrop {
+  align-items: center;
+  justify-content: center;
+}
+
+.cfc {
+  width: calc(100vw - 48px);
+  max-width: 1600px;
+  height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-1);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  outline: none;
+}
+
+.cfc-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.cfc-kind {
+  margin-left: 8px;
+  color: var(--fg-2);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.cfc-warn {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--fg-1);
+}
+
+/* 넓은 창에서는 세 칸이 다 보이므로 탭을 숨긴다 */
+.cfc-tabs {
+  display: none;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.cfc-tab {
+  height: 24px;
+  padding: 0 12px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.cfc-tab.active {
+  border-color: var(--accent);
+  color: var(--fg-1);
+  background: var(--accent-soft);
+}
+
+.cfc-panes {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cfc-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-1);
+  border-radius: 6px;
+  background: var(--bg-content);
+  overflow: hidden;
+}
+
+.cfc-pane-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-0);
+  background: var(--bg-panel);
+}
+
+.cfc-pane-name {
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.cfc-pane-cap {
+  color: var(--fg-2);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cfc-code {
+  flex: 1 1 auto;
+  margin: 0;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.cfc-line {
+  display: flex;
+  min-width: max-content;
+}
+
+.cfc-line.chg {
+  background: var(--added-bg);
+}
+
+.cfc-ln {
+  flex: 0 0 auto;
+  width: 44px;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--fg-2);
+  user-select: none;
+}
+
+.cfc-tx {
+  white-space: pre;
+  padding-right: 12px;
+}
+
+.cfc-msg {
+  padding: 16px 12px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.cfc-msg.error {
+  color: var(--deleted);
+  white-space: pre-wrap;
+}
+
+.cfc-msg.deleted {
+  color: var(--deleted);
+  font-style: italic;
+}
+
+.cfc-more {
+  padding: 6px 8px;
+  color: var(--fg-2);
+  font-family: var(--font-ui);
+  font-style: italic;
+}
+
+.cfc-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.cfc-legend {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.cfc-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--added-bg);
+  border: 1px solid var(--border-1);
+}
+
+.cfc-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* 좁은 창: 세 칸을 나란히 두면 줄이 읽히지 않는다. 탭으로 한 칸씩 본다 */
+@media (max-width: 900px) {
+  .cfc-tabs {
+    display: flex;
+  }
+
+  .cfc-panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cfc-pane:not(.active) {
+    display: none;
+  }
+}

@@ -685,12 +685,16 @@ function installForcedUpdate(): void {
 //   ?auth=1           위 실패에 needsAuth:true를 붙인다 (터미널 핸드오프 검증)
 //   ?conflict=1       머지 충돌이 진행 중인 상태로 시작한다
 //   ?conflict=am      git am이 충돌로 멈춘 상태로 시작한다 (Continue/Skip patch/Abort)
+//   ?conflict=rebase  리베이스가 충돌로 멈춘 상태 (비교 화면의 ours/theirs 뒤집힘 안내 확인)
 //   ?conflict=conflicts  이어갈 작업 없이 충돌만 남은 상태 (stash pop 충돌 등). 해결 UI만 보이고
 //                     파일을 다 해결하면 pending이 null이 되어 패널이 사라진다
 //   ?denied=<계정>    위 실패에 403 stderr와 deniedAccount를 붙인다 (계정 힌트 검증)
 //   ?slow=1           쓰기마다 1.2초 지연 (스피너/중복 클릭 방지 검증)
 //   ?slow=6000        숫자를 주면 그 밀리초만큼 지연 (5초 폴링 틱이 쓰기 도중에 걸리게 할 때)
 //   ?rebaseErr=1      get_rebase_steps가 Err를 돌려준다 (리베이스 에디터가 열리지 않고 토스트만)
+//   ?rebaseSlow=3000  get_rebase_steps만 그 밀리초만큼 늦춘다 (메뉴 로딩 상태 검증)
+//   ?template=1       get_commit_template이 # 주석 줄이 섞인 템플릿을 돌려준다
+//   ?latin1=1         get_wip_file_diff가 encoding:"latin1"을 돌려준다 (git_apply_patch 로그로 전달 확인)
 //
 // 콘솔: __mockEdit()  파일 수는 그대로, 내용만 바꾼다 (contentToken + unstaged diff 변경)
 //       __mockCalls, __mockCallsDuringWrite, __mockResetCalls()  command 호출 횟수
@@ -710,6 +714,15 @@ const FORCE_AUTH = PARAMS.get("auth") === "1";
 const DENIED_ACCOUNT = PARAMS.get("denied");
 /** ?rebaseErr=1. get_rebase_steps를 거절시킨다 */
 const REBASE_STEPS_ERR = PARAMS.get("rebaseErr") === "1";
+/** ?rebaseSlow=<ms>. get_rebase_steps만 늦춘다 */
+const REBASE_STEPS_DELAY_MS = Number(PARAMS.get("rebaseSlow") ?? "0");
+/** ?template=1. commit.template이 설정된 레포처럼 군다 */
+const COMMIT_TEMPLATE =
+  PARAMS.get("template") === "1"
+    ? "\n\n# Why is this change needed?\n# Prevent the graph from flickering on refresh.\n#\n# Refs: #123\n"
+    : null;
+/** ?latin1=1. WIP diff가 UTF-8이 아닌 파일에서 나온 것처럼 군다 */
+const WIP_DIFF_ENCODING: "utf8" | "latin1" = PARAMS.get("latin1") === "1" ? "latin1" : "utf8";
 const SLOW_PARAM = Number(PARAMS.get("slow") ?? "0");
 const SLOW_WRITES = SLOW_PARAM > 0;
 /** ?slow=1은 기존대로 1.2초, 그보다 큰 숫자는 밀리초로 읽는다 */
@@ -785,6 +798,8 @@ function initialPending(): PendingOp | null {
       return { kind: "merge", progress: null, conflictCount: 3, detail: "origin/develop into main" };
     case "am":
       return { kind: "am", progress: "2/5", conflictCount: 3, detail: null };
+    case "rebase":
+      return { kind: "rebase", progress: "1/3", conflictCount: 3, detail: "origin/main" };
     case "conflicts":
       return { kind: "conflicts", progress: null, conflictCount: 3, detail: null };
     default:
@@ -1001,7 +1016,11 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
       if (shouldFail(cmd)) {
         return fail(command, "error: patch does not apply");
       }
-      console.log("[mock] git_apply_patch", { cached, reverse });
+      console.log("[mock] git_apply_patch", {
+        cached,
+        reverse,
+        encoding: readArg(payload, "encoding"),
+      });
       // hunk 단위 스테이징은 패치 내용까지 흉내내지 않는다. 첫 unstaged 파일만 옮겨
       // 화면이 실제로 바뀌는지 확인할 수 있게 한다
       const first = (reverse ? wipStore.staged : wipStore.unstaged)[0];
@@ -1673,11 +1692,18 @@ mockIPC(async (cmd, payload) => {
       await sleep(50);
       const side = String(readArg(payload, "side") ?? "ours");
       const file = String(readArg(payload, "file") ?? "");
-      if (side === "base" && file === CONFLICT_FILES[2].path) {
-        // 한쪽이 삭제된 충돌은 빈 문자열이 온다
+      const conflict = CONFLICT_FILES.find((entry) => entry.path === file);
+      // 한쪽이 삭제된 충돌은 그 쪽 stage가 없어 빈 문자열이 온다
+      if (
+        (conflict?.kind === "deletedByUs" && side === "ours") ||
+        (conflict?.kind === "deletedByThem" && side === "theirs") ||
+        (conflict?.kind === "bothAdded" && side === "base")
+      ) {
         return "";
       }
-      return mockFileContent(file).split("\n").slice(0, 60).join("\n") + `\n// --- ${side} ---\n`;
+      // 세 쪽이 서로 다르게 보이도록 앞부분에 쪽 이름을 넣는다
+      const body = mockFileContent(file).split("\n").slice(0, 60).join("\n");
+      return `// ${side} version of ${file}\n${body}\n`;
     }
 
     case "list_remotes":
@@ -1691,7 +1717,7 @@ mockIPC(async (cmd, payload) => {
     case "get_rebase_steps": {
       // 실제 Rust는 `git rev-list --reverse --first-parent base..HEAD`에 가깝다. 목업은 이미 만든
       // 그래프에서 HEAD부터 첫 부모를 따라가며 base를 찾는다. 다른 브랜치 커밋은 섞이지 않는다
-      await sleep(SLOW_WRITES ? WRITE_DELAY_MS : 120);
+      await sleep(REBASE_STEPS_DELAY_MS > 0 ? REBASE_STEPS_DELAY_MS : SLOW_WRITES ? WRITE_DELAY_MS : 120);
       const base = String(readArg(payload, "base") ?? "");
       if (REBASE_STEPS_ERR) {
         throw `${base.slice(0, 7)} is not an ancestor of HEAD, so there is nothing to rebase onto it.`;
@@ -1705,7 +1731,7 @@ mockIPC(async (cmd, payload) => {
 
     case "get_commit_template":
       await sleep(20);
-      return null;
+      return COMMIT_TEMPLATE;
 
     case "get_commit_details": {
       await sleep(90);
@@ -1736,7 +1762,7 @@ mockIPC(async (cmd, payload) => {
       await sleep(90);
       const file = String(readArg(payload, "file") ?? "");
       const area = String(readArg(payload, "area") ?? "unstaged");
-      return mockWipDiff(file, area);
+      return { text: mockWipDiff(file, area), encoding: WIP_DIFF_ENCODING };
     }
 
     case "get_wip_file_content": {

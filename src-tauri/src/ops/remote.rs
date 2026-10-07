@@ -112,10 +112,10 @@ pub fn git_set_remote_url(path: String, name: String, url: String) -> Result<OpR
 fn validate_new_remote_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("remote 이름이 비어 있습니다".to_string());
+        return Err("Remote name is empty.".to_string());
     }
     if name.starts_with('-') || name.contains(char::is_whitespace) {
-        return Err(format!("remote 이름 형식이 올바르지 않습니다: {name}"));
+        return Err(format!("Invalid remote name: {name}"));
     }
     Ok(name.to_string())
 }
@@ -124,10 +124,10 @@ fn validate_new_remote_name(name: &str) -> Result<String, String> {
 fn validate_url(url: &str) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
-        return Err("remote URL이 비어 있습니다".to_string());
+        return Err("Remote URL is empty.".to_string());
     }
     if url.starts_with('-') {
-        return Err(format!("remote URL 형식이 올바르지 않습니다: {url}"));
+        return Err(format!("Invalid remote URL: {url}"));
     }
     Ok(url.to_string())
 }

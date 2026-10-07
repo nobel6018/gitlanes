@@ -108,7 +108,7 @@ pub fn git_resolve_with(path: String, file: String, side: String) -> Result<OpRe
     let flag = match side.as_str() {
         "ours" => "--ours",
         "theirs" => "--theirs",
-        other => return Err(format!("알 수 없는 쪽입니다: {other}")),
+        other => return Err(format!("Unknown conflict side: {other}")),
     };
     let file = validate_paths(&[file])?.remove(0);
 
@@ -173,7 +173,7 @@ pub fn get_conflict_side(path: String, file: String, side: String) -> Result<Str
         "base" => "1",
         "ours" => "2",
         "theirs" => "3",
-        other => return Err(format!("알 수 없는 쪽입니다: {other}")),
+        other => return Err(format!("Unknown conflict side: {other}")),
     };
     let file = validate_paths(&[file])?.remove(0);
     let spec = format!(":{stage}:{file}");
@@ -414,6 +414,9 @@ mod tests {
         repo
     }
 
+    // Windows는 파일명에 `*`, `?`를 쓸 수 없어 이 파일을 만들 수조차 없다. 그러니 glob 문자가
+    // 풀리는 사고도 Windows에서는 일어나지 않는다.
+    #[cfg(not(windows))]
     #[test]
     fn resolve_with는_glob_문자_파일명을_리터럴로_다룬다() {
         let repo = glob_conflicted("gitlanes-resolve-glob");
