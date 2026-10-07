@@ -636,6 +636,20 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Str
         return git::run_allow_diff(&path, &args)
             .map_err(|e| format!("untracked diff를 읽지 못했습니다: {e}"));
     }
+    // 스테이지된 rename은 새 경로만 넣으면 `-M`이 짝을 못 찾아 "새 파일 전체 추가"로 나온다.
+    // 원 경로를 같이 넣어야 rename 헤더와 실제로 바뀐 줄만 담긴 hunk가 나온다.
+    // 프론트 계약(file 하나)은 그대로 두고 짝은 여기서 찾는다.
+    let source = if area == "staged" {
+        crate::ops::stage::staged_renames(&path)
+            .into_iter()
+            .find(|(_, new)| *new == file)
+            .map(|(old, _)| old)
+    } else {
+        None
+    };
+    if let Some(old) = source.as_deref() {
+        args.push(old);
+    }
     args.push(file.as_str());
     git::run(&path, &args).map_err(|e| format!("{area} diff를 읽지 못했습니다: {e}"))
 }
@@ -697,8 +711,9 @@ fn count_lines(repo: &str, file: &str) -> u64 {
 /// 양쪽을 canonicalize해서 비교하기 때문에 `../`뿐 아니라 레포 안에 있는 심링크가 밖을
 /// 가리키는 경우도 걸린다. `file`이 절대 경로면 join이 루트를 대체하는데, 그것도 prefix
 /// 검사에서 막힌다.
+///
+/// 경로를 trim하지 않는다. ` a.txt`는 `a.txt`와 다른 파일이다(v0.15.1 H4와 같은 이유).
 fn resolve_in_repo(repo: &str, file: &str) -> Result<PathBuf, String> {
-    let file = file.trim();
     if file.is_empty() {
         return Err("파일 경로가 비어 있습니다".to_string());
     }
@@ -2241,5 +2256,67 @@ mod integration_tests {
             "a.txt".to_string()
         )
         .is_err());
+    }
+
+    /// v0.15.1 H4와 같은 원인. trim하면 ` a.txt`의 전문을 물었는데 `a.txt`를 읽는다.
+    #[test]
+    fn wip_전문은_앞뒤_공백이_있는_경로를_그대로_읽는다() {
+        let repo = TempRepo::init("gitlanes-content-space");
+        repo.write("a.txt", "공백 없는 쪽\n");
+        repo.write(" a.txt", "앞 공백 쪽\n");
+        repo.write("b.txt ", "뒤 공백 쪽\n");
+
+        let content = get_wip_file_content(repo.path(), " a.txt".to_string()).unwrap();
+        assert_eq!(content, "앞 공백 쪽\n", "trim으로 다른 파일을 읽었다");
+        let trailing = get_wip_file_content(repo.path(), "b.txt ".to_string()).unwrap();
+        assert_eq!(trailing, "뒤 공백 쪽\n");
+
+        // untracked 줄 수도 같은 해석을 거친다
+        repo.write("a.txt", "1\n2\n3\n");
+        assert_eq!(count_lines(&repo.path(), " a.txt"), 1);
+        // 공백 한 칸도 합법인 파일 이름이다. 없으면 "찾을 수 없음"으로 끝난다
+        assert!(get_wip_file_content(repo.path(), " ".to_string()).is_err());
+        assert!(get_wip_file_content(repo.path(), String::new()).is_err());
+    }
+
+    /// P-M2. 새 경로만 pathspec에 넣으면 `-M`이 짝을 못 찾아 22줄 전체가 "새 파일"로 나온다.
+    #[test]
+    fn staged_rename의_wip_diff는_rename으로_나온다() {
+        let repo = TempRepo::init("gitlanes-wip-rename");
+        let body: String = (1..=22).map(|i| format!("line {i}\n")).collect();
+        repo.write("old.txt", &body);
+        repo.write("other.txt", "other\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.git(&["mv", "old.txt", "new.txt"]);
+        repo.write("new.txt", &body.replace("line 11\n", "line 11 수정\n"));
+        repo.write("other.txt", "other 수정\n");
+        repo.git(&["add", "-A"]);
+
+        let diff =
+            get_wip_file_diff(repo.path(), "new.txt".to_string(), "staged".to_string()).unwrap();
+        assert!(diff.contains("rename from old.txt"), "{diff}");
+        assert!(diff.contains("rename to new.txt"), "{diff}");
+        assert!(!diff.contains("new file mode"), "{diff}");
+        assert!(diff.contains("+line 11 수정"), "{diff}");
+        assert!(!diff.contains("+line 1\n"), "전체가 추가로 나왔다:\n{diff}");
+        assert!(!diff.contains("other"), "다른 파일이 섞였다:\n{diff}");
+        // 고정 인자는 그대로다
+        assert!(diff.starts_with("diff --git a/old.txt b/new.txt"), "{diff}");
+
+        // 이 diff를 통째로 reverse 적용하면 rename과 수정이 함께 인덱스에서 내려간다
+        let undone = crate::ops::stage::git_apply_patch(repo.path(), diff, true, true).unwrap();
+        assert!(undone.ok, "{undone:?}");
+        let staged = git::run(repo.path(), &["diff", "--cached", "--name-only"]).unwrap();
+        assert_eq!(staged, "other.txt\n");
+    }
+
+    /// rename이 아닌 staged 파일은 예전과 같은 diff다
+    #[test]
+    fn rename이_아닌_staged_diff는_그대로다() {
+        let repo = wip_fixture();
+        let diff =
+            get_wip_file_diff(repo.path(), "mod.txt".to_string(), "staged".to_string()).unwrap();
+        assert!(diff.starts_with("diff --git a/mod.txt b/mod.txt"), "{diff}");
     }
 }
