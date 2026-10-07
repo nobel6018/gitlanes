@@ -2,6 +2,7 @@
 // 쓰기는 전부 RepoActions.commit을 거친다 (확인 다이얼로그와 토스트는 ui-hub 몫).
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent } from "react";
+import { getCommitTemplate } from "./api";
 import { withKbd } from "./shortcuts";
 import type { WipActions } from "./WipDetailPanel";
 
@@ -65,6 +66,31 @@ function writeAmendDraft(repoPath: string, message: string | null) {
   }
 }
 
+/**
+ * 템플릿(commit.template)에서 온 `#` 주석 줄만 지운다. git_commit은 메시지를 -m으로 넘기고,
+ * -m 커밋의 기본 cleanup은 whitespace라 git이 `#` 줄을 지우지 않는다. 템플릿의 안내 문구가
+ * 그대로 커밋에 박히지 않게 여기서 걷어 낸다. 사용자가 직접 쓴 `#123` 같은 줄은 템플릿에
+ * 없으므로 남는다. 줄 끝 공백 차이는 무시하고 비교한다
+ */
+export function stripTemplateComments(message: string, template: string | null): string {
+  if (template === null) {
+    return message;
+  }
+  const comments = new Set(
+    template
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter((line) => line.startsWith("#")),
+  );
+  if (comments.size === 0) {
+    return message;
+  }
+  return message
+    .split("\n")
+    .filter((line) => !comments.has(line.trimEnd()))
+    .join("\n");
+}
+
 /** 마운트나 레포 전환 때 보여 줄 상태. amend 초안이 있으면 그쪽이 우선이다 */
 function loadState(repoPath: string): { message: string; amend: boolean } {
   const amendDraft = readAmendDraft(repoPath);
@@ -98,15 +124,52 @@ export function CommitBox({ repoPath, stagedCount, actions, onRequestLastMessage
    */
   const amendGenRef = useRef(0);
   const repoRef = useRef(repoPath);
+  /**
+   * 이 레포의 commit.template 내용. 없으면 null. 메시지가 비면 채워 넣고, 커밋 직전에
+   * 이 템플릿의 `#` 줄을 지우는 기준이 된다. 템플릿 채움은 초안(localStorage)에 쓰지 않는다.
+   * 사용자가 고치기 시작해야 초안이 되고, 그 초안에 남은 템플릿 줄도 같은 기준으로 지워진다
+   */
+  const [template, setTemplate] = useState<string | null>(null);
+  const templateRef = useRef<string | null>(null);
+  templateRef.current = template;
+  const messageRef = useRef(message);
+  messageRef.current = message;
+  const amendRef = useRef(amend);
+  amendRef.current = amend;
 
-  // 레포가 바뀌면 그 레포의 초안(amend 중이었으면 amend 초안)을 꺼내 온다
+  // 레포가 바뀌면 그 레포의 초안(amend 중이었으면 amend 초안)을 꺼내 오고 템플릿을 다시 읽는다
   useEffect(() => {
     repoRef.current = repoPath;
     amendGenRef.current += 1;
     const state = loadState(repoPath);
     setMessage(state.message);
     setAmend(state.amend);
+    setTemplate(null);
+    let alive = true;
+    getCommitTemplate(repoPath)
+      .then((text) => {
+        if (!alive) {
+          return;
+        }
+        const next = text === null || text.trim() === "" ? null : text;
+        setTemplate(next);
+        // 기다리는 사이 사용자가 쓰기 시작했거나 amend로 바꿨으면 건드리지 않는다
+        if (next !== null && messageRef.current === "" && !amendRef.current) {
+          setMessage(next);
+        }
+      })
+      .catch(() => {
+        // 템플릿을 못 읽으면 빈 메시지로 시작한다. 커밋 자체와는 무관하다
+      });
+    return () => {
+      alive = false;
+    };
   }, [repoPath]);
+
+  /** 일반 커밋으로 돌아가며 보여 줄 메시지. 초안이 비었으면 템플릿을 깐다 */
+  function withTemplate(draft: string): string {
+    return draft === "" && templateRef.current !== null ? templateRef.current : draft;
+  }
 
   const resize = useCallback(() => {
     const el = inputRef.current;
@@ -140,7 +203,7 @@ export function CommitBox({ repoPath, stagedCount, actions, onRequestLastMessage
     if (!next) {
       // Amend를 풀면 원래 쓰던 초안으로 돌아간다. 원래 초안 키는 amend 동안 그대로였다
       writeAmendDraft(repoPath, null);
-      setMessage(readDraft(repoPath));
+      setMessage(withTemplate(readDraft(repoPath)));
       return;
     }
     // 마지막 메시지가 오기 전까지는 쓰던 내용을 amend 초안의 시작점으로 둔다
@@ -164,7 +227,8 @@ export function CommitBox({ repoPath, stagedCount, actions, onRequestLastMessage
   }
 
   const busy = actions.busy || committing;
-  const trimmed = message.trim();
+  // 템플릿을 손대지 않고 그대로 둔 경우 지우고 나면 비므로 커밋을 막는다
+  const trimmed = stripTemplateComments(message, template).trim();
   const canCommit = trimmed !== "" && (stagedCount > 0 || amend) && !busy;
 
   async function runCommit() {
@@ -193,7 +257,7 @@ export function CommitBox({ repoPath, stagedCount, actions, onRequestLastMessage
       }
       if (repoRef.current === repo) {
         amendGenRef.current += 1;
-        setMessage(amended ? readDraft(repo) : "");
+        setMessage(withTemplate(amended ? readDraft(repo) : ""));
         setAmend(false);
       }
     } catch {
