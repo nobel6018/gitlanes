@@ -44,6 +44,9 @@ jobs:
       - name: Multi-select test
         run: npm run test:multi
 
+      - name: History model test
+        run: npm run test:history
+
       - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
