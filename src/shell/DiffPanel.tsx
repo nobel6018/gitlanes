@@ -21,8 +21,15 @@ export interface DiffHunkActions {
   /**
    * scope는 워킹트리 discard 확인창에 보일 범위 문구("1 hunk", "3 lines").
    * RepoActions.applyPatch가 선택 인자로 받는다 (v0.15.1)
+   * encoding은 패치를 만든 diff의 WipDiff.encoding 그대로. 생략하면 "utf8" (v0.16.1)
    */
-  applyPatch(patch: string, cached: boolean, reverse: boolean, scope?: string): Promise<void>;
+  applyPatch(
+    patch: string,
+    cached: boolean,
+    reverse: boolean,
+    scope?: string,
+    encoding?: "utf8" | "latin1",
+  ): Promise<void>;
   busy: boolean;
 }
 
@@ -41,6 +48,11 @@ export interface DiffPanelProps {
   badge?: string;
   /** 있으면 hunk 헤더에 Stage/Unstage/Discard 버튼이 붙는다. 커밋 diff에서는 주지 않는다 */
   hunkActions?: DiffHunkActions | null;
+  /**
+   * diffText의 디코딩 (WipDiff.encoding, v0.16.1). 생략하면 "utf8".
+   * latin1이면 글자 하나가 원래 바이트 하나라 부분 패치가 바이트를 보존한다
+   */
+  diffEncoding?: "utf8" | "latin1";
 }
 
 /** 패치 재구성에 쓰는 줄 좌표 (hunk 번호, hunk 안에서의 줄 번호) */
@@ -284,6 +296,7 @@ export function DiffPanel({
   onClose,
   badge,
   hunkActions,
+  diffEncoding = "utf8",
 }: DiffPanelProps) {
   const [prefs, setPrefs] = useState<Prefs>(readPrefs);
   const [scrollTop, setScrollTop] = useState(0);
@@ -432,9 +445,11 @@ export function DiffPanel({
     // 이 경우는 파일 단위 스테이징만 지원한다
     hunkActions.area !== "untracked" &&
     patchSource.hunks.length > 0;
-  // UTF-8이 아닌 파일은 diff가 손실 디코딩돼 원래 바이트를 잃었다. 부분 패치를 만들면
-  // 깨진 바이트가 stage되므로 파일 단위 동작만 남긴다 (audit-patch H4)
-  const lossy = patchable && hasLossyDecoding(diffText ?? "");
+  // utf8 diff에 U+FFFD가 있으면 손실 디코딩돼 원래 바이트를 잃은 것이다. 부분 패치를 만들면
+  // 깨진 바이트가 stage되므로 파일 단위 동작만 남긴다 (audit-patch H4).
+  // latin1 diff는 글자가 곧 바이트라 잃은 것이 없다. 패치를 같은 encoding으로 보내면 된다
+  const latin1 = diffEncoding === "latin1";
+  const lossy = patchable && !latin1 && hasLossyDecoding(diffText ?? "");
   const canPatch = patchable && !lossy;
 
   function sendPatch(patch: string, cached: boolean, reverse: boolean, scope?: string) {
@@ -442,7 +457,7 @@ export function DiffPanel({
       return;
     }
     setPicked(new Set<string>());
-    void hunkActions.applyPatch(patch, cached, reverse, scope).catch(() => undefined);
+    void hunkActions.applyPatch(patch, cached, reverse, scope, diffEncoding).catch(() => undefined);
   }
 
   /** 끌고 있는 동안 기준 선택에 범위를 더하거나 뺀다. 범위는 한 hunk 안에서만 잡는다 */
@@ -955,6 +970,11 @@ export function DiffPanel({
         </button>
       </div>
 
+      {latin1 && diffText !== null && (
+        <div className="dp-message" role="note" style={{ padding: "6px 12px" }}>
+          This file is not UTF-8. Text is shown as Latin-1.
+        </div>
+      )}
       {lossy && (
         <div className="dp-message" role="note" style={{ padding: "6px 12px" }}>
           Partial staging is unavailable for this file because it is not UTF-8. Stage or discard
