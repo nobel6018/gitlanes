@@ -135,6 +135,9 @@ pub fn git_pending_action(path: String, kind: String, action: String) -> Result<
         "rebase" => "rebase",
         "cherryPick" => "cherry-pick",
         "revert" => "revert",
+        "am" => "am",
+        // 충돌만 남은 상태는 이어가거나 되돌릴 작업이 없다. 파일을 해결하면 사라진다
+        "conflicts" => return Err("충돌만 남은 상태에는 이어갈 작업이 없습니다".to_string()),
         other => return Err(format!("알 수 없는 진행 중 작업입니다: {other}")),
     };
     let flag = match action.as_str() {
@@ -481,5 +484,41 @@ mod tests {
         let idle =
             git_pending_action(repo.path(), "rebase".to_string(), "abort".to_string()).unwrap();
         assert!(!idle.ok, "{idle:?}");
+    }
+
+    #[test]
+    fn pending_action_am은_git_am으로_보낸다() {
+        let repo = conflicting("gitlanes-pending-am-abort");
+        let patches = format!("{}-patches", repo.path());
+        repo.git(&["format-patch", "-q", "-o", &patches, "main..other"]);
+        let _ = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["am", "-3", &format!("{patches}/0001-other-side.patch")])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&patches);
+
+        let kind = detect_pending(&repo.path()).map(|p| p.kind);
+        assert_eq!(kind, Some(PendingKind::Am));
+
+        // rebase --abort는 "It looks like 'git am' is in progress"로 거절된다
+        let aborted =
+            git_pending_action(repo.path(), "am".to_string(), "abort".to_string()).unwrap();
+        assert!(aborted.ok, "{aborted:?}");
+        assert_eq!(aborted.command, ["am", "--abort"]);
+        assert_eq!(detect_pending(&repo.path()), None);
+    }
+
+    #[test]
+    fn pending_action은_conflicts에_보낼_명령이_없다() {
+        // 충돌만 남은 상태는 파일을 해결하는 것 말고 이어갈 작업이 없다
+        let repo = TempRepo::linear("gitlanes-pending-conflicts", 1);
+        for action in ["continue", "abort", "skip"] {
+            assert!(
+                git_pending_action(repo.path(), "conflicts".to_string(), action.to_string())
+                    .is_err(),
+                "{action}"
+            );
+        }
     }
 }
