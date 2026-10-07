@@ -163,16 +163,9 @@ pub fn compare_refs(
         .map(str::to_string)
         .to_vec()
     };
-    let mut diff_args: Vec<String> = [
-        "diff",
-        "--raw",
-        "--numstat",
-        "--no-ext-diff",
-        "-M",
-        "-z",
-    ]
-    .map(str::to_string)
-    .to_vec();
+    let mut diff_args: Vec<String> = ["diff", "--raw", "--numstat", "--no-ext-diff", "-M", "-z"]
+        .map(str::to_string)
+        .to_vec();
     diff_args.extend(diff_range(&base_rev, &head_rev, merge_base.as_deref()));
     diff_args.push("--".to_string());
 
@@ -543,6 +536,28 @@ mod tests {
     }
 
     #[test]
+    fn 히스토리_항목은_커밋_요약_키를_펼쳐서_보낸다() {
+        let repo = renamed_fixture();
+        let entries = get_file_history(repo.path(), "b.txt".into(), None, 2).unwrap();
+        let json = serde_json::to_value(&entries[1]).unwrap();
+        for key in [
+            "sha",
+            "shortSha",
+            "subject",
+            "author",
+            "timestamp",
+            "authorEmail",
+            "path",
+            "oldPath",
+            "status",
+        ] {
+            assert!(json.get(key).is_some(), "{key} 키가 없다: {json}");
+        }
+        assert!(json.get("commit").is_none(), "중첩 객체로 보내지 않는다");
+        assert_eq!(json["status"], "R");
+    }
+
+    #[test]
     fn 머리만_있는_히스토리_레코드는_앞_항목의_원_경로를_쓴다() {
         let out = "\x1eaaa\x1fA\x1fa@x\x1f1\x1fmove\0\nR100\0old.txt\0new.txt\0\
                    \x1ebbb\x1fA\x1fa@x\x1f1\x1fmerge\0";
@@ -797,8 +812,11 @@ mod tests {
         assert_eq!(result.merge_base, None);
         assert_eq!(commit_subjects(&result.only_in_head), ["lone"]);
         assert_eq!(commit_subjects(&result.only_in_base), ["m1", "root"]);
-        let mut files: Vec<(&str, FileStatus)> =
-            result.files.iter().map(|f| (f.path.as_str(), f.status)).collect();
+        let mut files: Vec<(&str, FileStatus)> = result
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.status))
+            .collect();
         files.sort_by_key(|f| f.0);
         assert_eq!(
             files,
