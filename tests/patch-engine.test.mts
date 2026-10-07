@@ -10,11 +10,13 @@
 // 종료 코드: 실패가 하나라도 있으면 1. 알려진 미해결 항목(KNOWN)은 실패로 세지 않는다.
 // 출처: 2026-10 감사 하네스(~/leedo/gitlanes-audit-2026-10/audit-patch.md)를 레포로 옮긴 것.
 
+import { Buffer } from "node:buffer";
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { performance } from "node:perf_hooks";
+import process, { type ProcessEnv } from "node:process";
 import { parseUnifiedDiff, buildPatch, buildLinePatch, lineKey, hasLossyDecoding } from "../src/shell/hunks.ts";
 
 const startedAt = performance.now();
@@ -23,10 +25,8 @@ const startedAt = performance.now();
 // 시나리오를 실행은 하되 실패를 세지 않는다. 고쳐져서 통과하면 표시를 지우라고 알린다.
 
 const KNOWN = {
-  M1: "skipped (v0.16, audit-patch M1: partial patch copies new/deleted file header)",
-  M2: "skipped (v0.16, audit-patch M2: staged rename diff lacks old path)",
+  M2: "skipped (audit-patch M2: staged rename diff lacks old path. v16-paths fixes it in the Rust diff, unskip after merge)",
   M3: "skipped (audit-patch M3: stale diff is a state-refresh issue, guarded by WipInfo.contentToken in the UI)",
-  L1: "skipped (v0.16, audit-patch L1: partial patch copies old/new mode header)",
   H4: "skipped (audit-patch H4: lossy UTF-8 decode, blocked in DiffPanel via hasLossyDecoding, not in the engine)",
 } as const;
 
@@ -62,7 +62,7 @@ const GLOBAL_CFG = join(CFG_DIR, "gitconfig");
 // 개발자 ~/.gitconfig가 결과를 흔들지 않게 전역 설정을 테스트 것으로 바꾼다. 사용자 설정 적대 시나리오는
 // 레포 로컬 config로 따로 건다. 레포마다 git config를 부르지 않으려고 공통값은 여기 둔다
 writeFileSync(GLOBAL_CFG, "[user]\n\tname = t\n\temail = t@t\n[core]\n\tautocrlf = false\n[init]\n\tdefaultBranch = main\n");
-const BASE_ENV: NodeJS.ProcessEnv = {
+const BASE_ENV: ProcessEnv = {
   ...process.env,
   GIT_CONFIG_GLOBAL: GLOBAL_CFG,
   GIT_CONFIG_NOSYSTEM: "1",
@@ -234,6 +234,12 @@ function repoFor(spec: RepoSpec): { repo: string; file: string } {
   restoredIndexBlob.set(ctx.repo, indexBlob);
   pristineDiffs.set(ctx.repo, diffs);
   return ctx;
+}
+
+/** 인덱스 항목의 모드("100644" 등). 인덱스에 없으면 null */
+function indexMode(repo: string, file: string): string | null {
+  const out = git(repo, ["ls-files", "-s", "--", file]).toString();
+  return out === "" ? null : out.split(" ")[0];
 }
 
 function readIndex(repo: string, file: string): Buffer | null {
@@ -563,7 +569,8 @@ function exhaustive(label: string, head: Content, work: Content, extra: Partial<
       });
       scenario(`edge ${label} ${op} last change line`, () => {
         const ctx = repoFor(specFor(op, head, work));
-        runOp(ctx, op, { keys: [changeKeys(wipDiff(ctx.repo, ctx.file, OPS[op].area)).at(-1)!] });
+        const keys = changeKeys(wipDiff(ctx.repo, ctx.file, OPS[op].area));
+        runOp(ctx, op, { keys: [keys[keys.length - 1]] });
       });
     }
   }
@@ -862,13 +869,35 @@ scenario("mode change only: no hunks", () => {
   const p = parseUnifiedDiff(wipDiff(ctx.repo, ctx.file, "unstaged"));
   check(p.hunks.length === 0, "no hunks for pure chmod");
 });
-scenario("mode change + content: staging one hunk also stages chmod", () => {
+// 부분 패치는 old mode/new mode를 싣지 않는다(audit-patch L1). 모드는 파일 단위 stage에서만 바뀐다
+scenario("mode change + content: staging one hunk keeps the index mode", () => {
   const ctx = makeRepo({ head: BASE20, work: MULTI });
   chmodSync(join(ctx.repo, ctx.file), 0o755);
   runOp(ctx, "stage", { hunks: [0] });
-  const mode = git(ctx.repo, ["ls-files", "-s", "--", ctx.file]).toString().split(" ")[0];
-  check(mode === "100644", "hunk stage does not silently stage the mode change", `  index mode now ${mode}`);
-}, KNOWN.L1);
+  check(indexMode(ctx.repo, ctx.file) === "100644", "hunk stage does not silently stage the mode change", `  index mode now ${indexMode(ctx.repo, ctx.file)}`);
+});
+scenario("mode change + content: staging every line still keeps the index mode", () => {
+  const ctx = makeRepo({ head: BASE20, work: MULTI });
+  chmodSync(join(ctx.repo, ctx.file), 0o755);
+  const diff = wipDiff(ctx.repo, ctx.file, "unstaged");
+  check(diff.includes("new mode 100755"), "diff carries the mode change", diff.split("\n").slice(0, 4).join("\n"));
+  runOp(ctx, "stage", { keys: changeKeys(diff) }, { diff });
+  check(indexMode(ctx.repo, ctx.file) === "100644", "line stage of all changes leaves chmod for the file-level stage", `  index mode now ${indexMode(ctx.repo, ctx.file)}`);
+});
+scenario("mode change + content: unstaging one hunk keeps the staged mode", () => {
+  const ctx = makeRepo({ head: BASE20, work: MULTI });
+  chmodSync(join(ctx.repo, ctx.file), 0o755);
+  git(ctx.repo, ["add", "--", ctx.file]);
+  runOp(ctx, "unstage", { hunks: [0] });
+  check(indexMode(ctx.repo, ctx.file) === "100755", "hunk unstage does not revert the staged chmod", `  index mode now ${indexMode(ctx.repo, ctx.file)}`);
+});
+scenario("mode change + content: discarding one hunk keeps the worktree mode", () => {
+  const ctx = makeRepo({ head: BASE20, work: MULTI });
+  chmodSync(join(ctx.repo, ctx.file), 0o755);
+  runOp(ctx, "discard", { hunks: [1] });
+  const exec = (statSync(join(ctx.repo, ctx.file)).mode & 0o111) !== 0;
+  check(exec, "hunk discard does not drop the executable bit from the worktree file");
+});
 scenario("staged rename + edit: unstage one line", () => {
   const ctx = makeRepo({ head: BASE20, file: "old.txt" });
   git(ctx.repo, ["mv", "old.txt", "new.txt"]);
@@ -880,15 +909,79 @@ scenario("staged rename + edit: unstage one line", () => {
   const r = applyPatch(ctx.repo, buildLinePatch(parseUnifiedDiff(diff), new Set([lineKey(0, 1)]), true), true, true);
   check(r.ok, "unstage one line (the L2 edit) of a renamed file", r.stderr.trim());
 }, KNOWN.M2);
+// 부분 선택이 new/deleted 헤더를 그대로 실으면 거절된다(audit-patch M1). 엔진이 일반 수정 패치로 바꾼다.
+// 고른 줄이 파일 전체가 아니면 결과 쪽 파일이 남아야 하고, 전체면 파일 단위 동작과 같아야 한다
+const NEW4 = lines("a", "b", "c", "d");
 scenario("staged new file: unstage some lines", () => {
-  runOp(makeRepo({ head: null, index: lines("a", "b", "c"), work: lines("a", "b", "c") }), "unstage", { lines: ["+b"] });
-}, KNOWN.M1);
+  const ctx = makeRepo({ head: null, index: NEW4, work: NEW4 });
+  runOp(ctx, "unstage", { lines: ["+b"] });
+  check(indexMode(ctx.repo, ctx.file) === "100644", "partially unstaged new file stays in the index");
+});
+scenario("staged new file: unstage every proper subset of lines", () => {
+  const spec: RepoSpec = { head: null, index: NEW4, work: NEW4 };
+  const keys = changeKeys(wipDiff(repoFor(spec).repo, "f.txt", "staged"));
+  for (let mask = 1; mask < (1 << keys.length) - 1; mask++) {
+    const ctx = repoFor(spec);
+    const pick = keys.filter((_, i) => mask & (1 << i));
+    const r = runOp(ctx, "unstage", { keys: pick });
+    if (r.ok) check(indexMode(ctx.repo, ctx.file) !== null, `new file stays in the index after unstaging ${pick.length}/${keys.length} lines`);
+  }
+});
+scenario("staged new file: unstage all lines one by one removes nothing early", () => {
+  const ctx = makeRepo({ head: null, index: NEW4, work: NEW4 });
+  for (const text of ["+a", "+b", "+c"]) {
+    runOp(ctx, "unstage", { lines: [text] });
+    check(indexMode(ctx.repo, ctx.file) !== null, `new file still in the index after unstaging ${text}`);
+  }
+});
+scenario("staged new executable file with a quoted path: unstage some lines keeps mode", () => {
+  const file = 'dir/q"x.sh';
+  const ctx = makeRepo({ file, head: null, index: null, work: NEW4 });
+  chmodSync(join(ctx.repo, file), 0o755);
+  git(ctx.repo, ["add", "--", file]);
+  const diff = wipDiff(ctx.repo, file, "staged");
+  check(diff.includes('+++ "b/dir/q\\"x.sh"'), "diff quotes the path", diff.split("\n").slice(0, 5).join("\n"));
+  runOp(ctx, "unstage", { lines: ["+c"] }, { diff });
+  check(indexMode(ctx.repo, file) === "100755", "partial unstage keeps the new file mode", `  index mode now ${indexMode(ctx.repo, file)}`);
+});
+scenario("intent-to-add file: discard some lines", () => {
+  const ctx = makeRepo({ head: null, index: null, work: NEW4 });
+  git(ctx.repo, ["add", "-N", "--", ctx.file]);
+  runOp(ctx, "discard", { lines: ["+b", "+d"] });
+});
 scenario("staged new file: unstage whole hunk removes from index", () => {
   runOp(makeRepo({ head: null, index: lines("a", "b", "c"), work: lines("a", "b", "c") }), "unstage", { hunks: [0] });
 });
 scenario("deleted in worktree: stage some deletions", () => {
-  runOp(makeRepo({ head: lines("a", "b", "c"), work: null }), "stage", { lines: ["-b"] });
-}, KNOWN.M1);
+  const ctx = makeRepo({ head: lines("a", "b", "c"), work: null });
+  runOp(ctx, "stage", { lines: ["-b"] });
+  check(indexMode(ctx.repo, ctx.file) === "100644", "partially staged deletion keeps the file in the index");
+});
+scenario("deleted in worktree: stage every proper subset of deletions", () => {
+  const spec: RepoSpec = { head: NEW4, work: null };
+  const keys = changeKeys(wipDiff(repoFor(spec).repo, "f.txt", "unstaged"));
+  for (let mask = 1; mask < (1 << keys.length) - 1; mask++) {
+    const ctx = repoFor(spec);
+    const pick = keys.filter((_, i) => mask & (1 << i));
+    const r = runOp(ctx, "stage", { keys: pick });
+    if (r.ok) check(indexMode(ctx.repo, ctx.file) !== null, `file stays in the index after staging ${pick.length}/${keys.length} deletions`);
+  }
+});
+scenario("deleted in worktree: staging all deletion lines stages the deletion", () => {
+  const ctx = makeRepo({ head: NEW4, work: null });
+  const diff = wipDiff(ctx.repo, ctx.file, "unstaged");
+  runOp(ctx, "stage", { keys: changeKeys(diff) }, { diff });
+  check(indexMode(ctx.repo, ctx.file) === null, "selecting every line keeps the deleted file header (file leaves the index)");
+});
+scenario("deleted executable in worktree: stage some deletions keeps mode", () => {
+  const ctx = makeRepo({ head: NEW4 });
+  chmodSync(join(ctx.repo, ctx.file), 0o755);
+  git(ctx.repo, ["add", "--", ctx.file]);
+  git(ctx.repo, ["commit", "-q", "-m", "exec"]);
+  rmSync(join(ctx.repo, ctx.file));
+  runOp(ctx, "stage", { lines: ["-a", "-c"] });
+  check(indexMode(ctx.repo, ctx.file) === "100755", "partial deletion stage keeps the mode", `  index mode now ${indexMode(ctx.repo, ctx.file)}`);
+});
 scenario("deleted in worktree: discard some deletions (restore lines)", () => {
   runOp(makeRepo({ head: lines("a", "b", "c"), work: null }), "discard", { lines: ["-b"] });
 });
@@ -1027,7 +1120,7 @@ for (let i = 0; i < FUZZ; i++) {
   const head = randFile();
   const work = mutate(head);
   const op = ALL_OPS[ri(3)];
-  const config = rnd() < 0.4 ? { "diff.context": String(ri(4)) } : {};
+  const config: Record<string, string> = rnd() < 0.4 ? { "diff.context": String(ri(4)) } : {};
   const mode: DiffMode = rnd() < 0.15 ? "u0" : "rust";
   if (head === work) continue;
   const ctx = fuzzRepo(op, head, work, config);

@@ -297,19 +297,17 @@ export function WipDetailPanel({
     });
   }
 
-  function clearSelection() {
-    anchorRef.current = null;
-    setSelected(new Set<string>());
-  }
-
   /** 그룹 안에서 선택된 파일 경로 (화면 순서 그대로) */
   function selectedPaths(group: Group): string[] {
     return group.entries.filter((entry) => selected.has(entry.key)).map((entry) => entry.file.path);
   }
 
-  /** 쓰기 액션을 돌리고 나면 선택을 비운다 (대상이 목록에서 사라진다) */
+  /**
+   * 쓰기 액션을 돌린다. 선택은 여기서 비우지 않는다(audit S-L3). Discard 확인을 취소해도 액션은 resolve로
+   * 돌아와서 취소를 구분할 수 없고, 먼저 비우면 고른 파일을 다시 골라야 한다. 성공해서 대상이 목록에서
+   * 사라지면 위의 prune effect가 그 선택만 정리한다
+   */
   function run(action: Promise<void>) {
-    clearSelection();
     void action.catch(() => undefined);
   }
 
