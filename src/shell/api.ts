@@ -357,6 +357,14 @@ export function gitPendingAction(
   return invoke<OpResult>("git_pending_action", { path, kind, action });
 }
 
+/**
+ * 인터랙티브 리베이스 에디터의 초기 목록. `base..HEAD`를 git이 계산해 todo 순서(오래된 것이 먼저)로 준다.
+ * base가 HEAD의 조상이 아니거나 범위에 머지 커밋이 있으면 Err(사람이 읽을 이유)
+ */
+export function getRebaseSteps(path: string, base: string): Promise<RebaseStep[]> {
+  return invoke<RebaseStep[]>("get_rebase_steps", { path, base });
+}
+
 /** steps 순서가 곧 적용 순서 (위 -> 아래 = 과거 -> 현재). Windows는 Err */
 export function gitRebaseInteractive(
   path: string,
