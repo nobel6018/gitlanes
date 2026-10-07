@@ -3,7 +3,7 @@
 //! 여기 걸어둔 제약이 "앱이 멈추지 않는다"는 보장의 전부다.
 //!
 //! - **절대 프롬프트를 띄우지 않는다.** stdin을 막고 `GIT_TERMINAL_PROMPT=0`,
-//!   `GIT_SSH_COMMAND=ssh -oBatchMode=yes`, `GIT_ASKPASS`/`SSH_ASKPASS`를 빈 값으로 둔다.
+//!   `GIT_SSH_COMMAND=<사용자 ssh 명령> -oBatchMode=yes`, `GIT_ASKPASS`/`SSH_ASKPASS`를 빈 값으로 둔다.
 //!   자격증명이 없으면 물어보지 않고 실패한다. 앱에는 터미널이 없어서 한 번 물어보면
 //!   프로세스가 영구히 멈춘다.
 //! - **타임아웃이 있다.** 네트워크 120초, 로컬 60초. 넘으면 kill + wait 후
@@ -108,7 +108,7 @@ pub fn op_command<S: AsRef<OsStr>>(repo: &str, args: &[S]) -> Command {
 
     // 자격증명이나 호스트 키를 물어보지 않고 실패시킨다
     cmd.env("GIT_TERMINAL_PROMPT", "0");
-    cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
+    cmd.env("GIT_SSH_COMMAND", ssh_command(repo));
     cmd.env("GIT_ASKPASS", "");
     cmd.env("SSH_ASKPASS", "");
 
@@ -129,6 +129,59 @@ pub fn op_command<S: AsRef<OsStr>>(repo: &str, args: &[S]) -> Command {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd
+}
+
+/// 사용자가 고른 ssh 명령 뒤에 `-oBatchMode=yes`를 붙인 값. `GIT_SSH_COMMAND`로 넘긴다.
+///
+/// 환경변수 `GIT_SSH_COMMAND`는 설정보다 우선이라, 고정값을 걸면 사용자의 `core.sshCommand`
+/// (계정별 `-i` 키, 1Password SSH agent 래퍼 등)가 통째로 무시된다. git이 고르는 순서를 그대로
+/// 따라 사용자 명령을 찾고, 프롬프트를 막는 옵션만 덧붙인다.
+///
+/// 설정은 저장소 문맥에서 읽어야 한다. `includeIf "gitdir:..."`로 디렉토리마다 키를 고르는
+/// 사용자가 있다. 그래서 git 호출이 하나 늘지만(수 ms) 쓰기 작업 하나에 비하면 작다.
+fn ssh_command(repo: &str) -> String {
+    let from_env = std::env::var("GIT_SSH_COMMAND").ok();
+    let from_config = match from_env.as_deref().map(str::trim) {
+        Some(command) if !command.is_empty() => None,
+        _ => git::run(repo, &["config", "--get", "core.sshCommand"]).ok(),
+    };
+    let program = std::env::var("GIT_SSH").ok();
+    batch_ssh_command(
+        from_env.as_deref(),
+        from_config.as_deref(),
+        program.as_deref(),
+    )
+}
+
+/// git의 ssh 선택 순서(`GIT_SSH_COMMAND` > `core.sshCommand` > `GIT_SSH` > `ssh`)로 고른 명령에
+/// `-oBatchMode=yes`를 붙인다.
+///
+/// - `GIT_SSH`는 셸을 거치지 않는 프로그램 경로라 공백이 든 경로도 있다. 작은따옴표로 감싸
+///   셸 명령으로 바꾼다
+/// - ssh는 같은 옵션이 여러 번 오면 **처음 값**을 쓴다. 사용자 명령에 `-oBatchMode=no`가
+///   있으면 그쪽이 이긴다. 사용자가 일부러 쓴 값이라 존중한다
+/// - plink 같은 비 OpenSSH 클라이언트는 `-o`를 모른다. macOS 앱이라 다루지 않는다
+fn batch_ssh_command(
+    from_env: Option<&str>,
+    from_config: Option<&str>,
+    program: Option<&str>,
+) -> String {
+    let chosen = [from_env, from_config]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|command| !command.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            program
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(|path| format!("'{}'", path.replace('\'', "'\\''")))
+        });
+    match chosen {
+        Some(command) => format!("{command} -oBatchMode=yes"),
+        None => "ssh -oBatchMode=yes".to_string(),
+    }
 }
 
 /// 사용자 훅을 돌리면서 우리에게서 경로 인자를 받지 않는 명령.
@@ -941,9 +994,12 @@ mod tests {
         };
 
         assert_eq!(get("GIT_TERMINAL_PROMPT"), Some(Some("0".to_string())));
-        assert_eq!(
-            get("GIT_SSH_COMMAND"),
-            Some(Some("ssh -oBatchMode=yes".to_string()))
+        assert!(
+            get("GIT_SSH_COMMAND")
+                .flatten()
+                .is_some_and(|command| command.ends_with(" -oBatchMode=yes")),
+            "{:?}",
+            get("GIT_SSH_COMMAND")
         );
         assert_eq!(get("GIT_ASKPASS"), Some(Some(String::new())));
         assert_eq!(get("SSH_ASKPASS"), Some(Some(String::new())));
@@ -1249,5 +1305,76 @@ mod auth_tests {
         );
         assert!(!result.needs_auth, "{result:?}");
         assert_eq!(result.denied_account, None);
+    }
+}
+
+/// 사용자가 고른 ssh 명령을 덮지 않는다(R-M3). 계정별 키를 `core.sshCommand`로 고르는
+/// 사용자(GitHub 계정 여럿)는 덮이면 기본 키로 붙어 다른 계정으로 거절당한다.
+#[cfg(all(test, unix))]
+mod ssh_command_tests {
+    use super::*;
+    use crate::testrepo::TempRepo;
+
+    /// 받은 인자를 파일에 남기고 실패하는 가짜 ssh.
+    fn recording_ssh(repo: &TempRepo) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::path::PathBuf::from(repo.path()).join(".git");
+        let script = dir.join("myssh.sh");
+        let log = dir.join("myssh.log");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho \"$@\" > '{}'\nexit 255\n", log.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (script, log)
+    }
+
+    #[test]
+    fn ssh_명령은_git과_같은_순서로_고른다() {
+        assert_eq!(batch_ssh_command(None, None, None), "ssh -oBatchMode=yes");
+        assert_eq!(
+            batch_ssh_command(None, Some("ssh -i ~/.ssh/work\n"), None),
+            "ssh -i ~/.ssh/work -oBatchMode=yes"
+        );
+        // 환경변수가 설정보다, 설정이 GIT_SSH보다 우선
+        assert_eq!(
+            batch_ssh_command(Some("env-ssh"), Some("config-ssh"), Some("/bin/prog")),
+            "env-ssh -oBatchMode=yes"
+        );
+        assert_eq!(
+            batch_ssh_command(Some("  "), Some("config-ssh"), Some("/bin/prog")),
+            "config-ssh -oBatchMode=yes"
+        );
+        assert_eq!(
+            batch_ssh_command(None, None, Some("/Applications/My SSH/it's")),
+            "'/Applications/My SSH/it'\\''s' -oBatchMode=yes"
+        );
+    }
+
+    #[test]
+    fn core_ssh_command를_쓰고_batch_mode를_덧붙인다() {
+        if std::env::var_os("GIT_SSH_COMMAND").is_some() {
+            // 호스트 환경변수가 core.sshCommand보다 우선이라 이 시나리오를 만들 수 없다
+            return;
+        }
+        let repo = TempRepo::linear("gl-ssh-config", 1);
+        let (script, log) = recording_ssh(&repo);
+        let configured = format!("{} -i ~/.ssh/work_key", script.display());
+        repo.git(&["config", "core.sshCommand", configured.as_str()]);
+
+        let result = run_op(
+            &repo.path(),
+            &["fetch", "git@example.invalid:a/b.git"],
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(!result.ok);
+
+        let args = std::fs::read_to_string(&log)
+            .unwrap_or_else(|_| panic!("core.sshCommand가 불리지 않았다: {result:?}"));
+        // 셸을 거치므로 ~는 홈 경로로 풀린다
+        assert!(args.contains("/.ssh/work_key -oBatchMode=yes"), "{args}");
+        assert!(args.contains("example.invalid"), "{args}");
     }
 }
