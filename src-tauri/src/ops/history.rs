@@ -7,7 +7,7 @@ use crate::model::OpResult;
 use super::run::{run_op, validate_commitish, validate_ref_name, LOCAL_TIMEOUT};
 
 /// `source`를 현재 브랜치로 머지한다. 충돌하면 `ok=false` + `conflicts`가 채워진다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_merge(
     path: String,
     source: String,
@@ -38,7 +38,7 @@ pub fn git_merge(
 }
 
 /// 현재 브랜치를 `upstream` 위로 옮긴다. `onto`가 있으면 이동할 바닥을 따로 지정한다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_rebase(
     path: String,
     upstream: String,
@@ -64,7 +64,7 @@ pub fn git_rebase(
     run_op(&path, &args, LOCAL_TIMEOUT)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_cherry_pick(
     path: String,
     shas: Vec<String>,
@@ -87,7 +87,7 @@ pub fn git_cherry_pick(
     run_op(&path, &args, LOCAL_TIMEOUT)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_revert(
     path: String,
     shas: Vec<String>,
@@ -111,7 +111,7 @@ pub fn git_revert(
 }
 
 /// `mode`는 "soft" | "mixed" | "hard". hard는 워킹 트리를 지우므로 UI 확인이 필수다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_reset(path: String, target: String, mode: String) -> Result<OpResult, String> {
     let flag = match mode.as_str() {
         "soft" => "--soft",
@@ -128,7 +128,7 @@ pub fn git_reset(path: String, target: String, mode: String) -> Result<OpResult,
 ///
 /// `kind`는 `get_sync_state().pending.kind`를 그대로 넘긴다. 종류마다 명령이 달라서
 /// 프론트가 짐작하지 않게 하려는 것이다. 머지에는 `--skip`이 없다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_pending_action(path: String, kind: String, action: String) -> Result<OpResult, String> {
     let subcommand = match kind.as_str() {
         "merge" => "merge",

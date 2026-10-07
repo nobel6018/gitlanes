@@ -72,7 +72,7 @@ const PATCH_SOURCE_CONFIG_ARGS: [&str; 2] = ["-c", "diff.suppressBlankEmpty=fals
 const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
 
 /// 저장소를 검증하고 루트 경로, 현재 브랜치, HEAD sha를 돌려준다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_repo(path: String) -> Result<RepoInfo, String> {
     if path.trim().is_empty() {
         return Err("저장소 경로가 비어 있습니다".to_string());
@@ -121,7 +121,7 @@ pub fn open_repo(path: String) -> Result<RepoInfo, String> {
 /// `total_loaded`, `has_more`, `lane_count`, `wip`, `graph_token`, `stashes`는 전체 기준이다.
 ///
 /// git 호출은 log, for-each-ref, rev-parse, status, stash list 5회다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, String> {
     if limit == 0 {
         return Ok(GraphData {
@@ -231,7 +231,7 @@ pub fn load_graph(path: String, limit: usize, skip: usize) -> Result<GraphData, 
 
 /// 사이드바용 전체 refs. 로드된 커밋 범위와 무관하게 저장소의 모든 ref를 돌려준다.
 /// git 호출은 for-each-ref 1회다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_refs(path: String) -> Result<Vec<RefEntry>, String> {
     let out = git::run(&path, &REF_ARGS).map_err(|e| format!("ref 목록을 읽지 못했습니다: {e}"))?;
 
@@ -244,7 +244,7 @@ pub fn list_refs(path: String) -> Result<Vec<RefEntry>, String> {
 /// git을 끊어 남은 히스토리를 읽지 않는다. `index`는 `load_graph`와 같은 topo 순서의
 /// 행 번호라 프론트가 그 깊이까지 추가 로드한 뒤 점프하면 된다.
 /// 결과는 최대 [`crate::search::MAX_RESULTS`]개다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_commits(
     path: String,
     query: String,
@@ -307,7 +307,7 @@ pub fn search_commits(
 ///
 /// 저장소가 아니거나 remote가 없거나 로컬 경로 remote면 모두 None으로 떨어진다.
 /// 컨텍스트 메뉴의 "Open on GitHub" 표시 여부를 정하는 용도라 오류를 따로 올리지 않는다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_remote_url(path: String) -> Option<String> {
     if let Some(url) = remote_url_of(&path, "origin") {
         return Some(url);
@@ -362,7 +362,7 @@ fn stream_commits(path: &str, args: &[&str], want: usize) -> Result<Vec<RawCommi
 
 /// 자동 새로고침 폴링용 경량 상태. log를 읽지 않아 대형 저장소에서도 싸다.
 /// git 호출은 for-each-ref, rev-parse, status 3회이고 동시에 돌린다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_repo_state(path: String) -> Result<RepoState, String> {
     let outputs = git::run_all(&path, &[&REF_ARGS[..], &HEAD_ARGS[..], &STATUS_ARGS[..]]);
     let [ref_out, head_out, status_out] =
@@ -447,7 +447,7 @@ fn index_file(root: &Path) -> Option<PathBuf> {
 
 /// 커밋 메타데이터와 변경 파일 목록을 돌려준다. git 호출은 2회다.
 /// merge commit은 first-parent 기준 diff를 쓴다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_commit_details(path: String, sha: String) -> Result<CommitDetails, String> {
     let sha = validate_rev(&sha)?;
 
@@ -478,7 +478,7 @@ pub fn get_commit_details(path: String, sha: String) -> Result<CommitDetails, St
 
 /// 커밋 안에서 파일 하나의 unified diff 원문을 돌려준다.
 /// 루트 커밋은 빈 트리와 비교되도록 `git show`를 쓴다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_file_diff(
     path: String,
     sha: String,
@@ -535,7 +535,7 @@ pub fn get_file_diff(
 /// 오류 문자열 두 개는 프론트가 분기에 쓰는 계약이다(CONTRACTS.md v0.12).
 /// 바이너리는 `"binary"`, 상한 초과는 `"too large"`를 그대로 돌려준다. 그 밖의 실패는
 /// git stderr를 그대로 올려서 "path 'x' does not exist in '<sha>'" 같은 원문이 보이게 한다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_file_content(path: String, sha: String, file: String) -> Result<String, String> {
     let sha = validate_rev(&sha)?;
     let file = validate_pathspec(&file)?;
@@ -559,7 +559,7 @@ pub fn get_file_content(path: String, sha: String, file: String) -> Result<Strin
 /// 워킹 디렉토리의 변경 파일 목록. staged/unstaged/untracked 세 영역으로 나눠 돌려준다.
 ///
 /// git 호출 3회를 병렬로 돈다. 서로 값을 주고받지 않아 순서가 필요 없다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_wip_details(path: String) -> Result<WipDetails, String> {
     const STAGED_ARGS: [&str; 7] = [
         "diff",
@@ -592,7 +592,7 @@ pub fn get_wip_details(path: String) -> Result<WipDetails, String> {
 }
 
 /// WIP 파일 하나의 unified diff. `area`는 `WipArea`("staged"/"unstaged"/"untracked").
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<String, String> {
     let file = validate_pathspec(&file)?;
 
@@ -621,7 +621,7 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Str
 }
 
 /// 워킹 트리의 현재 파일 내용. 커밋이 아니라 디스크를 읽는다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_wip_file_content(path: String, file: String) -> Result<String, String> {
     let target = resolve_in_repo(&path, &file)?;
 
@@ -713,7 +713,7 @@ fn decode_text(bytes: Vec<u8>) -> Result<String, String> {
 
 /// 시작 시 열 저장소 경로. CLI 첫 위치 인자 → `GITLANES_REPO` 환경변수 순으로 찾는다.
 /// 경로 존재 검증은 하지 않는다. 검증은 [`open_repo`]가 한다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_startup_repo() -> Option<String> {
     pick_startup_repo(
         std::env::args().skip(1),

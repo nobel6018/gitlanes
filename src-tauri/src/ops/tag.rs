@@ -9,7 +9,7 @@ use super::run::{
 };
 
 /// `message`가 있으면 annotated 태그, 없으면 lightweight 태그다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_create_tag(
     path: String,
     name: String,
@@ -37,7 +37,7 @@ pub fn git_create_tag(
     run_op(&path, &args, LOCAL_TIMEOUT)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_delete_tag(path: String, name: String) -> Result<OpResult, String> {
     let name = validate_ref_name(&path, &name)?;
     run_op(&path, &["tag", "-d", name.as_str()], LOCAL_TIMEOUT)
@@ -47,7 +47,7 @@ pub fn git_delete_tag(path: String, name: String) -> Result<OpResult, String> {
 ///
 /// `refs/tags/`를 붙여 넘긴다. 같은 이름의 브랜치가 있을 때 git이 무엇을 밀지 헷갈리지
 /// 않게 하려는 것이다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_push_tag(
     path: String,
     remote: String,

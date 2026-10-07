@@ -9,7 +9,7 @@ use super::run::{
 };
 
 /// `all_remotes`가 켜져 있으면 `--all`, 아니면 `remote`(없으면 git 기본 remote).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_fetch(
     path: String,
     remote: Option<String>,
@@ -39,7 +39,7 @@ pub fn git_fetch(
 }
 
 /// `mode`는 `PullMode`("ff-only" | "merge" | "rebase").
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_pull(
     path: String,
     mode: String,
@@ -77,7 +77,7 @@ pub fn git_pull(
 }
 
 /// 푸시한다. 일반 `--force`는 어떤 경로로도 붙지 않는다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_push(
     path: String,
     remote: Option<String>,

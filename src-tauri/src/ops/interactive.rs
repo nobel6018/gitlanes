@@ -26,7 +26,7 @@ use super::run::{run_op_with_env, validate_commitish, LOCAL_TIMEOUT};
 const ACTIONS: [&str; 6] = ["pick", "reword", "edit", "squash", "fixup", "drop"];
 
 #[cfg(not(target_os = "windows"))]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_rebase_interactive(
     path: String,
     base: String,
@@ -63,7 +63,7 @@ pub fn git_rebase_interactive(
 
 /// Windows에서는 `sh` 기반 주입을 쓸 수 없다. 프론트가 이 오류를 보고 메뉴를 감춘다.
 #[cfg(target_os = "windows")]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_rebase_interactive(
     path: String,
     base: String,

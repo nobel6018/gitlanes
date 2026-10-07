@@ -8,7 +8,7 @@ use crate::model::OpResult;
 use super::run::{run_op, run_op_with_input, validate_paths, LOCAL_TIMEOUT};
 
 /// 인덱스에 올린다. 추적되지 않는 파일도 `add`가 그대로 받는다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_stage(path: String, files: Vec<String>) -> Result<OpResult, String> {
     let files = validate_paths(&files)?;
     let mut args: Vec<&str> = vec!["add", "--"];
@@ -17,7 +17,7 @@ pub fn git_stage(path: String, files: Vec<String>) -> Result<OpResult, String> {
 }
 
 /// 인덱스에서 내린다. 워킹 트리는 건드리지 않는다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_unstage(path: String, files: Vec<String>) -> Result<OpResult, String> {
     let files = validate_paths(&files)?;
     let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
@@ -41,7 +41,7 @@ pub fn git_unstage(path: String, files: Vec<String>) -> Result<OpResult, String>
 ///
 /// 레퍼런스 앱(GitKraken, SourceGit)에는 이 구분이 없다. 왜 다르게 했는지와
 /// 되돌리는 방법은 @see docs/decisions.md#discard-범위
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_discard(path: String, files: Vec<String>, area: String) -> Result<OpResult, String> {
     // `--source` 없이 쓰면 git이 인덱스를 기준으로 삼는다. 그게 "worktree"의 정의다.
     let restore: &[&str] = match area.as_str() {
@@ -86,19 +86,19 @@ fn untracked_set(repo: &str) -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_stage_all(path: String) -> Result<OpResult, String> {
     run_op(&path, &["add", "-A"], LOCAL_TIMEOUT)
 }
 
 /// 인덱스 전체를 HEAD로 되돌린다. 워킹 트리는 그대로다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_unstage_all(path: String) -> Result<OpResult, String> {
     run_op(&path, &["reset", "-q", "HEAD", "--"], LOCAL_TIMEOUT)
 }
 
 /// 추적되지 않는 파일을 지운다. 경로 지정을 강제해 "전부 삭제" 사고를 막는다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_clean(path: String, paths: Vec<String>) -> Result<OpResult, String> {
     let paths = validate_paths(&paths)?;
     let mut args: Vec<&str> = vec!["clean", "-q", "-fd", "--"];
@@ -123,7 +123,7 @@ pub fn git_clean(path: String, paths: Vec<String>) -> Result<OpResult, String> {
 /// `-U3`으로 고정했으므로(commands.rs `PATCH_SOURCE_DIFF_ARGS`) 엔진이 만드는 패치에는
 /// context가 남고, 이 옵션이 필요 없다.
 /// `--whitespace=nowarn`은 원본에 이미 있던 공백 문제로 스테이징이 실패하지 않게 한다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_apply_patch(
     path: String,
     patch: String,
@@ -156,7 +156,7 @@ pub fn git_apply_patch(
 }
 
 /// 패치 파일을 적용한다. `git_apply_patch`와 달리 디스크의 파일을 읽는다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_apply_patch_file(
     path: String,
     file: String,
@@ -177,7 +177,7 @@ pub fn git_apply_patch_file(
 /// `format-patch`는 여러 sha를 한 번에 받으면 "이 커밋들로부터 도달 가능한 범위"로
 /// 해석해서 원하는 것과 달라진다. 커밋 하나씩 `-1`로 뽑고 `--start-number`로 번호만
 /// 이어 붙인다.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_create_patch(
     path: String,
     shas: Vec<String>,

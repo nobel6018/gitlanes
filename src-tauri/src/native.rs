@@ -145,6 +145,7 @@ fn last_segment(path: &str) -> &str {
 }
 
 /// 파일관리자에서 항목을 보여준다.
+// 메인 스레드에 둔다(async 아님). 프로그램을 띄우고 바로 끝나서 옮길 이유가 없다.
 #[tauri::command]
 pub fn reveal_path(path: String) -> Result<(), String> {
     let target = validate_path(&path)?;
@@ -154,6 +155,7 @@ pub fn reveal_path(path: String) -> Result<(), String> {
 }
 
 /// 기본 터미널을 해당 디렉토리에서 연다. 파일 경로가 오면 그 파일이 든 디렉토리를 쓴다.
+// 메인 스레드에 둔다(async 아님). 프로그램을 띄우고 바로 끝나서 옮길 이유가 없다.
 #[tauri::command]
 pub fn open_in_terminal(path: String) -> Result<(), String> {
     let target = validate_path(&path)?;
@@ -163,6 +165,7 @@ pub fn open_in_terminal(path: String) -> Result<(), String> {
 }
 
 /// File > Open Recent 서브메뉴를 다시 만든다.
+// 메인 스레드에 둔다(async 아님). macOS 메뉴(AppKit)는 메인 스레드에서만 만질 수 있다.
 #[tauri::command]
 pub fn set_recent_repos(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
     let entries = recent_entries(&paths);
