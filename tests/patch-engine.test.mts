@@ -10,7 +10,7 @@
 // 종료 코드: 실패가 하나라도 있으면 1. 알려진 미해결 항목(KNOWN)은 실패로 세지 않는다.
 // 출처: 2026-10 감사 하네스(~/leedo/gitlanes-audit-2026-10/audit-patch.md)를 레포로 옮긴 것.
 
-import { Buffer } from "node:buffer";
+import { Buffer, isUtf8 } from "node:buffer";
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +26,6 @@ const startedAt = performance.now();
 
 const KNOWN = {
   M3: "skipped (audit-patch M3: stale diff is a state-refresh issue, guarded by WipInfo.contentToken in the UI)",
-  H4: "skipped (audit-patch H4: lossy UTF-8 decode, blocked in DiffPanel via hasLossyDecoding, not in the engine)",
 } as const;
 
 // ── 결과 집계 ──────────────────────────────────────────────
@@ -87,14 +86,32 @@ function git(repo: string, args: string[], input?: Buffer | string): Buffer {
  */
 type DiffMode = "rust" | "u0";
 
+/** src/types.ts WipDiff (v0.16.1) */
+type Encoding = "utf8" | "latin1";
+interface WipDiff { text: string; encoding: Encoding }
+
+/**
+ * GL_NO_LATIN1=1이면 v0.16.0 이전 경로(항상 손실 UTF-8 디코딩, 항상 utf8로 적용)를 흉내 낸다.
+ * latin1 경로를 끄면 비UTF-8 단언이 실패하는지 확인하는 용도다 (수정 전 실패 재현)
+ */
+const NO_LATIN1 = process.env.GL_NO_LATIN1 === "1";
+
 /**
  * repoFor가 처음 상태로 되돌린 뒤 아직 아무것도 바꾸지 않은 레포의 diff 캐시.
  * 같은 상태면 diff도 같으므로 다시 실행하지 않는다. applyPatch와 git()이 캐시를 무효로 만든다
  */
-const pristineDiffs = new Map<string, Map<string, string>>();
+const pristineDiffs = new Map<string, Map<string, WipDiff>>();
 
-/** src-tauri/src/commands.rs get_wip_file_diff. String::from_utf8_lossy와 같은 lossy 디코딩 */
+/** diff 원문만 필요한 호출 측용. encoding이 필요하면 wipDiffOf를 쓴다 */
 function wipDiff(repo: string, file: string, area: "staged" | "unstaged", mode: DiffMode = "rust"): string {
+  return wipDiffOf(repo, file, area, mode).text;
+}
+
+/**
+ * src-tauri/src/commands.rs get_wip_file_diff -> WipDiff. 출력 바이트 전체가 UTF-8이면 utf8,
+ * 아니면 latin1로 디코딩한다(바이트 하나가 글자 하나라 되돌릴 수 있다)
+ */
+function wipDiffOf(repo: string, file: string, area: "staged" | "unstaged", mode: DiffMode = "rust"): WipDiff {
   const cache = pristineDiffs.get(repo);
   const cacheKey = `${file}\0${area}\0${mode}`;
   const hit = cache?.get(cacheKey);
@@ -111,8 +128,11 @@ function wipDiff(repo: string, file: string, area: "staged" | "unstaged", mode: 
   const source = area === "staged" ? stagedRenames(repo).find(([, to]) => to === file)?.[0] : undefined;
   if (source !== undefined) args.push(source);
   args.push(file);
-  // Buffer.toString("utf8")은 잘못된 바이트를 U+FFFD로 바꾼다. from_utf8_lossy와 같다
-  const diff = execFileSync("git", ["-C", repo, ...args], { env: BASE_ENV, stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
+  const out = execFileSync("git", ["-C", repo, ...args], { env: BASE_ENV, stdio: ["pipe", "pipe", "pipe"] });
+  // NO_LATIN1의 Buffer.toString("utf8")은 잘못된 바이트를 U+FFFD로 바꾼다. 예전 from_utf8_lossy와 같다
+  const diff: WipDiff = NO_LATIN1 || isUtf8(out)
+    ? { text: out.toString("utf8"), encoding: "utf8" }
+    : { text: out.toString("latin1"), encoding: "latin1" };
   cache?.set(cacheKey, diff);
   return diff;
 }
@@ -141,13 +161,14 @@ function stagedRenames(repo: string): [string, string][] {
   return pairs;
 }
 
-/** src-tauri/src/ops/stage.rs git_apply_patch */
+/** src-tauri/src/ops/stage.rs git_apply_patch. encoding은 패치를 만든 WipDiff.encoding */
 function applyPatch(
   repo: string,
   patch: string,
   cached: boolean,
   reverse: boolean,
   mode: DiffMode = "rust",
+  encoding: Encoding = "utf8",
 ): { ok: boolean; stderr: string } {
   // src-tauri/src/commands.rs의 get_wip_file_diff, ops/stage.rs의 git_apply_patch와 같아야 한다.
   // --unidiff-zero는 앱에서 빠졌다. "u0" 방어 테스트만 context 0 패치를 받기 위해 켠다
@@ -159,7 +180,12 @@ function applyPatch(
   args.push("-");
   pristineDiffs.delete(repo);
   const body = patch.endsWith("\n") ? patch : `${patch}\n`;
-  const r = spawnSync("git", args, { env: { ...BASE_ENV, LANG: "C", LC_ALL: "C" }, input: Buffer.from(body, "utf8") });
+  // Rust는 latin1 패치에 255를 넘는 글자가 있으면 Err다. Buffer.from(.., "latin1")은 조용히 잘라 버리므로 먼저 막는다
+  if (encoding === "latin1" && /[^\x00-\xff]/.test(body)) {
+    return { ok: false, stderr: "patch has a character outside Latin-1" };
+  }
+  const input = Buffer.from(body, NO_LATIN1 ? "utf8" : encoding);
+  const r = spawnSync("git", args, { env: { ...BASE_ENV, LANG: "C", LC_ALL: "C" }, input });
   return { ok: r.status === 0, stderr: r.stderr.toString() };
 }
 
@@ -417,6 +443,8 @@ interface RunOpts {
   mode?: DiffMode;
   /** 호출 측이 이미 읽은 diff (같은 상태에서 다시 읽지 않으려고) */
   diff?: string;
+  /** opts.diff의 encoding. 생략하면 utf8 */
+  encoding?: Encoding;
 }
 
 /** 엔진으로 패치를 만들어 적용하고 결과를 오라클과 비교한다. expectOk=false면 실패(무변경)를 기대 */
@@ -424,7 +452,9 @@ function runOp(ctx: { repo: string; file: string }, op: Op, pick: Pick, opts: Ru
   const { repo, file } = ctx;
   const o = OPS[op];
   const mode = opts.mode ?? "rust";
-  const diff = opts.diff ?? wipDiff(repo, file, o.area, mode);
+  const { text: diff, encoding } = opts.diff !== undefined
+    ? { text: opts.diff, encoding: opts.encoding ?? "utf8" }
+    : wipDiffOf(repo, file, o.area, mode);
   const parsed = parseUnifiedDiff(diff);
   const picked = resolvePick(diff, pick);
   const patch = "hunks" in pick && opts.viaHunks !== false
@@ -444,7 +474,7 @@ function runOp(ctx: { repo: string; file: string }, op: Op, pick: Pick, opts: Ru
   const beforeIndexFile = readIndexFile(repo);
   const beforeIndex = o.cached ? (cachedBlob !== undefined ? cachedBlob : readIndex(repo, file)) : null;
   const beforeWork = readWork(repo, file);
-  const r = applyPatch(repo, patch, o.cached, o.reverse, mode);
+  const r = applyPatch(repo, patch, o.cached, o.reverse, mode, encoding);
   const afterIndexFile = readIndexFile(repo);
   const afterWork = readWork(repo, file);
 
@@ -463,7 +493,7 @@ function runOp(ctx: { repo: string; file: string }, op: Op, pick: Pick, opts: Ru
     ? buf(opts.expected)
     : opts.expectedFrom !== undefined
       ? opts.expectedFrom(diff, base, picked)
-      : Buffer.from(oracle(diff, base.toString("utf8"), picked, o.reverse), "utf8");
+      : Buffer.from(oracle(diff, base.toString(encoding), picked, o.reverse), encoding);
   const actual = target === "index" ? readIndex(repo, file) : afterWork;
   // 결과 파일이 완전히 비면 git은 인덱스 항목을 지울 수도 있다(삭제 패치). 내용 비교는 빈 버퍼로 맞춘다
   if (!eqBuf(actual ?? Buffer.alloc(0), expected, `${target} content after ${op} == oracle`)) {
@@ -1088,39 +1118,68 @@ scenario("intent-to-add file: stage some lines", () => {
   runOp(ctx, "stage", { lines: ["+a"] });
 });
 
-// UTF-8이 아닌 파일 (audit-patch H4). 엔진은 바이트를 모른다. DiffPanel이 hasLossyDecoding으로 버튼을 숨긴다
-scenario("non-UTF-8 (Latin-1) bytes in context: refused, nothing changes", () => {
-  const head = Buffer.from("caf\xe9 one\nline2\nline3\nline4\n", "latin1");
-  const work = Buffer.from("caf\xe9 one\nline2\nline3\nna\xefve add\nline4\n", "latin1");
-  const ctx = makeRepo({ head, work });
-  const diff = wipDiff(ctx.repo, ctx.file, "unstaged");
-  const r = applyPatch(ctx.repo, buildPatch(parseUnifiedDiff(diff), [0], false), true, false);
-  const idx = readIndex(ctx.repo, ctx.file);
-  check(!r.ok || (idx !== null && idx.equals(work)), "Latin-1 bytes either staged verbatim or refused (never U+FFFD)",
-    `  apply ok=${r.ok}\n  index bytes: ${idx?.toString("hex")}\n  work bytes:  ${work.toString("hex")}`);
-});
-scenario("non-UTF-8 (Latin-1) bytes only in the added line", () => {
-  const head = Buffer.from("a\nb\nc\nd\ne\nf\n", "latin1");
-  const work = Buffer.from("a\nb\nc\nna\xefve\nd\ne\nf\n", "latin1");
-  const ctx = makeRepo({ head, work });
-  const diff = wipDiff(ctx.repo, ctx.file, "unstaged");
-  const r = applyPatch(ctx.repo, buildPatch(parseUnifiedDiff(diff), [0], false), true, false);
-  const idx = readIndex(ctx.repo, ctx.file);
-  check(!r.ok || (idx !== null && idx.equals(work)), "Latin-1 added line staged verbatim or refused (never U+FFFD)",
-    `  apply ok=${r.ok}\n  index bytes: ${idx?.toString("hex")}\n  work bytes:  ${work.toString("hex")}`);
-}, KNOWN.H4);
-scenario("non-UTF-8 guard: hasLossyDecoding flags lossy diffs and only those", () => {
-  const cases: [string, Buffer, Buffer, boolean][] = [
-    ["Latin-1 added line", Buffer.from("a\nb\n", "latin1"), Buffer.from("a\nna\xefve\nb\n", "latin1"), true],
-    ["EUC-KR added line", Buffer.from("a\nb\n"), Buffer.concat([Buffer.from("a\n"), Buffer.from([0xc7, 0xd1, 0xb1, 0xdb, 0x0a]), Buffer.from("b\n")]), true],
-    ["UTF-8 Korean and emoji", Buffer.from("a\nb\n"), Buffer.from("a\n한글 😀\nb\n"), false],
-    ["ASCII", Buffer.from("a\nb\n"), Buffer.from("a\nc\nb\n"), false],
+// UTF-8이 아닌 파일 (audit-patch H4). v0.16.1부터 Rust가 diff를 latin1로 디코딩해 encoding과 함께 보내고,
+// git_apply_patch가 같은 encoding으로 글자를 바이트로 되돌린다. 엔진은 문자열만 자르고 붙이므로 바이트가 보존된다.
+// 아래는 비ASCII 바이트가 + 줄, - 줄, context에 있는 경우를 세 방향으로 전부 돌리고 결과 바이트를 오라클과 비교한다
+const latin1Bytes = (...xs: string[]) => Buffer.from(lines(...xs), "latin1");
+/** EUC-KR "한글"(c7 d1 b1 db), "가나"(b0 a1 b3 aa). UTF-8로는 잘못된 바이트열이다 */
+const HAN = Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]).toString("latin1");
+const GANA = Buffer.from([0xb0, 0xa1, 0xb3, 0xaa]).toString("latin1");
+const NON_UTF8_CASES: [string, Buffer, Buffer][] = [
+  ["Latin-1 in added line", latin1Bytes("a", "b", "c", "d", "e"), latin1Bytes("a", "b", "na\xefve", "c", "d", "e")],
+  ["Latin-1 in deleted line", latin1Bytes("a", "b", "caf\xe9", "c", "d"), latin1Bytes("a", "b", "c", "d")],
+  ["Latin-1 in context", latin1Bytes("caf\xe9", "b", "c", "\xfcber"), latin1Bytes("caf\xe9", "B", "c", "\xfcber")],
+  ["Latin-1 everywhere", latin1Bytes("caf\xe9", "old \xff", "\xa0nbsp", "z"), latin1Bytes("caf\xe9", "new \xe0", "\xa0nbsp", "z \x85")],
+  ["EUC-KR in added line", latin1Bytes("a", "b", "c"), latin1Bytes("a", `${HAN} add`, "b", "c")],
+  ["EUC-KR in deleted line", latin1Bytes("a", `${HAN}`, "b", "c"), latin1Bytes("a", "b", "c")],
+  ["EUC-KR in context and change", latin1Bytes(`// ${HAN}`, "x = 1", `// ${GANA}`), latin1Bytes(`// ${HAN}`, `x = 2 ${GANA}`, `// ${GANA}`)],
+  // 같은 diff에 UTF-8 한글과 EUC-KR이 섞이면 전체가 latin1이 된다. UTF-8 바이트도 그대로 돌아와야 한다
+  ["UTF-8 Korean context with EUC-KR added", Buffer.concat([Buffer.from("한글\nb\n"), latin1Bytes("c")]), Buffer.concat([Buffer.from("한글\nb\n"), latin1Bytes(`${HAN}`, "c")])],
+  // CRLF 파일: "\r"은 줄 내용이라 latin1에서도 그대로 남아야 한다
+  ["Latin-1 CRLF", Buffer.from(crlf("a", "caf\xe9", "c"), "latin1"), Buffer.from(crlf("a", "caf\xe9", "na\xefve", "C"), "latin1")],
+];
+for (const [label, head, work] of NON_UTF8_CASES) {
+  scenario(`non-UTF-8 ${label}: diff is latin1`, () => {
+    for (const op of ALL_OPS) {
+      const ctx = repoFor(specFor(op, head, work));
+      const d = wipDiffOf(ctx.repo, ctx.file, OPS[op].area);
+      check(d.encoding === "latin1", `${op}: get_wip_file_diff encoding is latin1`, `got ${d.encoding}`);
+      check(!hasLossyDecoding(d.text), `${op}: latin1 diff has no U+FFFD`);
+    }
+  });
+  // exhaustive가 전체 hunk와 변경 줄의 모든 부분집합을 세 방향으로 돌린다. runOp가 결과 바이트를 오라클과 비교한다
+  exhaustive(`non-UTF-8 ${label}`, head, work);
+  scenario(`non-UTF-8 ${label}: whole hunk round trip is byte exact`, () => {
+    for (const op of ALL_OPS) {
+      const ctx = repoFor(specFor(op, head, work));
+      runOp(ctx, op, { hunks: [0] }, { expected: op === "stage" ? work : head });
+    }
+  });
+}
+scenario("non-UTF-8 guard: utf8 diffs keep the lossy check", () => {
+  const cases: [string, Buffer, Buffer, Encoding][] = [
+    ["Latin-1 added line", Buffer.from("a\nb\n", "latin1"), Buffer.from("a\nna\xefve\nb\n", "latin1"), "latin1"],
+    ["EUC-KR added line", Buffer.from("a\nb\n"), Buffer.concat([Buffer.from("a\n"), Buffer.from([0xc7, 0xd1, 0xb1, 0xdb, 0x0a]), Buffer.from("b\n")]), "latin1"],
+    ["UTF-8 Korean and emoji", Buffer.from("a\nb\n"), Buffer.from("a\n한글 😀\nb\n"), "utf8"],
+    ["ASCII", Buffer.from("a\nb\n"), Buffer.from("a\nc\nb\n"), "utf8"],
   ];
-  for (const [label, head, work, lossy] of cases) {
+  for (const [label, head, work, encoding] of cases) {
     const ctx = makeRepo({ head, work });
-    const diff = wipDiff(ctx.repo, ctx.file, "unstaged");
-    check(hasLossyDecoding(diff) === lossy, `${label}: hasLossyDecoding === ${lossy}`, diff);
+    const d = wipDiffOf(ctx.repo, ctx.file, "unstaged");
+    check(d.encoding === encoding, `${label}: encoding === ${encoding}`, `got ${d.encoding}`);
+    // 예전 경로(손실 UTF-8 디코딩)로 같은 diff를 읽으면 비UTF-8만 U+FFFD가 생긴다. DiffPanel은 utf8일 때만 이 검사로 막는다
+    const lossyText = Buffer.from(d.text, d.encoding).toString("utf8");
+    check(hasLossyDecoding(lossyText) === (encoding === "latin1"), `${label}: lossy UTF-8 decode flagged only for non-UTF-8`);
   }
+});
+scenario("latin1 patch with a character above U+00FF is refused (Rust Err), nothing changes", () => {
+  const ctx = makeRepo({ head: latin1Bytes("a", "b"), work: latin1Bytes("a", "caf\xe9", "b") });
+  const d = wipDiffOf(ctx.repo, ctx.file, "unstaged");
+  const before = readIndexFile(ctx.repo);
+  const patch = buildPatch(parseUnifiedDiff(d.text), [0], false).replace("caf\xe9", "caf\u20ac");
+  const r = applyPatch(ctx.repo, patch, true, false, "rust", d.encoding);
+  check(!r.ok, "apply refused");
+  eqBuf(readIndexFile(ctx.repo), before, "index untouched");
 });
 scenario("non-UTF-8 file, change far from non-ASCII line", () => {
   const head = Buffer.from("a\nb\nc\nd\ne\nf\ng\nh\ncaf\xe9\n", "latin1");
