@@ -6,10 +6,15 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import App from "../App";
 import { makeMockGraph } from "../graph";
 import type {
+  BlameHunk,
+  BlameResult,
   CommitDetails,
   CommitRow,
+  CommitSummary,
+  CompareResult,
   ConflictFile,
   FileChange,
+  FileHistoryEntry,
   GraphData,
   OpResult,
   PendingOp,
@@ -470,6 +475,164 @@ function mockSearch(query: string, limit: number): SearchMatch[] {
     }
   }
   return out;
+}
+
+// ── v0.18 파일 히스토리, blame, 비교 ─────────────────────────
+// 커밋은 전부 그래프의 실제 행에서 고른다. 화면에서 커밋을 누르면 그래프 점프까지 이어져야 해서다
+
+/** 첫 페이지(COMMITS_PER_PAGE=5000) 밖 커밋. blame 점프가 search_commits 경로를 타는지 본다 */
+const BEYOND_FIRST_PAGE = 5200;
+const UNCOMMITTED_SHA = "0".repeat(40);
+/** `?compareUnrelated=1`: 공통 조상이 없는 두 히스토리 비교 */
+const COMPARE_UNRELATED =
+  new URLSearchParams(window.location.search).get("compareUnrelated") === "1";
+
+function commitRows(): CommitRow[] {
+  return mockGraph(1000, 0).rows.filter((row) => row.parents.length === 1);
+}
+
+function summaryOf(row: CommitRow): CommitSummary {
+  return {
+    sha: row.sha,
+    shortSha: row.sha.slice(0, 7),
+    subject: row.subject,
+    author: row.author,
+    timestamp: row.timestamp,
+  };
+}
+
+/** "src/graph/lane-layout.ts" -> "src/graph/old-lane-layout.ts". rename 이전 경로를 흉내낸다 */
+function renamedFrom(file: string): string {
+  if (file === "src/graph/lane-layout.ts") {
+    return "src/graph/layout.ts";
+  }
+  const cut = file.lastIndexOf("/");
+  return `${file.slice(0, cut + 1)}old-${file.slice(cut + 1)}`;
+}
+
+/**
+ * 14개 항목. 최신 5개는 지금 경로, 6번째에서 rename(R, oldPath 있음), 그 뒤는 옛 경로, 마지막은 추가(A).
+ * rev가 있으면 그 커밋 위치부터 거슬러 올라간다
+ */
+function mockFileHistory(file: string, rev: string | null, limit: number): FileHistoryEntry[] {
+  const rows = commitRows();
+  const from = rev === null ? 0 : Math.max(0, rows.findIndex((row) => row.sha === rev));
+  const oldPath = renamedFrom(file);
+  const out: FileHistoryEntry[] = [];
+  const step = 3 + (hashOf(file) % 5);
+  for (let i = 0; i < 14 && out.length < limit; i++) {
+    const row = rows[(from + i * step) % rows.length];
+    const renamedHere = i === 5;
+    const before = i > 5;
+    out.push({
+      ...summaryOf(row),
+      authorEmail: row.authorEmail,
+      path: before ? oldPath : file,
+      oldPath: renamedHere ? oldPath : null,
+      status: i === 13 ? "A" : renamedHere ? "R" : "M",
+    });
+  }
+  return out;
+}
+
+/**
+ * 구간 길이 1~12줄로 커밋을 번갈아 배치한다. 같은 커밋이 떨어진 두 구간에 다시 나오고,
+ * 한 구간은 첫 페이지 밖 커밋이다. rev가 null(워킹트리)이면 두 구간이 커밋 안 된 줄이다
+ */
+function mockBlame(file: string, rev: string | null): BlameResult {
+  if (file === BINARY_FILE) {
+    throw "binary";
+  }
+  const lines = mockFileContent(file).split("\n");
+  const rows = commitRows();
+  const far = mockGraph(BEYOND_FIRST_PAGE + 200, 0).rows[BEYOND_FIRST_PAGE];
+  const hunks: BlameHunk[] = [];
+  let line = 1;
+  let n = 0;
+  const seed = hashOf(file);
+  while (line <= lines.length) {
+    const count = Math.min(1 + ((seed >>> (n % 24)) + n * 7) % 12, lines.length - line + 1);
+    const uncommitted = rev === null && (n === 3 || n === 11);
+    const row = n === 6 ? far : rows[((n % 9) * 11 + (seed % 17)) % rows.length];
+    hunks.push(
+      uncommitted
+        ? {
+            sha: UNCOMMITTED_SHA,
+            shortSha: UNCOMMITTED_SHA.slice(0, 7),
+            author: "Not Committed Yet",
+            authorEmail: "not.committed.yet",
+            timestamp: Math.floor(Date.now() / 1000),
+            summary: "Uncommitted changes",
+            startLine: line,
+            lineCount: count,
+            uncommitted: true,
+          }
+        : {
+            sha: row.sha,
+            shortSha: row.sha.slice(0, 7),
+            author: row.author,
+            authorEmail: row.authorEmail,
+            timestamp: row.timestamp,
+            summary: row.subject,
+            startLine: line,
+            lineCount: count,
+            uncommitted: false,
+          },
+    );
+    line += count;
+    n += 1;
+  }
+  return { lines, hunks };
+}
+
+/** ref 이름이나 sha를 그래프 행 위치로 바꾼다. 모르는 이름은 이름에서 위치를 뽑는다 */
+function compareAnchor(name: string): number {
+  const rows = commitRows();
+  const bySha = rows.findIndex((row) => row.sha === name);
+  if (bySha >= 0) {
+    return bySha;
+  }
+  const ref = mockRefs().find((entry) => entry.name === name);
+  const byRef = ref === undefined ? -1 : rows.findIndex((row) => row.sha === ref.sha);
+  return byRef >= 0 ? byRef : hashOf(name) % 200;
+}
+
+/**
+ * 갈라진 두 브랜치. 각 쪽의 고유 커밋은 자기 위치부터 아래로 몇 개, 공통 조상은 둘보다 더 아래.
+ * base와 head를 맞바꾸면 두 목록도 그대로 맞바뀐다(같은 쌍에서 결정적으로 만든다)
+ */
+function mockCompare(base: string, head: string, limit: number): CompareResult {
+  if (base === head) {
+    return { base, head, mergeBase: null, onlyInHead: [], onlyInBase: [], truncated: false, files: [] };
+  }
+  const rows = commitRows();
+  const side = (name: string, count: number): CommitSummary[] => {
+    const at = compareAnchor(name);
+    const out: CommitSummary[] = [];
+    for (let i = 0; i < count; i++) {
+      out.push(summaryOf(rows[(at + i * 2 + 1) % rows.length]));
+    }
+    return out;
+  };
+  // 개수는 이름에만 기댄다. 역할(base/head)에 기대면 맞바꿨을 때 목록 길이가 달라진다
+  const count = (name: string) => (COMPARE_UNRELATED ? 25 : 1) + (hashOf(name) % 6);
+  const headCount = count(head);
+  const baseCount = count(base);
+  const onlyInHead = side(head, headCount);
+  const onlyInBase = side(base, baseCount);
+  const lowest = Math.max(compareAnchor(base), compareAnchor(head));
+  const files = COMPARE_UNRELATED
+    ? mockFiles(hashOf(head)).map((file) => ({ ...file, status: "A" as const, oldPath: null, deletions: 0 }))
+    : mockFiles(hashOf([base, head].sort().join("\u0000"))).filter((_, i) => i !== 6);
+  return {
+    base,
+    head,
+    mergeBase: COMPARE_UNRELATED ? null : rows[(lowest + 30) % rows.length].sha,
+    onlyInHead: onlyInHead.slice(0, limit),
+    onlyInBase: onlyInBase.slice(0, limit),
+    truncated: onlyInHead.length > limit || onlyInBase.length > limit,
+    files,
+  };
 }
 
 function mockFiles(seed: number): FileChange[] {
@@ -1811,6 +1974,37 @@ mockIPC(async (cmd, payload) => {
       const oldFileArg = readArg(payload, "oldFile");
       const oldFile = typeof oldFileArg === "string" ? oldFileArg : null;
       return mockDiff(file, oldFile);
+    }
+
+    // ── v0.18 파일 히스토리, blame, 비교 ──────────────────
+    case "get_file_history": {
+      await sleep(140);
+      const file = String(readArg(payload, "file") ?? "");
+      const revArg = readArg(payload, "rev");
+      const limit = Number(readArg(payload, "limit") ?? 1000);
+      return mockFileHistory(file, typeof revArg === "string" ? revArg : null, limit);
+    }
+
+    case "get_blame": {
+      await sleep(180);
+      const file = String(readArg(payload, "file") ?? "");
+      const revArg = readArg(payload, "rev");
+      return mockBlame(file, typeof revArg === "string" ? revArg : null);
+    }
+
+    case "compare_refs": {
+      await sleep(160);
+      const base = String(readArg(payload, "base") ?? "");
+      const head = String(readArg(payload, "head") ?? "");
+      const limit = Number(readArg(payload, "limit") ?? 1000);
+      return mockCompare(base, head, limit);
+    }
+
+    case "get_compare_file_diff": {
+      await sleep(90);
+      const file = String(readArg(payload, "file") ?? "");
+      const oldFileArg = readArg(payload, "oldFile");
+      return mockDiff(file, typeof oldFileArg === "string" ? oldFileArg : null);
     }
 
     // plugin-dialog의 open()은 이 command로 내려온다

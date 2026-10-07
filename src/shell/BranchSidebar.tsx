@@ -57,6 +57,8 @@ export interface BranchSidebarProps {
   onOpenWorktree?: (path: string) => void;
   /** ref 드래그 시작/종료. ui-hub가 그래프 캔버스의 드롭 타깃을 켜는 데 쓴다 */
   onRefDragStateChange?: (payload: RefDragPayload | null) => void;
+  /** 브랜치 우클릭 "Compare with current branch" (v0.18). 인자는 그 브랜치 이름(head) */
+  onCompareWithCurrent?: (name: string) => void;
 }
 
 interface RemoteGroup {
@@ -298,6 +300,7 @@ export function BranchSidebar({
   onRequestDialog,
   onOpenWorktree,
   onRefDragStateChange,
+  onCompareWithCurrent,
 }: BranchSidebarProps) {
   // refs에 안 잡히는 remote(방금 추가해 아직 fetch 안 한 것)도 헤더는 보여야 Fetch를 누를 수 있다
   const all = useMemo<Grouped>(() => {
@@ -764,6 +767,7 @@ export function BranchSidebar({
           onCopyName={onCopyRefName}
           onOpenOnRemote={onOpenRefOnRemote}
           onJumpToCommit={onSelectRef}
+          onCompareWithCurrent={onCompareWithCurrent}
           onOpenWorktree={onOpenWorktree}
           onClose={() => setMenu(null)}
         />
