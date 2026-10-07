@@ -357,6 +357,14 @@ export function gitPendingAction(
   return invoke<OpResult>("git_pending_action", { path, kind, action });
 }
 
+/**
+ * 인터랙티브 리베이스 에디터의 초기 목록. `base..HEAD`를 git이 계산해 todo 순서(오래된 것이 먼저)로 준다.
+ * base가 HEAD의 조상이 아니거나 범위에 머지 커밋이 있으면 Err(사람이 읽을 이유)
+ */
+export function getRebaseSteps(path: string, base: string): Promise<RebaseStep[]> {
+  return invoke<RebaseStep[]>("get_rebase_steps", { path, base });
+}
+
 /** steps 순서가 곧 적용 순서 (위 -> 아래 = 과거 -> 현재). Windows는 Err */
 export function gitRebaseInteractive(
   path: string,
@@ -411,17 +419,33 @@ export function gitStashPush(
   });
 }
 
+/*
+ * 스태시 3종의 sha는 그 행을 그릴 때 본 StashInfo.sha다 (v0.16). Rust가 실행 직전에
+ * `rev-parse <ref>`와 비교해, 다른 곳에서 스태시가 추가/삭제되어 stash@{N} 번호가 밀렸으면
+ * 엉뚱한 스태시를 건드리지 않고 ok=false로 돌아온다. null이면 확인 없이 ref대로 실행한다
+ */
+
 /** drop=true가 pop이다 */
-export function gitStashApply(path: string, ref: string, drop: boolean): Promise<OpResult> {
-  return invoke<OpResult>("git_stash_apply", { path, ref, drop });
+export function gitStashApply(
+  path: string,
+  ref: string,
+  sha: string | null,
+  drop: boolean,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_stash_apply", { path, ref, sha, drop });
 }
 
-export function gitStashDrop(path: string, ref: string): Promise<OpResult> {
-  return invoke<OpResult>("git_stash_drop", { path, ref });
+export function gitStashDrop(path: string, ref: string, sha: string | null): Promise<OpResult> {
+  return invoke<OpResult>("git_stash_drop", { path, ref, sha });
 }
 
-export function gitStashBranch(path: string, ref: string, name: string): Promise<OpResult> {
-  return invoke<OpResult>("git_stash_branch", { path, ref, name });
+export function gitStashBranch(
+  path: string,
+  ref: string,
+  sha: string | null,
+  name: string,
+): Promise<OpResult> {
+  return invoke<OpResult>("git_stash_branch", { path, ref, sha, name });
 }
 
 // ── remote ─────────────────────────────────────────────────

@@ -347,8 +347,118 @@ export function buildLinePatch(
   if (out.length === 0) {
     return "";
   }
+  const header = partialFileHeader(parsed.fileHeader, reverse, coversWholeFile(parsed, selected));
   // git apply는 마지막 줄도 개행으로 끝나야 받아들인다
-  return [...parsed.fileHeader, ...out].join("\n") + "\n";
+  return [...header, ...out].join("\n") + "\n";
+}
+
+/** 모든 hunk의 모든 변경 줄을 골랐는가. 고른 결과가 파일 단위 동작과 같아지는 경우다 */
+function coversWholeFile(parsed: ParsedDiff, selected: ReadonlySet<string>): boolean {
+  return parsed.hunks.every((hunk, hunkIndex) =>
+    hunk.lines.every(
+      (line, index) =>
+        (line.kind !== "add" && line.kind !== "del") || selected.has(lineKey(hunkIndex, index)),
+    ),
+  );
+}
+
+/** "--- a/경로" / "+++ b/경로"의 경로 부분. 따옴표로 감싼 경로("a/q\"x")도 접두만 바꾼다 */
+function swapPrefix(path: string, from: "a/" | "b/", to: "a/" | "b/"): string {
+  if (path.startsWith(`"${from}`)) {
+    return `"${to}${path.slice(from.length + 1)}`;
+  }
+  if (path.startsWith(from)) {
+    return to + path.slice(from.length);
+  }
+  return path;
+}
+
+/**
+ * 부분 패치에 붙일 파일 헤더. 원본 헤더를 그대로 복사하면 두 경우에 git apply가 거절하거나 과하게 적용한다.
+ *
+ * 1. new/deleted 헤더 (audit-patch M1). git apply 2.50으로 실험한 결과:
+ *    - 정방향 "deleted file" + 일부 줄: "deleted file f.txt still has contents"로 거절
+ *    - 역방향 "new file" + 일부 줄: "new file f.txt depends on old contents"로 거절
+ *    - 정방향 "new file" + 일부 줄(새 파일의 일부만 stage), 역방향 "deleted file" + 일부 줄
+ *      (삭제의 일부만 되살림)은 고른 줄만 담은 파일 생성이라 그대로 맞다
+ *    거절되는 두 경우는 결과 쪽 파일이 여전히 존재하므로 일반 수정 패치가 맞다.
+ *    "new file mode"/"deleted file mode" 줄을 빼고 /dev/null 자리에 반대쪽 경로를 넣으면 적용된다.
+ *    모드는 대상(인덱스나 워킹트리)의 기존 모드를 그대로 따르는 것도 확인했다(100755 새 파일 부분 unstage 후 100755).
+ *    "index" 줄의 해시는 파일 전체 기준이라 부분 패치와 맞지 않아 같이 뺀다(git apply는 --3way가 아니면 쓰지 않는다).
+ *    모든 변경 줄을 고르면 파일 단위 동작(인덱스에서 제거, 삭제 stage)과 같아야 하므로 원본 헤더를 둔다.
+ * 2. "old mode"/"new mode" (audit-patch L1). 남기면 hunk 하나만 stage해도 chmod까지 stage된다.
+ *    모드 변경은 파일 단위 stage에서만 다루므로(git add -p가 모드를 따로 묻는 것과 같은 이유) 늘 뺀다.
+ *    빼면 git apply는 대상의 현재 모드를 유지한다.
+ * 3. rename 헤더 (audit-patch M2 후속). staged diff는 원 경로를 pathspec에 함께 넣어 rename으로 나온다
+ *    (commands.rs get_wip_file_diff). git apply 2.50으로 실험한 결과:
+ *    - 역방향 rename 헤더 + 일부 줄: 고른 줄과 함께 rename까지 되돌린다(--cached면 "MD old.txt"가 되고
+ *      new.txt가 인덱스에서 빠진다). 사용자는 줄만 내렸는데 파일 이동이 풀린다
+ *    - 헤더를 "diff --git a/<새경로> b/<새경로>", "--- a/<새경로>", "+++ b/<새경로>"로 바꾸고
+ *      "similarity index", "rename from/to", "index" 줄을 빼면 rename은 남고 고른 줄만 내려간다.
+ *      워킹트리 대상(discard)도 같다
+ *    - 정방향 rename 헤더 + 일부 줄: rename과 고른 줄만 stage된다. 같은 재작성은 "new.txt: does not exist
+ *      in index"로 거절된다(적용 대상 쪽에 새 경로가 아직 없다). new file 정방향 부분 stage와 같은 이유로 그대로 둔다.
+ *      앱의 unstaged diff에는 rename이 나오지 않으므로 방어용이다
+ *    모든 변경 줄을 고른 역방향은 rename까지 되돌린다. 파일 단위 unstage(원 경로까지 인덱스로 되돌리는
+ *    ops/stage.rs with_rename_sources)와 같은 결과라 원본 헤더를 둔다.
+ *    copy 헤더는 오지 않는다. diff에 -C가 없고 staged_renames도 R만 짝짓는다.
+ */
+function partialFileHeader(fileHeader: string[], reverse: boolean, wholeFile: boolean): string[] {
+  const header = fileHeader.filter((line) => !line.startsWith("old mode ") && !line.startsWith("new mode "));
+  if (reverse && !wholeFile && header.some((line) => line.startsWith("rename from "))) {
+    return renameToModification(header);
+  }
+  const isNew = header.some((line) => line.startsWith("new file mode "));
+  const isDeleted = header.some((line) => line.startsWith("deleted file mode "));
+  // 정방향은 new 쪽, 역방향은 old 쪽이 결과가 된다. 그 쪽이 /dev/null인데 내용이 남는 경우만 고친다
+  const toModification = !wholeFile && ((isNew && reverse) || (isDeleted && !reverse));
+  if (!toModification) {
+    return header;
+  }
+  const oldPath = header.find((line) => line.startsWith("--- "))?.slice(4);
+  const newPath = header.find((line) => line.startsWith("+++ "))?.slice(4);
+  return header
+    .filter(
+      (line) =>
+        !line.startsWith("new file mode ") && !line.startsWith("deleted file mode ") && !line.startsWith("index "),
+    )
+    .map((line) => {
+      if (line === "--- /dev/null" && newPath !== undefined) {
+        return `--- ${swapPrefix(newPath, "b/", "a/")}`;
+      }
+      if (line === "+++ /dev/null" && oldPath !== undefined) {
+        return `+++ ${swapPrefix(oldPath, "a/", "b/")}`;
+      }
+      return line;
+    });
+}
+
+/** rename 헤더를 새 경로끼리의 일반 수정 헤더로 바꾼다. 근거는 partialFileHeader 주석 3번 */
+function renameToModification(header: string[]): string[] {
+  const newPath = header.find((line) => line.startsWith("+++ "))?.slice(4);
+  if (newPath === undefined) {
+    return header;
+  }
+  const oldSide = swapPrefix(newPath, "b/", "a/");
+  return header
+    .filter(
+      (line) =>
+        !line.startsWith("similarity index ") &&
+        !line.startsWith("dissimilarity index ") &&
+        !line.startsWith("rename from ") &&
+        !line.startsWith("rename to ") &&
+        !line.startsWith("index "),
+    )
+    .map((line) => {
+      if (line.startsWith("diff --git ")) {
+        // 공백이 든 경로는 ---/+++ 끝에 탭이 붙는다. diff --git 줄에는 탭이 없다
+        return `diff --git ${oldSide.replace(/\t$/, "")} ${newPath.replace(/\t$/, "")}`;
+      }
+      if (line.startsWith("--- ")) {
+        return `--- ${oldSide}`;
+      }
+      return line;
+    });
 }
 
 // ── 입출력 예시 ──────────────────────────────────────────────

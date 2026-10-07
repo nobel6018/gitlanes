@@ -73,55 +73,88 @@ pub fn parse_left_right(out: &str) -> Option<(u32, u32)> {
 /// 리베이스를 먼저 본다. 리베이스 도중 충돌이 나면 git이 내부적으로 cherry-pick을 쓰기
 /// 때문에 `CHERRY_PICK_HEAD`가 함께 존재할 수 있다. 순서를 뒤집으면 리베이스가
 /// 체리픽으로 보이고, 프론트가 `--continue` 대신 엉뚱한 명령을 보낸다.
+///
+/// 표식이 하나도 없어도 unmerged 파일이 있으면 [`PendingKind::Conflicts`]다. squash 머지와
+/// stash pop/apply 충돌은 표식을 남기지 않는데, None을 돌려주면 충돌 패널이 뜨지 않아
+/// 마커가 든 파일이 평범한 수정으로만 보인다.
 pub fn detect_pending(repo: &str) -> Option<PendingOp> {
     let dir = git_dir(repo)?;
     let conflict_count = collect_conflicts(repo).len() as u32;
+    let pending = |kind, progress, detail| {
+        Some(PendingOp {
+            kind,
+            progress,
+            conflict_count,
+            detail,
+        })
+    };
 
     // rebase -i와 rebase --merge는 rebase-merge/, `git am` 기반 경로는 rebase-apply/를 쓴다
     if dir.join("rebase-merge").is_dir() {
-        return Some(PendingOp {
-            kind: PendingKind::Rebase,
-            progress: progress_of(&dir, "rebase-merge", "msgnum", "end"),
-            conflict_count,
-            detail: head_name(&dir.join("rebase-merge").join("head-name")),
-        });
+        return pending(
+            PendingKind::Rebase,
+            progress_of(&dir, "rebase-merge", "msgnum", "end"),
+            head_name(&dir.join("rebase-merge").join("head-name")),
+        );
     }
-    if dir.join("rebase-apply").is_dir() {
-        // rebase-apply는 `git am` 도 쓴다. applying 파일이 있으면 리베이스가 아니지만
-        // 프론트에서 할 일(continue/abort/skip)이 같아 구분하지 않는다.
-        return Some(PendingOp {
-            kind: PendingKind::Rebase,
-            progress: progress_of(&dir, "rebase-apply", "next", "last"),
-            conflict_count,
-            detail: head_name(&dir.join("rebase-apply").join("head-name")),
-        });
+    let apply = dir.join("rebase-apply");
+    if apply.is_dir() {
+        // `git am`도 rebase-apply/를 쓰고 applying 파일로 구분된다. rebase 명령을 보내면
+        // "It looks like 'git am' is in progress"로 거절되어 Continue/Abort가 먹지 않는다.
+        if apply.join("applying").is_file() {
+            return pending(
+                PendingKind::Am,
+                progress_of(&dir, "rebase-apply", "next", "last"),
+                None,
+            );
+        }
+        return pending(
+            PendingKind::Rebase,
+            progress_of(&dir, "rebase-apply", "next", "last"),
+            head_name(&apply.join("head-name")),
+        );
     }
     if dir.join("MERGE_HEAD").is_file() {
-        return Some(PendingOp {
-            kind: PendingKind::Merge,
-            progress: None,
-            conflict_count,
-            detail: read_trimmed(&dir.join("MERGE_MSG"))
+        return pending(
+            PendingKind::Merge,
+            None,
+            read_trimmed(&dir.join("MERGE_MSG"))
                 .and_then(|msg| msg.lines().next().map(str::to_string)),
-        });
+        );
     }
     if dir.join("CHERRY_PICK_HEAD").is_file() {
-        return Some(PendingOp {
-            kind: PendingKind::CherryPick,
-            progress: None,
-            conflict_count,
-            detail: None,
-        });
+        return pending(PendingKind::CherryPick, None, None);
     }
     if dir.join("REVERT_HEAD").is_file() {
-        return Some(PendingOp {
-            kind: PendingKind::Revert,
-            progress: None,
-            conflict_count,
-            detail: None,
-        });
+        return pending(PendingKind::Revert, None, None);
+    }
+    // 범위 cherry-pick/revert 도중 커밋 상자로 커밋하면 *_HEAD는 사라지고 sequencer만
+    // 남는다. 여기서 None이면 남은 커밋이 적용되지 않은 채 배너가 사라진다.
+    if let Some(kind) = sequencer_kind(&dir) {
+        return pending(kind, None, None);
+    }
+    if conflict_count > 0 {
+        return pending(PendingKind::Conflicts, None, None);
     }
     None
+}
+
+/// `sequencer/todo`의 첫 동작으로 cherry-pick과 revert를 가른다.
+///
+/// git은 todo에 `pick`/`revert`를 축약 없이 쓴다. 엉뚱한 쪽 명령을 보내면 git이
+/// "cannot cherry-pick during a revert"로 거절하므로 첫 줄로 가려야 한다. 줄을 못 읽으면
+/// (todo가 비어 있는 등) 더 흔한 cherry-pick으로 둔다.
+fn sequencer_kind(dir: &Path) -> Option<PendingKind> {
+    let todo = std::fs::read_to_string(dir.join("sequencer").join("todo")).ok()?;
+    let first = todo
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .and_then(|line| line.split_whitespace().next());
+    match first {
+        Some("revert") => Some(PendingKind::Revert),
+        _ => Some(PendingKind::CherryPick),
+    }
 }
 
 /// "3/12" 형태의 진행도. 둘 중 하나라도 못 읽으면 None이다.
@@ -246,5 +279,129 @@ mod tests {
         assert_eq!(detect_pending(&repo.path()), None);
 
         let _ = std::fs::remove_dir_all(&linked);
+    }
+
+    /// 실패가 정상인 git 명령(충돌하는 머지 등). TempRepo::git의 성공 단정을 피한다.
+    fn git_may_fail(repo: &TempRepo, args: &[&str]) {
+        let _ = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(args)
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn 새_pending_kind는_계약의_이름으로_직렬화된다() {
+        // 프론트가 이 문자열을 그대로 git_pending_action에 되돌려 보낸다
+        assert_eq!(serde_json::to_value(PendingKind::Am).unwrap(), "am");
+        assert_eq!(
+            serde_json::to_value(PendingKind::Conflicts).unwrap(),
+            "conflicts"
+        );
+    }
+
+    #[test]
+    fn squash_머지_충돌은_conflicts로_보인다() {
+        let repo = TempRepo::init("gitlanes-pending-squash");
+        let branch = conflicting(&repo);
+        git_may_fail(&repo, &["merge", "--squash", branch]);
+
+        // squash는 MERGE_HEAD를 남기지 않는다. 표식이 없어도 충돌은 보여야 한다
+        let pending = detect_pending(&repo.path()).expect("충돌이 보여야 한다");
+        assert_eq!(pending.kind, PendingKind::Conflicts);
+        assert_eq!(pending.conflict_count, 1);
+    }
+
+    #[test]
+    fn stash_pop_충돌은_conflicts로_보인다() {
+        let repo = TempRepo::init("gitlanes-pending-stash");
+        conflicting(&repo);
+        repo.write("c.txt", "stashed\n");
+        repo.git(&["stash", "push", "-q"]);
+        repo.write("c.txt", "committed\n");
+        repo.git(&["commit", "-qam", "다시 고침"]);
+        git_may_fail(&repo, &["stash", "pop"]);
+
+        let pending = detect_pending(&repo.path()).expect("충돌이 보여야 한다");
+        assert_eq!(pending.kind, PendingKind::Conflicts);
+        assert_eq!(pending.conflict_count, 1);
+    }
+
+    #[test]
+    fn 체리픽_범위_도중_커밋해도_sequencer가_남으면_cherry_pick이다() {
+        let repo = TempRepo::init("gitlanes-pending-sequencer");
+        let branch = conflicting(&repo);
+        repo.git(&["checkout", "-q", branch]);
+        repo.write("s3.txt", "s3\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "s3"]);
+        repo.git(&["checkout", "-q", "main"]);
+
+        // other side(c.txt 충돌), s3 순서로 가져온다
+        git_may_fail(&repo, &["cherry-pick", "other~1", "other"]);
+        assert_eq!(
+            detect_pending(&repo.path()).map(|p| p.kind),
+            Some(PendingKind::CherryPick)
+        );
+
+        // 커밋 상자로 커밋하면 CHERRY_PICK_HEAD는 사라지고 sequencer만 남는다
+        repo.write("c.txt", "resolved\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "resolved"]);
+        let dir = git_dir(&repo.path()).unwrap();
+        assert!(!dir.join("CHERRY_PICK_HEAD").exists());
+        assert!(dir.join("sequencer").join("todo").is_file());
+
+        let pending = detect_pending(&repo.path()).expect("s3가 남아 있다");
+        assert_eq!(pending.kind, PendingKind::CherryPick);
+    }
+
+    #[test]
+    fn 리버트_범위_도중_커밋해도_sequencer가_남으면_revert다() {
+        let repo = TempRepo::init("gitlanes-pending-sequencer-revert");
+        repo.write("a.txt", "1\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("a.txt", "2\n");
+        repo.git(&["commit", "-qam", "two"]);
+        repo.write("a.txt", "3\n");
+        repo.git(&["commit", "-qam", "three"]);
+        repo.write("b.txt", "b\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "b"]);
+
+        // two(HEAD~2)를 되돌리면 three와 같은 줄이라 충돌하고, b(HEAD) 되돌리기가 남는다
+        git_may_fail(&repo, &["revert", "--no-edit", "HEAD~2", "HEAD"]);
+        repo.write("a.txt", "resolved\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "resolved"]);
+
+        let pending = detect_pending(&repo.path()).expect("남은 revert가 있다");
+        assert_eq!(pending.kind, PendingKind::Revert);
+    }
+
+    #[test]
+    fn git_am_진행은_am으로_보인다() {
+        let repo = TempRepo::init("gitlanes-pending-am");
+        let branch = conflicting(&repo);
+        let patches = format!("{}-patches", repo.path());
+        repo.git(&[
+            "format-patch",
+            "-q",
+            "-o",
+            &patches,
+            &format!("main..{branch}"),
+        ]);
+        git_may_fail(
+            &repo,
+            &["am", "-3", &format!("{patches}/0001-other-side.patch")],
+        );
+
+        let pending = detect_pending(&repo.path()).expect("am이 진행 중이어야 한다");
+        assert_eq!(pending.kind, PendingKind::Am);
+        assert_eq!(pending.conflict_count, 1);
+        assert_eq!(pending.progress.as_deref(), Some("1/1"));
+
+        let _ = std::fs::remove_dir_all(&patches);
     }
 }

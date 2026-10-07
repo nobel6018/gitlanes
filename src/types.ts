@@ -236,6 +236,13 @@ export interface OpResult {
   command: string[];
   /** stderr가 인증/권한 실패로 보이면 true. ui-shell이 "터미널에서 실행"을 권한다 */
   needsAuth: boolean;
+  /**
+   * HTTPS 원격이 403으로 거절하면서 밝힌 계정 이름 (v0.16). `remote: Permission to a/b.git
+   * denied to <계정>` 에서 뽑는다. 없으면 null. 여러 GitHub 계정을 credential helper로
+   * 쓰는 사용자가 "다른 계정으로 인증됐다"를 바로 알게 하려는 값이다. 이 경우 터미널로 넘겨도
+   * 같은 helper가 같은 계정을 내놓으므로 needsAuth와 별개로 보여준다
+   */
+  deniedAccount: string | null;
 }
 
 export type PullMode = "ff-only" | "merge" | "rebase";
@@ -254,7 +261,14 @@ export interface SyncState {
   pending: PendingOp | null;
 }
 
-export type PendingKind = "merge" | "rebase" | "cherryPick" | "revert";
+/**
+ * 진행 중인 작업 종류.
+ * - "am": `git am` 진행 중 (v0.16). continue/abort/skip은 `git am --continue` 등으로 보낸다
+ * - "conflicts": 이어갈 작업 없이 충돌만 남은 상태 (v0.16). squash 머지, `stash pop`/`apply` 충돌이
+ *   여기에 해당한다. 해결 UI(ours/theirs/mark resolved)는 보여주되 continue/abort/skip은 숨긴다.
+ *   되돌릴 작업이 없어서 abort는 의미가 없다
+ */
+export type PendingKind = "merge" | "rebase" | "cherryPick" | "revert" | "am" | "conflicts";
 
 /** 진행 중이라 continue/abort가 필요한 작업. .git의 MERGE_HEAD 등으로 판정 */
 export interface PendingOp {
@@ -370,6 +384,11 @@ export interface CommitOptions {
 //   git_reset(path, target: string, mode: "soft" | "mixed" | "hard")
 //   git_pending_action(path, kind: PendingKind, action: "continue" | "abort" | "skip")
 //       // 진행 중 작업 제어. kind는 get_sync_state().pending.kind를 그대로
+//   get_rebase_steps(path, base: string) -> RebaseStep[]
+//       // v0.16: 인터랙티브 리베이스 에디터의 초기 목록. `base..HEAD`에 들어가는 커밋을 git에게 물어
+//       // todo 순서(오래된 것이 먼저)로 돌려준다. action은 "pick", message는 null.
+//       // 그래프 행으로 계산하면 다른 브랜치 커밋이 섞이고, 페이징 때문에 범위를 다 알 수도 없다.
+//       // base가 HEAD의 조상이 아니거나 범위에 머지 커밋이 있으면 Err(사람이 읽을 이유)
 //   git_rebase_interactive(path, base: string, steps: RebaseStep[])
 //       // GIT_SEQUENCE_EDITOR로 todo를 주입한다. steps 순서가 곧 적용 순서(위→아래=과거→현재).
 //       // reword는 GIT_EDITOR 주입으로 메시지를 넣는다. Windows는 Err("unsupported")로 둬도 된다
@@ -382,9 +401,12 @@ export interface CommitOptions {
 // [스태시]
 //   git_stash_push(path, message: string | null, includeUntracked, keepIndex, files: string[] | null)
 //       // files가 있으면 `git stash push -- <files>` (부분 스태시)
-//   git_stash_apply(path, ref: string, drop: boolean)   // drop=true가 pop
-//   git_stash_drop(path, ref: string)
-//   git_stash_branch(path, ref: string, name: string)
+//   git_stash_apply(path, ref: string, sha: string | null, drop: boolean)   // drop=true가 pop
+//   git_stash_drop(path, ref: string, sha: string | null)
+//   git_stash_branch(path, ref: string, sha: string | null, name: string)
+//       // v0.16: sha가 오면 실행 직전에 `rev-parse <ref>`가 그 sha인지 확인하고 다르면 ok=false.
+//       // 터미널이나 다른 창에서 스태시를 추가/삭제하면 stash@{N} 번호가 밀려 엉뚱한 스태시를
+//       // drop하는 사고를 막는다. 프론트는 항상 StashInfo.sha를 넘긴다
 //
 // [remote]
 //   list_remotes(path) -> RemoteInfo[]

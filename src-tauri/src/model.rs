@@ -217,9 +217,9 @@ pub struct FileChange {
 #[serde(rename_all = "camelCase")]
 pub struct OpResult {
     pub ok: bool,
-    /// git stdout. 마지막 200줄만
+    /// git stdout. 200줄을 넘으면 앞 20줄과 뒤 180줄만
     pub stdout: String,
-    /// git stderr. 마지막 200줄만
+    /// git stderr. 200줄을 넘으면 앞 20줄과 뒤 180줄만
     pub stderr: String,
     /// `git diff --name-only --diff-filter=U` 결과. 충돌이 없으면 빈 배열
     pub conflicts: Vec<String>,
@@ -227,7 +227,11 @@ pub struct OpResult {
     /// 프론트가 이걸 그대로 내장 터미널에 흘려보내 사용자의 셸에서 다시 실행한다.
     pub command: Vec<String>,
     /// stderr가 인증/권한 실패로 보이면 true. 프론트가 "터미널에서 실행"을 권한다.
+    /// 네트워크 명령(fetch/pull/push/ls-remote)에서만 켜진다.
     pub needs_auth: bool,
+    /// 원격이 거절하며 밝힌 계정 이름. GitHub의 `Permission to <owner>/<repo>.git denied to <계정>.`
+    /// 에서 뽑는다. 다른 계정으로 로그인돼 있다는 힌트다. 못 뽑으면 None
+    pub denied_account: Option<String>,
 }
 
 /// `get_sync_state` 응답. 툴바의 ↑ahead ↓behind 배지와 Pop 버튼 활성 판정에 쓴다.
@@ -253,6 +257,11 @@ pub enum PendingKind {
     Rebase,
     CherryPick,
     Revert,
+    /// `git am` 도중. 리베이스와 같은 `rebase-apply/`를 쓰지만 명령이 다르다
+    Am,
+    /// 이어갈 작업 없이 충돌만 남은 상태(squash 머지, stash pop/apply 충돌).
+    /// continue/abort/skip이 없다
+    Conflicts,
 }
 
 /// 진행 중이라 continue/abort가 필요한 작업.
@@ -315,7 +324,8 @@ pub struct WorktreeInfo {
 }
 
 /// `git_rebase_interactive`의 todo 한 줄.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// `get_rebase_steps`가 초기 목록으로 돌려줄 때도 같은 모양을 쓴다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RebaseStep {
     pub sha: String,
@@ -576,11 +586,13 @@ mod wire_tests {
             conflicts: vec!["a.txt".to_string()],
             command: vec!["push".to_string(), "origin".to_string()],
             needs_auth: true,
+            denied_account: Some("someone".to_string()),
         })
         .unwrap();
 
         assert_eq!(json["ok"], false);
         assert_eq!(json["needsAuth"], true);
+        assert_eq!(json["deniedAccount"], "someone");
         assert_eq!(json["command"][0], "push");
         assert_eq!(json["conflicts"][0], "a.txt");
         assert!(json.get("needs_auth").is_none(), "snake_case가 새어 나갔다");
