@@ -100,7 +100,8 @@ function wipDiff(repo: string, file: string, area: "staged" | "unstaged", mode: 
   const cacheKey = `${file}\0${area}\0${mode}`;
   const hit = cache?.get(cacheKey);
   if (hit !== undefined) return hit;
-  const args = ["-c", "core.quotepath=false", "--no-optional-locks", "diff"];
+  // -c diff.suppressBlankEmpty=false 는 Rust의 PATCH_SOURCE_CONFIG_ARGS와 같다 (commands.rs)
+  const args = ["-c", "core.quotepath=false", "--no-optional-locks", "-c", "diff.suppressBlankEmpty=false", "diff"];
   if (area === "staged") args.push("--cached");
   // src-tauri/src/commands.rs의 get_wip_file_diff, ops/stage.rs의 git_apply_patch와 같아야 한다.
   // 사용자 설정(diff.context, diff.noprefix, textconv, diff.external, color)이 패치 원료에 새지 않게 고정한다
