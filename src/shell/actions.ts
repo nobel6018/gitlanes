@@ -3,8 +3,8 @@
 // 다른 패키지는 api.ts를 직접 부르지 않고 여기서 만든 RepoActions만 쓴다.
 // 모든 메서드가 같은 순서를 지킨다:
 //   확인 다이얼로그 -> busy on -> command -> 실패 토스트(+인증 핸드오프)
-//   -> 충돌 통지 -> refreshAll -> busy off. 실패는 reject로 올려 호출 측이
-//   입력 상태(커밋 메시지 등)를 지울지 스스로 정한다.
+//   -> 충돌 통지 -> refreshAll(뒤에 쓰기가 남아 있으면 생략) -> busy off.
+//   실패는 reject로 올려 호출 측이 입력 상태(커밋 메시지 등)를 지울지 스스로 정한다.
 import { useCallback, useMemo, useRef, useState } from "react";
 import type {
   CommitOptions,
@@ -129,6 +129,12 @@ export interface UseRepoActionsOptions {
    */
   runInTerminal: (command: string[]) => void;
   onConflicts: (files: string[]) => void;
+  /**
+   * 큐에 들어간 쓰기 수를 동기로 적어 둘 곳 (v0.15.2). 폴링이 이 값을 보고 쓰기 도중에는
+   * 쉰다. busy는 렌더를 거쳐야 바뀌어서 쓰기 IPC가 나간 직후의 틱을 막지 못한다.
+   * 확인창이 떠 있는 동안은 올리지 않는다(아직 아무것도 쓰지 않았다)
+   */
+  writing?: { current: number };
 }
 
 /** 확인 문구에 쓰는 진행 중 작업 이름 */
@@ -195,10 +201,20 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
    * git은 .git/index.lock을 쓰므로 병렬 실행은 "Unable to create index.lock"으로 깨진다.
    */
   const chain = useRef<Promise<unknown>>(Promise.resolve());
+  /** 큐에 있거나 실행 중인 command 수. 0이 아니면 뒤에 다른 쓰기가 기다리고 있다 */
+  const queued = useRef(0);
 
   const enqueue = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
+    queued.current += 1;
+    const tracked = async (): Promise<T> => {
+      try {
+        return await task();
+      } finally {
+        queued.current -= 1;
+      }
+    };
     // 앞 작업이 실패해도 큐는 계속 흐른다 (catch로 끊어준다)
-    const next = chain.current.then(task, task);
+    const next = chain.current.then(tracked, tracked);
     chain.current = next.catch(() => undefined);
     return next;
   }, []);
@@ -220,7 +236,19 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }
       }
 
+      /**
+       * 뒤에 쓰기가 더 기다리고 있으면 새로고침을 건너뛴다. command가 스레드 풀에서 돌면
+       * 이 새로고침의 읽기가 다음 쓰기와 겹쳐 중간 상태를 읽는다. 마지막 쓰기의 새로고침이
+       * 앞 쓰기의 결과까지 함께 반영한다
+       */
+      const refresh = (): Promise<void> =>
+        queued.current > 0 ? Promise.resolve() : ref.current.refreshAll();
+
       setBusyCount((n) => n + 1);
+      const writing = o.writing;
+      if (writing !== undefined) {
+        writing.current += 1;
+      }
       try {
         const result = await enqueue(spec.call);
 
@@ -246,14 +274,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
             startPath,
           );
           // 성공이든 실패든 새로고침한다. 실패해도 인덱스는 움직였을 수 있다
-          await o.refreshAll();
+          await refresh();
           throw new Error(detail === "" ? spec.failure : detail);
         }
 
         if (spec.success !== null) {
           o.toast({ message: label(spec.success), tone: "success" }, startPath);
         }
-        await o.refreshAll();
+        await refresh();
       } catch (err) {
         // command 자체가 reject 된 경우(인자 검증 실패 Err(String))도 여기로 온다
         if (!(err instanceof Error)) {
@@ -267,11 +295,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
             },
             startPath,
           );
-          await o.refreshAll();
+          await refresh();
           throw new Error(message);
         }
         throw err;
       } finally {
+        if (writing !== undefined) {
+          writing.current -= 1;
+        }
         setBusyCount((n) => n - 1);
       }
     },
