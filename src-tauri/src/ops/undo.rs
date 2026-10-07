@@ -33,8 +33,11 @@ pub fn get_ref_snapshot(path: String) -> Result<RefSnapshot, String> {
         "refs/tags",
     ];
 
-    let mut outputs = git::run_all(&path, &[&HEAD_REF_ARGS[..], &HEAD_SHA_ARGS[..], &REFS_ARGS[..]])
-        .into_iter();
+    let mut outputs = git::run_all(
+        &path,
+        &[&HEAD_REF_ARGS[..], &HEAD_SHA_ARGS[..], &REFS_ARGS[..]],
+    )
+    .into_iter();
     let head_ref = outputs.next().and_then(Result::ok);
     let head_sha = outputs.next().and_then(Result::ok);
     let refs = outputs
@@ -46,7 +49,9 @@ pub fn get_ref_snapshot(path: String) -> Result<RefSnapshot, String> {
             .map(|out| out.trim().to_string())
             .filter(|name| !name.is_empty()),
         // unborn 브랜치는 HEAD를 풀 수 없어 rev-parse가 실패한다
-        head_sha: head_sha.map(|out| out.trim().to_string()).unwrap_or_default(),
+        head_sha: head_sha
+            .map(|out| out.trim().to_string())
+            .unwrap_or_default(),
         refs: refs
             .lines()
             .filter_map(|line| line.split_once(' '))
@@ -103,10 +108,9 @@ fn head_changed(before: &RefSnapshot, after: &RefSnapshot) -> bool {
 fn still_after(entry: &UndoEntry, current: &RefSnapshot) -> bool {
     let (before, after) = (&entry.before, &entry.after);
     // commit/amend는 HEAD 브랜치를 되돌리므로 sha가 그대로여도(같은 초의 동일한 amend) 브랜치는 맞아야 한다
-    let head_matters = head_changed(before, after)
-        || matches!(entry.kind, UndoKind::Commit | UndoKind::Amend);
-    if head_matters && (current.head_ref != after.head_ref || current.head_sha != after.head_sha)
-    {
+    let head_matters =
+        head_changed(before, after) || matches!(entry.kind, UndoKind::Commit | UndoKind::Amend);
+    if head_matters && (current.head_ref != after.head_ref || current.head_sha != after.head_sha) {
         return false;
     }
     changed_refs(before, after)
@@ -259,7 +263,10 @@ fn ref_transaction(path: &str, commands: String) -> Result<OpResult, String> {
 /// 이름 변경 취소에서 HEAD만 옛 이름으로 옮긴다. 커밋은 같으니 워킹트리는 건드리지 않는다.
 fn point_head(path: &str, before: &RefSnapshot) -> Result<OpResult, String> {
     let Some(full) = before.head_ref.as_deref() else {
-        return Ok(refused(path, "HEAD was not on a branch before this action."));
+        return Ok(refused(
+            path,
+            "HEAD was not on a branch before this action.",
+        ));
     };
     run_op(
         path,
@@ -681,6 +688,29 @@ mod tests {
         let result = undo(&repo, &entry);
         assert!(!result.ok, "{result:?}");
         assert_eq!(repo.rev("topic"), repo.rev("HEAD"));
+    }
+
+    /// 검사([`still_after`])와 쓰기 사이에 ref가 움직인 경쟁 상황. 검사를 건너뛰고 쓰기 단계만 부른다
+    #[test]
+    fn 검사_뒤에_ref가_움직여도_update_ref의_옛_값이_덮어쓰기를_막는다() {
+        let repo = base();
+        repo.git(&["branch", "topic", "HEAD~1"]);
+        let deleted = record(&repo, UndoKind::DeleteBranch, || {
+            repo.git(&["branch", "-D", "topic"]);
+        });
+        let created = record(&repo, UndoKind::CreateBranch, || {
+            repo.git(&["branch", "fresh", "HEAD~1"]);
+        });
+        repo.git(&["branch", "topic", "HEAD"]);
+        repo.git(&["branch", "-f", "fresh", "HEAD"]);
+
+        let recreate = undo_refs(&repo.path(), &deleted).unwrap();
+        assert!(!recreate.ok, "{recreate:?}");
+        assert_eq!(repo.rev("topic"), repo.rev("HEAD"));
+
+        let delete = undo_refs(&repo.path(), &created).unwrap();
+        assert!(!delete.ok, "{delete:?}");
+        assert_eq!(repo.rev("fresh"), repo.rev("HEAD"));
     }
 
     #[test]
