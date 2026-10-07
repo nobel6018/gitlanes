@@ -143,6 +143,8 @@ const KIND_LABEL: Record<PendingKind, string> = {
   rebase: "rebase",
   cherryPick: "cherry-pick",
   revert: "revert",
+  am: "patch apply (git am)",
+  conflicts: "conflict resolution",
 };
 
 function fileWord(n: number): string {

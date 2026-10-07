@@ -16,6 +16,8 @@ const KIND_LABEL: Record<PendingKind, string> = {
   rebase: "Rebasing",
   cherryPick: "Cherry-picking",
   revert: "Reverting",
+  am: "Applying patches",
+  conflicts: "Resolving conflicts",
 };
 
 const CONTINUE_LABEL: Record<PendingKind, string> = {
@@ -23,6 +25,9 @@ const CONTINUE_LABEL: Record<PendingKind, string> = {
   rebase: "Continue rebase",
   cherryPick: "Continue cherry-pick",
   revert: "Continue revert",
+  am: "Continue applying patches",
+  // TODO(v16-ui-a): "conflicts"는 이어갈 작업이 없어 Continue 버튼 자체를 숨겨야 한다
+  conflicts: "Continue",
 };
 
 const FILE_KIND_LABEL: Record<ConflictFile["kind"], string> = {

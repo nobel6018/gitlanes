@@ -806,7 +806,7 @@ const AUTH_STDERR = [
 
 function ok(command: string[], stdout = ""): OpResult {
   writeSalt += 1;
-  return { ok: true, stdout, stderr: "", conflicts: [], command, needsAuth: false };
+  return { ok: true, stdout, stderr: "", conflicts: [], command, needsAuth: false, deniedAccount: null };
 }
 
 function fail(command: string[], stderr: string, conflicts: string[] = []): OpResult {
@@ -817,6 +817,8 @@ function fail(command: string[], stderr: string, conflicts: string[] = []): OpRe
     conflicts,
     command,
     needsAuth: FORCE_AUTH,
+    // TODO(v16-ui-a): ?denied=<계정> 스위치로 403 계정 힌트를 검증할 수 있게
+    deniedAccount: null,
   };
 }
 
