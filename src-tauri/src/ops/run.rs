@@ -454,8 +454,18 @@ pub fn validate_ref_name(repo: &str, name: &str) -> Result<String, String> {
         return Err(format!("이름 형식이 올바르지 않습니다: {name}"));
     }
 
-    git::run(repo, &["check-ref-format", "--branch", name])
+    let expanded = git::run(repo, &["check-ref-format", "--branch", name])
         .map_err(|_| format!("git이 허용하지 않는 이름입니다: {name}"))?;
+
+    // `--branch`는 `@{-1}`(직전 브랜치), `@{u}`(upstream)를 실제 이름으로 풀어 성공한다.
+    // 확인 다이얼로그에는 `@{-1}`이 보이는데 git은 다른 브랜치를 지우게 된다.
+    // 사용자가 적은 글자 그대로가 이름일 때만 받는다.
+    if expanded.trim() != name {
+        return Err(format!(
+            "다른 브랜치를 가리키는 표기는 쓸 수 없습니다: {name} → {}",
+            expanded.trim()
+        ));
+    }
 
     Ok(name.to_string())
 }
@@ -779,6 +789,23 @@ mod tests {
         ] {
             assert_eq!(literal_env(args), None, "{args:?}");
         }
+    }
+
+    #[test]
+    fn ref_이름_검증은_다른_브랜치로_풀리는_표기를_거절한다() {
+        let repo = crate::testrepo::TempRepo::linear("gl-refname", 1);
+        repo.git(&["branch", "prev"]);
+        repo.git(&["checkout", "-q", "prev"]);
+        repo.git(&["checkout", "-q", "main"]);
+        repo.git(&["branch", "--set-upstream-to", "prev"]);
+        let path = repo.path();
+
+        // check-ref-format --branch는 @{-1}을 prev로, @{u}를 upstream으로 풀어 성공한다
+        for name in ["@{-1}", "@{u}", "@{upstream}"] {
+            assert!(validate_ref_name(&path, name).is_err(), "{name}");
+        }
+        assert_eq!(validate_ref_name(&path, " feature/x ").unwrap(), "feature/x");
+        assert_eq!(validate_ref_name(&path, "prev").unwrap(), "prev");
     }
 
     #[test]
