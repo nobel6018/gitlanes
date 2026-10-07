@@ -7,7 +7,7 @@ import { splitPath } from "./format";
 import { withKbd } from "./shortcuts";
 import { STATUS_LETTER } from "./FileRow";
 import { highlightLines, languageForPath } from "./highlight";
-import { buildLinePatch, buildPatch, lineKey, parseUnifiedDiff } from "./hunks";
+import { buildLinePatch, buildPatch, hasLossyDecoding, lineKey, parseUnifiedDiff } from "./hunks";
 import "./panels.css";
 import "./wip.css";
 
@@ -18,7 +18,11 @@ import "./wip.css";
 export interface DiffHunkActions {
   /** 이 diff가 어느 영역의 것인가. 버튼 종류를 정한다 */
   area: WipArea;
-  applyPatch(patch: string, cached: boolean, reverse: boolean): Promise<void>;
+  /**
+   * scope는 워킹트리 discard 확인창에 보일 범위 문구("1 hunk", "3 lines").
+   * RepoActions.applyPatch가 선택 인자로 받는다 (v0.15.1)
+   */
+  applyPatch(patch: string, cached: boolean, reverse: boolean, scope?: string): Promise<void>;
   busy: boolean;
 }
 
@@ -421,20 +425,24 @@ export function DiffPanel({
     });
   }
 
-  const canPatch =
+  const patchable =
     hunkActions !== undefined &&
     hunkActions !== null &&
     // untracked diff는 git diff --no-index 산물이라 경로 접두가 달라 apply가 먹지 않는다.
     // 이 경우는 파일 단위 스테이징만 지원한다
     hunkActions.area !== "untracked" &&
     patchSource.hunks.length > 0;
+  // UTF-8이 아닌 파일은 diff가 손실 디코딩돼 원래 바이트를 잃었다. 부분 패치를 만들면
+  // 깨진 바이트가 stage되므로 파일 단위 동작만 남긴다 (audit-patch H4)
+  const lossy = patchable && hasLossyDecoding(diffText ?? "");
+  const canPatch = patchable && !lossy;
 
-  function sendPatch(patch: string, cached: boolean, reverse: boolean) {
+  function sendPatch(patch: string, cached: boolean, reverse: boolean, scope?: string) {
     if (patch === "" || hunkActions === undefined || hunkActions === null) {
       return;
     }
     setPicked(new Set<string>());
-    void hunkActions.applyPatch(patch, cached, reverse).catch(() => undefined);
+    void hunkActions.applyPatch(patch, cached, reverse, scope).catch(() => undefined);
   }
 
   /** 끌고 있는 동안 기준 선택에 범위를 더하거나 뺀다. 범위는 한 hunk 안에서만 잡는다 */
@@ -535,7 +543,7 @@ export function DiffPanel({
             <button
               className="dp-hunk-btn danger"
               disabled={busyNow}
-              onClick={() => sendPatch(backward(), false, true)}
+              onClick={() => sendPatch(backward(), false, true, "1 hunk")}
               title="워킹 트리에서 이 hunk를 되돌린다"
             >
               Discard hunk
@@ -870,7 +878,7 @@ export function DiffPanel({
           </button>
         </span>
 
-        {picked.size > 0 && hunkActions !== undefined && hunkActions !== null && (
+        {canPatch && picked.size > 0 && hunkActions !== undefined && hunkActions !== null && (
           <span className="dp-linebar">
             <span className="dp-linecount">{picked.size} lines</span>
             {hunkActions.area === "staged" ? (
@@ -893,7 +901,14 @@ export function DiffPanel({
                 <button
                   className="dp-hunk-btn danger"
                   disabled={hunkActions.busy}
-                  onClick={() => sendPatch(buildLinePatch(patchSource, picked, true), false, true)}
+                  onClick={() =>
+                    sendPatch(
+                      buildLinePatch(patchSource, picked, true),
+                      false,
+                      true,
+                      picked.size === 1 ? "1 line" : `${picked.size} lines`,
+                    )
+                  }
                 >
                   Discard lines
                 </button>
@@ -939,6 +954,13 @@ export function DiffPanel({
           ⏎ Wrap
         </button>
       </div>
+
+      {lossy && (
+        <div className="dp-message" role="note" style={{ padding: "6px 12px" }}>
+          Partial staging is unavailable for this file because it is not UTF-8. Stage or discard
+          the whole file instead.
+        </div>
+      )}
 
       {body}
     </div>
