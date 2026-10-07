@@ -66,8 +66,21 @@ const AUTH_MARKERS: [&str; 10] = [
     "invalid username or token",
 ];
 
-/// 위 목록과 달리 HTTP 상태 문구라 대소문자가 섞여 온다. 소문자로 내려 비교한다.
-const AUTH_MARKER_403: &str = "403 forbidden";
+/// HTTP 403. 위 목록과 달리 상태 문구라 대소문자가 섞여 온다. 소문자로 내려 비교한다.
+///
+/// git 실제 문구는 `The requested URL returned error: 403`이다(`403 Forbidden`은 오래된 curl이
+/// 쓰던 꼴). GitHub 토큰 권한 부족, SAML SSO 미승인, 다른 계정으로 로그인한 경우가 여기 온다.
+/// 터미널에서 다시 실행해도 같은 계정이면 또 거절되지만, 사용자가 거기서 계정을 바꾸고
+/// 재시도할 수 있으므로 needs_auth로 둔다. 어느 계정이 거절됐는지는 `denied_account`가 알린다.
+const AUTH_MARKERS_403: [&str; 2] = ["returned error: 403", "403 forbidden"];
+
+/// 자격증명을 쓰는 명령. needs_auth는 여기서만 판정한다.
+///
+/// 로컬 명령도 stderr에 `Permission denied`를 쓴다(`chmod 000` 파일을 add하면
+/// `error: open("x"): Permission denied`). 이걸 인증 실패로 보면 스테이징 실패 토스트에
+/// "터미널에서 실행"이 뜨는데, 터미널에서도 똑같이 실패한다.
+/// 원격 브랜치 삭제와 태그 push는 `push`로 나간다.
+const NETWORK_VERBS: [&str; 4] = ["fetch", "pull", "push", "ls-remote"];
 
 /// 실행 결과 원본. [`finish`]가 이걸 [`OpResult`]로 바꾼다.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,6 +380,7 @@ pub fn run_chain(repo: &str, steps: &[Vec<&str>], timeout: Duration) -> Result<O
                 conflicts: result.conflicts,
                 command: result.command,
                 needs_auth: previous.needs_auth || result.needs_auth,
+                denied_account: result.denied_account.or(previous.denied_account),
             },
         });
         if !ok {
@@ -396,12 +410,21 @@ pub fn finish(repo: &str, args: &[&str], outcome: Outcome, timeout: Duration) ->
             conflicts,
             command,
             needs_auth: false,
+            denied_account: None,
         };
     }
 
     let ok = outcome.code == Some(0);
+    let judged = !ok && is_network_command(args);
+    let denied_account = if judged {
+        parse_denied_account(&outcome.stderr)
+    } else {
+        None
+    };
     OpResult {
-        needs_auth: !ok && looks_like_auth_failure(&outcome.stderr),
+        needs_auth: judged
+            && (denied_account.is_some() || looks_like_auth_failure(&outcome.stderr)),
+        denied_account,
         ok,
         stdout: clip_output(&outcome.stdout),
         stderr: clip_output(&outcome.stderr),
@@ -416,7 +439,35 @@ pub fn finish(repo: &str, args: &[&str], outcome: Outcome, timeout: Duration) ->
 /// 사용자는 왜 실패했는지 모른 채 막힌다. 그래서 넓게 잡는다.
 pub fn looks_like_auth_failure(stderr: &str) -> bool {
     let lowered = stderr.to_lowercase();
-    AUTH_MARKERS.iter().any(|marker| lowered.contains(marker)) || lowered.contains(AUTH_MARKER_403)
+    AUTH_MARKERS
+        .iter()
+        .chain(AUTH_MARKERS_403.iter())
+        .any(|marker| lowered.contains(marker))
+}
+
+fn is_network_command(args: &[&str]) -> bool {
+    args.first()
+        .is_some_and(|verb| NETWORK_VERBS.contains(verb))
+}
+
+/// 원격이 거절하며 밝힌 계정 이름을 뽑는다.
+///
+/// GitHub만 지원한다. 문구는 HTTPS(`remote: ` 접두)와 SSH(`ERROR: ` 접두) 모두
+/// `Permission to <owner>/<repo>.git denied to <계정>.`이다. GitLab(`You are not allowed to
+/// push code to this project.`), Bitbucket, Gitea의 거절 문구에는 계정 이름이 없다(2026-10 조사).
+///
+/// 계정 자리에 공백이 있으면 계정이 아니다. SSH deploy key로 거절되면 `denied to deploy key.`가
+/// 온다. 그때는 계정을 바꿔 풀 문제가 아니라 None으로 둔다.
+pub fn parse_denied_account(stderr: &str) -> Option<String> {
+    const MARK: &str = "denied to ";
+    stderr.lines().find_map(|line| {
+        let line = line.trim();
+        let rest = &line[line.find("Permission to ")?..];
+        let at = rest.find(MARK)?;
+        let account = rest[at + MARK.len()..].trim().trim_end_matches('.');
+        let valid = !account.is_empty() && !account.contains(char::is_whitespace);
+        valid.then(|| account.to_string())
+    })
 }
 
 /// 충돌 파일 목록. 읽기 실패는 빈 목록으로 둔다. 작업 결과 자체를 가릴 이유가 없다.
@@ -716,7 +767,11 @@ mod tests {
         let kept = clip_output(&long);
         let lines: Vec<&str> = kept.lines().collect();
 
-        assert_eq!(lines.len(), MAX_OUTPUT_LINES + 1, "생략 표시 한 줄이 더 붙는다");
+        assert_eq!(
+            lines.len(),
+            MAX_OUTPUT_LINES + 1,
+            "생략 표시 한 줄이 더 붙는다"
+        );
         assert_eq!(lines[0], "error: Your local changes would be overwritten:");
         assert_eq!(lines[19], "\tf18");
         assert_eq!(lines[20], "... (100 lines omitted) ...");
@@ -746,6 +801,7 @@ mod tests {
             "remote: Support for password authentication was removed",
             "remote: HTTP Basic: Access denied",
             "The requested URL returned error: 403 Forbidden",
+            "fatal: unable to access 'https://github.com/x/y.git/': The requested URL returned error: 403",
             "remote: Invalid username or token",
         ] {
             assert!(looks_like_auth_failure(stderr), "놓쳤다: {stderr}");
@@ -758,6 +814,96 @@ mod tests {
             "CONFLICT (content): Merge conflict in a.txt",
         ] {
             assert!(!looks_like_auth_failure(stderr), "오탐: {stderr}");
+        }
+    }
+
+    fn failed(stderr: &str) -> Outcome {
+        Outcome {
+            code: Some(128),
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+            timed_out: false,
+        }
+    }
+
+    #[test]
+    fn 로컬_명령의_permission_denied는_needs_auth가_아니다() {
+        let stderr = "error: open(\"locked.txt\"): Permission denied\nerror: unable to index file 'locked.txt'";
+        for args in [
+            &["add", "--", "locked.txt"][..],
+            &["checkout", "main"],
+            &["commit", "-m", "x"],
+        ] {
+            let result = finish(&nowhere(), args, failed(stderr), LOCAL_TIMEOUT);
+            assert!(!result.needs_auth, "{args:?}");
+        }
+        // 같은 문구라도 네트워크 명령이면 자격증명 문제다
+        let ssh = "git@github.com: Permission denied (publickey).";
+        for args in [&["push"][..], &["fetch", "--all"], &["pull", "--ff-only"]] {
+            let result = finish(&nowhere(), args, failed(ssh), NETWORK_TIMEOUT);
+            assert!(result.needs_auth, "{args:?}");
+        }
+    }
+
+    const GITHUB_403: &str = "remote: Permission to nobel6018/gitlanes.git denied to younghoon-lee-ilevit-com.\nfatal: unable to access 'https://github.com/nobel6018/gitlanes.git/': The requested URL returned error: 403";
+
+    #[test]
+    fn https_403은_needs_auth다() {
+        let result = finish(&nowhere(), &["push"], failed(GITHUB_403), NETWORK_TIMEOUT);
+        assert!(result.needs_auth, "{result:?}");
+        assert_eq!(
+            result.denied_account.as_deref(),
+            Some("younghoon-lee-ilevit-com")
+        );
+    }
+
+    #[test]
+    fn 거절된_계정은_로컬_명령과_성공에서는_뽑지_않는다() {
+        let local = finish(
+            &nowhere(),
+            &["commit", "-m", "x"],
+            failed(GITHUB_403),
+            LOCAL_TIMEOUT,
+        );
+        assert_eq!(local.denied_account, None);
+        let mut done = failed(GITHUB_403);
+        done.code = Some(0);
+        let ok = finish(&nowhere(), &["push"], done, NETWORK_TIMEOUT);
+        assert_eq!(ok.denied_account, None);
+        assert!(!ok.needs_auth);
+    }
+
+    #[test]
+    fn 거절_문구에서_계정_이름을_뽑는다() {
+        assert_eq!(
+            parse_denied_account(GITHUB_403).as_deref(),
+            Some("younghoon-lee-ilevit-com")
+        );
+        for (stderr, account) in [
+            // SSH는 접두가 ERROR:다
+            (
+                "ERROR: Permission to nobel6018/gitlanes.git denied to nobel6018.\nfatal: Could not read from remote repository.",
+                Some("nobel6018"),
+            ),
+            // GitHub App, Actions 토큰
+            (
+                "remote: Permission to o/r.git denied to github-actions[bot].",
+                Some("github-actions[bot]"),
+            ),
+            // 진행 표시 뒤에 이어 붙어 와도 찾는다
+            (
+                "Enumerating objects: 3, done.\nremote: Permission to o/r.git denied to a.b_c.\r\n",
+                Some("a.b_c"),
+            ),
+            // deploy key는 계정이 아니다
+            ("ERROR: Permission to o/r.git denied to deploy key", None),
+            // 계정이 없는 거절 문구들 (GitLab, Bitbucket)
+            ("remote: You are not allowed to push code to this project.\nfatal: unable to access 'https://gitlab.com/o/r.git/': The requested URL returned error: 403", None),
+            ("remote: Forbidden\nfatal: unable to access 'https://bitbucket.org/o/r.git/': The requested URL returned error: 403", None),
+            ("remote: Permission to o/r.git denied to .", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_denied_account(stderr).as_deref(), account, "{stderr}");
         }
     }
 
@@ -861,7 +1007,10 @@ mod tests {
         for name in ["@{-1}", "@{u}", "@{upstream}"] {
             assert!(validate_ref_name(&path, name).is_err(), "{name}");
         }
-        assert_eq!(validate_ref_name(&path, " feature/x ").unwrap(), "feature/x");
+        assert_eq!(
+            validate_ref_name(&path, " feature/x ").unwrap(),
+            "feature/x"
+        );
         assert_eq!(validate_ref_name(&path, "prev").unwrap(), "prev");
     }
 
@@ -1035,5 +1184,70 @@ mod group_kill_tests {
             );
             std::thread::sleep(POLL_INTERVAL);
         }
+    }
+}
+
+/// 인증 판정을 실제 git 출력으로 확인한다. 문구가 git 버전마다 흔들리므로 손으로 적은
+/// 문자열만으로는 판정이 실물과 맞는지 알 수 없다.
+#[cfg(all(test, unix))]
+mod auth_tests {
+    use super::*;
+    use crate::testrepo::TempRepo;
+
+    /// 모든 요청에 GitHub처럼 403 + text/plain 본문을 돌려주는 HTTP 서버. git은 본문을
+    /// `remote: ` 접두로 stderr에 옮긴다.
+    fn forbidding_server(message: &'static str) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut request = [0u8; 8192];
+                let _ = stream.read(&mut request);
+                let response = format!(
+                    "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{message}",
+                    message.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn https_403_fetch는_needs_auth와_거절된_계정을_싣는다() {
+        let port = forbidding_server(
+            "Permission to nobel6018/gitlanes.git denied to younghoon-lee-ilevit-com.\n",
+        );
+        let repo = TempRepo::linear("gl-auth-403", 1);
+        let url = format!("http://127.0.0.1:{port}/nobel6018/gitlanes.git");
+
+        let result = run_op(&repo.path(), &["fetch", url.as_str()], NETWORK_TIMEOUT).unwrap();
+        assert!(!result.ok);
+        assert!(result.stderr.contains("returned error: 403"), "{result:?}");
+        assert!(result.needs_auth, "{result:?}");
+        assert_eq!(
+            result.denied_account.as_deref(),
+            Some("younghoon-lee-ilevit-com")
+        );
+    }
+
+    #[test]
+    fn 읽을_수_없는_파일의_add_실패는_needs_auth가_아니다() {
+        let repo = TempRepo::linear("gl-auth-chmod", 1);
+        repo.write("locked.txt", "secret\n");
+        let locked = std::path::Path::new(&repo.path()).join("locked.txt");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = run_op(&repo.path(), &["add", "--", "locked.txt"], LOCAL_TIMEOUT).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(!result.ok);
+        assert!(
+            result.stderr.to_lowercase().contains("permission denied"),
+            "{result:?}"
+        );
+        assert!(!result.needs_auth, "{result:?}");
+        assert_eq!(result.denied_account, None);
     }
 }

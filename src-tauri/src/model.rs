@@ -227,7 +227,11 @@ pub struct OpResult {
     /// 프론트가 이걸 그대로 내장 터미널에 흘려보내 사용자의 셸에서 다시 실행한다.
     pub command: Vec<String>,
     /// stderr가 인증/권한 실패로 보이면 true. 프론트가 "터미널에서 실행"을 권한다.
+    /// 네트워크 명령(fetch/pull/push/ls-remote)에서만 켜진다.
     pub needs_auth: bool,
+    /// 원격이 거절하며 밝힌 계정 이름. GitHub의 `Permission to <owner>/<repo>.git denied to <계정>.`
+    /// 에서 뽑는다. 다른 계정으로 로그인돼 있다는 힌트다. 못 뽑으면 None
+    pub denied_account: Option<String>,
 }
 
 /// `get_sync_state` 응답. 툴바의 ↑ahead ↓behind 배지와 Pop 버튼 활성 판정에 쓴다.
@@ -576,11 +580,13 @@ mod wire_tests {
             conflicts: vec!["a.txt".to_string()],
             command: vec!["push".to_string(), "origin".to_string()],
             needs_auth: true,
+            denied_account: Some("someone".to_string()),
         })
         .unwrap();
 
         assert_eq!(json["ok"], false);
         assert_eq!(json["needsAuth"], true);
+        assert_eq!(json["deniedAccount"], "someone");
         assert_eq!(json["command"][0], "push");
         assert_eq!(json["conflicts"][0], "a.txt");
         assert!(json.get("needs_auth").is_none(), "snake_case가 새어 나갔다");
