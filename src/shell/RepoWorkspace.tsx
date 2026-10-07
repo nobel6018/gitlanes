@@ -18,6 +18,7 @@ import type {
   SearchMatch,
   SyncState,
   WipArea,
+  WipDiff,
   WipDetails,
   WipInfo,
   WorktreeInfo,
@@ -443,6 +444,8 @@ export function RepoWorkspace({
   /** wip 요약이 바뀔 때마다 오른다. WIP 상세와 열린 WIP diff를 다시 읽는 트리거 */
   const [wipNonce, setWipNonce] = useState(0);
   const [diffText, setDiffText] = useState<string | null>(null);
+  /** diffText의 인코딩. 커밋 diff는 항상 utf8, WIP diff는 get_wip_file_diff가 알려 준다 */
+  const [diffEncoding, setDiffEncoding] = useState<WipDiff["encoding"]>("utf8");
   const [fileText, setFileText] = useState<string | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
@@ -2175,6 +2178,8 @@ export function RepoWorkspace({
   const diffKeyRef = useRef<string | null>(null);
   const diffTextRef = useRef<string | null>(null);
   diffTextRef.current = diffText;
+  const diffEncodingRef = useRef<WipDiff["encoding"]>("utf8");
+  diffEncodingRef.current = diffEncoding;
   const openFileRef = useRef<OpenFile | null>(null);
   openFileRef.current = openFile;
 
@@ -2200,17 +2205,19 @@ export function RepoWorkspace({
       setDiffError(null);
       setDiffLoading(true);
     }
-    const pending =
+    const pending: Promise<WipDiff> =
       openFile.area === null
-        ? getFileDiff(repo.path, selectedSha, openFile.file.path, openFile.file.oldPath)
+        ? getFileDiff(repo.path, selectedSha, openFile.file.path, openFile.file.oldPath).then(
+            (text) => ({ text, encoding: "utf8" }),
+          )
         : getWipFileDiff(repo.path, openFile.file.path, openFile.area);
     pending
-      .then((text) => {
+      .then(({ text, encoding }) => {
         if (!alive) {
           return;
         }
         diffKeyRef.current = key;
-        if (soft && text === diffTextRef.current) {
+        if (soft && text === diffTextRef.current && encoding === diffEncodingRef.current) {
           return;
         }
         if (soft) {
@@ -2218,6 +2225,7 @@ export function RepoWorkspace({
           setFileText(null);
         }
         setDiffText(text);
+        setDiffEncoding(encoding);
       })
       .catch((err: unknown) => {
         if (alive) {
@@ -2369,7 +2377,7 @@ export function RepoWorkspace({
       }
       patchCheckingRef.current = true;
       setPatchChecking(true);
-      let fresh: string;
+      let fresh: WipDiff;
       try {
         fresh = await getWipFileDiff(current.path, open.file.path, open.area);
       } catch (err) {
@@ -2383,7 +2391,8 @@ export function RepoWorkspace({
       if (repoRef.current?.path !== current.path || openFileRef.current !== open) {
         return;
       }
-      if (fresh !== diffTextRef.current) {
+      // 같은 글자라도 인코딩이 바뀌었으면 화면의 패치를 바이트로 되돌리는 방법이 달라진다
+      if (fresh.text !== diffTextRef.current || fresh.encoding !== diffEncodingRef.current) {
         fileTextCache.current.clear();
         setWipNonce((n) => n + 1);
         showToast(
@@ -2392,7 +2401,7 @@ export function RepoWorkspace({
         );
         return;
       }
-      await actions.applyPatch(patch, cached, reverse, scope);
+      await actions.applyPatch(patch, cached, reverse, scope, fresh.encoding);
     },
     [actions, showError, showToast],
   );
@@ -2675,6 +2684,9 @@ export function RepoWorkspace({
               badge={openFile.area ?? undefined}
               hunkActions={hunkActions}
               diffText={diffText}
+              // diffEncoding prop은 ui16-b가 DiffPanel에 추가한다. 두 브랜치가 따로 빌드되게
+              // 스프레드로 넘긴다(JSX 스프레드는 초과 속성 검사를 하지 않는다). 머지 후 일반 prop으로 바꿔도 된다
+              {...{ diffEncoding }}
               fileText={fileText}
               onRequestFileText={handleRequestFileText}
               loading={diffLoading}

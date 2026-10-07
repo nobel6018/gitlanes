@@ -17,6 +17,7 @@ import type {
   SearchMatch,
   SyncState,
   WipArea,
+  WipDiff,
   WipDetails,
   WorktreeInfo,
 } from "../types";
@@ -54,9 +55,12 @@ export function getWipDetails(path: string): Promise<WipDetails> {
   return invoke<WipDetails>("get_wip_details", { path });
 }
 
-/** 워킹 트리 파일의 unified diff. area에 따라 인덱스/워킹 트리/신규 파일 diff */
-export function getWipFileDiff(path: string, file: string, area: WipArea): Promise<string> {
-  return invoke<string>("get_wip_file_diff", { path, file, area });
+/**
+ * 워킹 트리 파일의 unified diff. area에 따라 인덱스/워킹 트리/신규 파일 diff.
+ * 내용이 UTF-8이 아니면 encoding="latin1"이다. 이 diff로 만든 패치는 같은 encoding으로 보낸다
+ */
+export function getWipFileDiff(path: string, file: string, area: WipArea): Promise<WipDiff> {
+  return invoke<WipDiff>("get_wip_file_diff", { path, file, area });
 }
 
 /** 워킹 트리의 현재 파일 내용. 바이너리면 Err("binary"), 5MB 초과면 Err("too large") */
@@ -204,8 +208,9 @@ export function gitApplyPatch(
   patch: string,
   cached: boolean,
   reverse: boolean,
+  encoding: WipDiff["encoding"] = "utf8",
 ): Promise<OpResult> {
-  return invoke<OpResult>("git_apply_patch", { path, patch, cached, reverse });
+  return invoke<OpResult>("git_apply_patch", { path, patch, cached, reverse, encoding });
 }
 
 /** untracked 삭제 (-fd). 경로 지정이 필수라 레포 전체를 날릴 수 없다 */
