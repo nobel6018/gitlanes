@@ -53,6 +53,10 @@ export interface DiffPanelProps {
    * latin1이면 글자 하나가 원래 바이트 하나라 부분 패치가 바이트를 보존한다
    */
   diffEncoding?: "utf8" | "latin1";
+  /** 있으면 머리에 History 버튼 (v0.18). 없으면 버튼 자체가 없다 */
+  onShowHistory?: () => void;
+  /** 있으면 머리에 Blame 버튼 (v0.18). 없으면 버튼 자체가 없다 */
+  onShowBlame?: () => void;
 }
 
 /** 패치 재구성에 쓰는 줄 좌표 (hunk 번호, hunk 안에서의 줄 번호) */
@@ -297,6 +301,8 @@ export function DiffPanel({
   badge,
   hunkActions,
   diffEncoding = "utf8",
+  onShowHistory,
+  onShowBlame,
 }: DiffPanelProps) {
   const [prefs, setPrefs] = useState<Prefs>(readPrefs);
   const [scrollTop, setScrollTop] = useState(0);
@@ -841,6 +847,16 @@ export function DiffPanel({
           {file.deletions > 0 && <span className="stat-del">-{file.deletions}</span>}
         </span>
         {loading && <span className="dp-loading">loading…</span>}
+        {onShowHistory !== undefined && (
+          <button className="dp-toggle" onClick={onShowHistory} title="Commits that changed this file">
+            History
+          </button>
+        )}
+        {onShowBlame !== undefined && (
+          <button className="dp-toggle" onClick={onShowBlame} title="Show who last changed each line">
+            Blame
+          </button>
+        )}
         <button
           className="dp-close"
           onClick={onClose}
