@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 import process, { type ProcessEnv } from "node:process";
-import { parseUnifiedDiff, buildPatch, buildLinePatch, lineKey, hasLossyDecoding } from "../src/shell/hunks.ts";
+import { parseUnifiedDiff, buildPatch, buildLinePatch, hasLossyDecoding } from "../src/shell/hunks.ts";
 
 const startedAt = performance.now();
 
@@ -951,7 +951,7 @@ scenario("staged rename + edit: the WIP diff is a rename", () => {
   const diff = wipDiff(ctx.repo, ctx.file, "staged");
   check(diff.includes("rename from old.txt") && !diff.includes("new file mode"), "staged WIP diff of a renamed file shows the rename", diff.split("\n").slice(0, 6).join("\n"));
 });
-for (const to of ["new.txt", 'dir/q"x y.txt']) {
+for (const to of ["new.txt", "a b.txt", 'dir/q"x y.txt']) {
   scenario(`staged rename + edit: unstage one line keeps the rename (${to})`, () => {
     const ctx = stagedRenameRepo(to);
     const r = runOp(ctx, "unstage", { lines: ["+L2"] });
