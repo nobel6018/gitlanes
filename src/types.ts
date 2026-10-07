@@ -384,6 +384,11 @@ export interface CommitOptions {
 //   git_reset(path, target: string, mode: "soft" | "mixed" | "hard")
 //   git_pending_action(path, kind: PendingKind, action: "continue" | "abort" | "skip")
 //       // 진행 중 작업 제어. kind는 get_sync_state().pending.kind를 그대로
+//   get_rebase_steps(path, base: string) -> RebaseStep[]
+//       // v0.16: 인터랙티브 리베이스 에디터의 초기 목록. `base..HEAD`에 들어가는 커밋을 git에게 물어
+//       // todo 순서(오래된 것이 먼저)로 돌려준다. action은 "pick", message는 null.
+//       // 그래프 행으로 계산하면 다른 브랜치 커밋이 섞이고, 페이징 때문에 범위를 다 알 수도 없다.
+//       // base가 HEAD의 조상이 아니거나 범위에 머지 커밋이 있으면 Err(사람이 읽을 이유)
 //   git_rebase_interactive(path, base: string, steps: RebaseStep[])
 //       // GIT_SEQUENCE_EDITOR로 todo를 주입한다. steps 순서가 곧 적용 순서(위→아래=과거→현재).
 //       // reword는 GIT_EDITOR 주입으로 메시지를 넣는다. Windows는 Err("unsupported")로 둬도 된다
