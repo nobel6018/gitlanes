@@ -7,6 +7,7 @@
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 /// `core.quotepath=false`로 비ASCII 경로가 이스케이프되지 않게 한다.
 /// `GIT_OPTIONAL_LOCKS=0`은 읽기 전용 뷰어가 인덱스 잠금을 건드리지 않게 한다.
@@ -22,6 +23,11 @@ fn base_command<P: AsRef<OsStr>>(repo: P) -> Command {
     cmd.env_remove("GIT_WORK_TREE");
     cmd.env_remove("GIT_INDEX_FILE");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // 경로 인자는 glob이 아니라 리터럴이다. `pages/[id].tsx`의 diff를 읽는데 glob으로 풀리면
+    // `pages/i.tsx`까지 섞인 diff가 나오고, 프론트는 그걸 한 파일 diff로 알고 패치를 만든다.
+    // 읽기 경로는 훅을 돌리지 않아 쓰기 쪽(ops/run.rs)과 달리 예외 없이 건다.
+    // 이 모듈에 pathspec magic(`:(top)`, `*.rs`)을 일부러 쓰는 호출은 없다(v0.15.1 전수 확인).
+    cmd.env("GIT_LITERAL_PATHSPECS", "1");
     cmd
 }
 
@@ -83,6 +89,28 @@ where
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// 설치된 git의 (major, minor). 읽지 못하면 None.
+///
+/// 버전에 따라 붙일 수 있는 옵션이 갈린다(`push --force-if-includes`는 2.30부터). 앱이 떠
+/// 있는 동안 git이 바뀌는 일은 없다고 보고 프로세스당 한 번만 묻는다.
+pub fn version() -> Option<(u32, u32)> {
+    static VERSION: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+    *VERSION.get_or_init(|| {
+        run(".", &["--version"])
+            .ok()
+            .and_then(|out| parse_version(&out))
+    })
+}
+
+/// `git version 2.50.1 (Apple Git-155)`, `git version 2.30.0.windows.1` 꼴에서 앞의 두 수를 뽑는다.
+fn parse_version(out: &str) -> Option<(u32, u32)> {
+    let numbers = out.trim().strip_prefix("git version ")?;
+    let mut parts = numbers.split(|c: char| !c.is_ascii_digit());
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
 }
 
 /// 콜백이 계속할지 멈출지 알려주는 신호. `Stop`이면 남은 출력을 버리고 프로세스를 정리한다.
@@ -320,6 +348,20 @@ mod tests {
         .unwrap_err();
         assert!(!err.is_empty());
         assert!(!err.contains("성공"), "{err}");
+    }
+
+    #[test]
+    fn git_버전_문자열에서_major_minor를_뽑는다() {
+        assert_eq!(
+            parse_version("git version 2.50.1 (Apple Git-155)\n"),
+            Some((2, 50))
+        );
+        assert_eq!(parse_version("git version 2.30.0.windows.1"), Some((2, 30)));
+        assert_eq!(parse_version("git version 2.29.2"), Some((2, 29)));
+        assert_eq!(parse_version("git version 3.0"), Some((3, 0)));
+        assert_eq!(parse_version("hub version 2.14"), None);
+        assert_eq!(parse_version("git version x"), None);
+        assert!(version().is_some(), "테스트 환경의 git 버전을 읽지 못했다");
     }
 
     #[test]

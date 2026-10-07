@@ -106,6 +106,28 @@ mod tests {
     }
 
     #[test]
+    fn 부분_스태시는_별표_이름을_glob으로_풀지_않는다() {
+        let (_origin, repo) = remote_fixture();
+        repo.write("note*", "넣을 파일\n");
+        repo.write("note_draft.txt", "남겨야 할 초안\n");
+
+        let pushed = git_stash_push(
+            repo.path(),
+            None,
+            true,
+            false,
+            Some(vec!["note*".to_string()]),
+        )
+        .unwrap();
+        assert!(pushed.ok, "{pushed:?}");
+        assert!(!exists(&repo, "note*"));
+        assert!(
+            exists(&repo, "note_draft.txt"),
+            "glob note*에 걸린 파일까지 스태시로 들어갔다"
+        );
+    }
+
+    #[test]
     fn stash_push와_pop이_왕복한다() {
         let (_origin, repo) = remote_fixture();
         repo.write("a.txt", "changed\n");

@@ -90,6 +90,25 @@ function applyFlip(): void {
   });
 }
 
+/**
+ * 워킹 트리 내용 편집 횟수. 파일 수는 그대로 두고 내용만 바꾼 상황(audit-state M1)을 흉내낸다.
+ * 콘솔에서 `__mockEdit()`를 부르면 오른다. 그러면 contentToken과 unstaged diff가 같이 바뀐다
+ */
+let contentEdits = 0;
+
+declare global {
+  interface Window {
+    /** 하네스 전용: 파일 수는 그대로 두고 워킹 트리 내용만 바꾼다 */
+    __mockEdit?: () => number;
+  }
+}
+
+window.__mockEdit = () => {
+  contentEdits += 1;
+  console.log("[mock] content edit", contentEdits);
+  return contentEdits;
+};
+
 function currentWip(): WipInfo | null {
   applyFlip();
   const paths = new Set<string>();
@@ -108,6 +127,8 @@ function currentWip(): WipInfo | null {
     changedFiles: paths.size,
     stagedFiles: wipStore.staged.length,
     untrackedFiles: wipStore.untracked.length,
+    // 쓰기(writeSalt)와 내용 편집(contentEdits) 어느 쪽이든 바뀌면 달라진다
+    contentToken: `mock-content-${writeSalt}-${contentEdits}-${flipped() ? 1 : 0}`,
   };
 }
 
@@ -151,7 +172,11 @@ function mockWipDiff(file: string, area: string): string {
     `+const AREA = \"${area}\";`,
     "+",
     "+/** 하네스 합성 diff */",
-    "+export const WIP_MARKER = true;",
+    // unstaged 쪽만 편집 횟수를 싣는다. __mockEdit() 뒤에 폴링이나 hunk 적용 직전 검사가
+    // 이 줄의 차이를 잡아야 한다
+    area === "unstaged" && contentEdits > 0
+      ? `+export const WIP_MARKER = ${contentEdits};`
+      : "+export const WIP_MARKER = true;",
     " ",
     " export function noop(): void {}",
   ].join("\n");
@@ -621,6 +646,8 @@ function installForcedUpdate(): void {
 //   ?auth=1           위 실패에 needsAuth:true를 붙인다 (터미널 핸드오프 검증)
 //   ?conflict=1       머지 충돌이 진행 중인 상태로 시작한다
 //   ?slow=1           쓰기마다 1.2초 지연 (스피너/중복 클릭 방지 검증)
+//
+// 콘솔: __mockEdit()  파일 수는 그대로, 내용만 바꾼다 (contentToken + unstaged diff 변경)
 // ════════════════════════════════════════════════════════════
 
 const PARAMS = new URLSearchParams(window.location.search);

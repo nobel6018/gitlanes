@@ -71,6 +71,12 @@ export interface WipInfo {
   stagedFiles: number;
   /** 그중 추적되지 않는 새 파일 수. v0.18에서 추가, 그래프 WIP 배지 3분할용 */
   untrackedFiles: number;
+  /**
+   * 변경 파일들의 내용 지문 (v0.15.1). 파일 수가 같아도 내용이 바뀌면 달라진다.
+   * 폴링이 이 값이 바뀐 것을 보고 열린 WIP diff를 다시 읽는다. 값 자체에 의미는 없고
+   * 같은지 다른지만 비교한다. 낡은 diff로 hunk를 스테이지하는 사고를 막는 장치다
+   */
+  contentToken: string;
 }
 
 /** 스태시 항목. 그래프에서 base 커밋 위에 의사 행으로 표시 */

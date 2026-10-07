@@ -15,6 +15,7 @@ import type {
   RebaseStep,
 } from "../types";
 import * as api from "./api";
+import { basename } from "./format";
 // 다이얼로그와 토스트의 모양은 ui-actions 소유다. 여기서 새로 정의하지 않고 그대로 쓴다
 import type { ConfirmSpec } from "./Dialogs";
 import type { ToastProps } from "./Toast";
@@ -46,7 +47,12 @@ export interface RepoActions {
   discard(files: string[], area?: DiscardArea): Promise<void>;
   stageAll(): Promise<void>;
   unstageAll(): Promise<void>;
-  applyPatch(patch: string, cached: boolean, reverse: boolean): Promise<void>;
+  /**
+   * 워킹 트리에서 버리는 경우(!cached && reverse)만 확인창을 띄운다.
+   * scope는 확인창에 보여줄 영향 범위("2 lines in src/a.ts" 같은 것). 선택 인자라
+   * 아직 넘기지 않는 호출 측도 그대로 컴파일된다 (v0.15.1)
+   */
+  applyPatch(patch: string, cached: boolean, reverse: boolean, scope?: string): Promise<void>;
   clean(paths: string[]): Promise<void>;
   // 커밋
   commit(options: CommitOptions): Promise<void>;
@@ -111,7 +117,11 @@ export interface UseRepoActionsOptions {
   repoPath: string;
   refreshAll: () => Promise<void>;
   confirm: (spec: ConfirmSpec) => Promise<boolean>;
-  toast: (t: ToastSpec) => void;
+  /**
+   * repoPath는 그 작업을 시작한 레포다. 인증 핸드오프가 토스트를 띄운 뒤 탭의 레포가
+   * 바뀌어도 원래 레포에서 명령을 돌리도록 토스트 항목에 함께 저장한다 (v0.15.1)
+   */
+  toast: (t: ToastSpec, repoPath?: string) => void;
   /**
    * 인증 실패 시 내장 터미널로 명령을 넘긴다.
    * 실제 버튼은 Toast가 그리므로(command/needsAuth를 토스트에 실어 보낸다) 여기서는
@@ -152,9 +162,13 @@ export function quoteArg(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
-/** OpResult.command를 사람이 복붙할 수 있는 한 줄 명령으로 만든다 */
-export function formatCommand(command: string[]): string {
-  return ["git", ...command].map(quoteArg).join(" ");
+/**
+ * OpResult.command를 사람이 복붙할 수 있는 한 줄 명령으로 만든다.
+ * `-C <repo>`를 박아 PTY 셸의 현재 디렉토리(사용자가 cd 했을 수 있다)와 무관하게
+ * 원래 레포에서 돌게 한다 (audit-state H1)
+ */
+export function formatCommand(command: string[], repoPath: string): string {
+  return ["git", "-C", repoPath, ...command].map(quoteArg).join(" ");
 }
 
 /** 한 번의 쓰기 작업 명세 */
@@ -190,8 +204,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
   }, []);
 
   const run = useCallback(
-    async (spec: RunSpec): Promise<void> => {
+    async (path: string, spec: RunSpec): Promise<void> => {
       const o = ref.current;
+      // 이 작업을 요청받은 레포. 끝났을 때 탭이 다른 레포로 바뀌었는지 비교한다
+      const startPath = path;
+      /** 끝난 시점에 탭이 다른 레포를 보고 있는가. 그렇다면 결과를 원래 레포 이름으로 알린다 */
+      const moved = () => ref.current.repoPath !== startPath;
+      const label = (message: string) =>
+        moved() ? `${basename(startPath)}: ${message}` : message;
       if (spec.confirm !== undefined) {
         const ok = await o.confirm(spec.confirm);
         if (!ok) {
@@ -204,7 +224,8 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
       try {
         const result = await enqueue(spec.call);
 
-        if (result.conflicts.length > 0) {
+        // 다른 레포 화면에서 WIP 패널을 열어 버리면 엉뚱한 레포의 충돌처럼 보인다
+        if (result.conflicts.length > 0 && !moved()) {
           o.onConflicts(result.conflicts);
         }
 
@@ -213,33 +234,39 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           // stderr는 message에 이어붙이지 않고 따로 넘긴다. 토스트가 접히는 영역에
           // 등폭으로 원문을 보존해야 사용자가 git 메시지를 그대로 읽고 복사한다.
           // durationMs를 주지 않으므로 실패 토스트는 사용자가 닫을 때까지 남는다
-          o.toast({
-            message: spec.failure,
-            tone: "error",
-            copyable: true,
-            stderr: detail === "" ? undefined : detail,
-            command: result.command,
-            needsAuth: result.needsAuth,
-          });
+          o.toast(
+            {
+              message: label(spec.failure),
+              tone: "error",
+              copyable: true,
+              stderr: detail === "" ? undefined : detail,
+              command: result.command,
+              needsAuth: result.needsAuth,
+            },
+            startPath,
+          );
           // 성공이든 실패든 새로고침한다. 실패해도 인덱스는 움직였을 수 있다
           await o.refreshAll();
           throw new Error(detail === "" ? spec.failure : detail);
         }
 
         if (spec.success !== null) {
-          o.toast({ message: spec.success, tone: "success" });
+          o.toast({ message: label(spec.success), tone: "success" }, startPath);
         }
         await o.refreshAll();
       } catch (err) {
         // command 자체가 reject 된 경우(인자 검증 실패 Err(String))도 여기로 온다
         if (!(err instanceof Error)) {
           const message = api.errorMessage(err);
-          o.toast({
-            message: spec.failure,
-            tone: "error",
-            copyable: true,
-            stderr: message,
-          });
+          o.toast(
+            {
+              message: label(spec.failure),
+              tone: "error",
+              copyable: true,
+              stderr: message,
+            },
+            startPath,
+          );
           await o.refreshAll();
           throw new Error(message);
         }
@@ -253,18 +280,20 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
   return useMemo<RepoActions>(() => {
     const path = repoPath;
+    // 액션이 만들어진 시점의 레포로 고정한다. run이 끝날 때 현재 레포와 비교하는 기준이다
+    const exec = (spec: RunSpec) => run(path, spec);
 
     return {
       // ── 스테이징 ─────────────────────────────────────────
       stage: (files) =>
-        run({
+        exec({
           success: null,
           failure: "Stage failed",
           call: () => api.gitStage(path, files),
         }),
 
       unstage: (files) =>
-        run({
+        exec({
           success: null,
           failure: "Unstage failed",
           call: () => api.gitUnstage(path, files),
@@ -272,7 +301,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // area별로 문구가 다르다. 동작을 가른 이유는 @see docs/decisions.md#discard-범위
       discard: (files, area = "all") =>
-        run({
+        exec({
           success: `Discarded ${fileWord(files.length)}`,
           failure: "Discard failed",
           confirm: {
@@ -290,28 +319,42 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }),
 
       stageAll: () =>
-        run({
+        exec({
           success: null,
           failure: "Stage all failed",
           call: () => api.gitStageAll(path),
         }),
 
       unstageAll: () =>
-        run({
+        exec({
           success: null,
           failure: "Unstage all failed",
           call: () => api.gitUnstageAll(path),
         }),
 
-      applyPatch: (patch, cached, reverse) =>
-        run({
+      // 워킹 트리에서 버리기는 파일 단위 discard와 같은 효과다. 실수로 옆 버튼을 눌러도
+      // 미커밋 변경이 사라지지 않게 확인을 받는다 (audit-state H2). 인덱스 쪽 조작은
+      // 워킹 트리에 내용이 남아 있어 되돌릴 수 있으므로 묻지 않는다
+      applyPatch: (patch, cached, reverse, scope) =>
+        exec({
           success: null,
           failure: "Applying the patch failed",
+          confirm:
+            !cached && reverse
+              ? {
+                  title: "Discard these changes?",
+                  body: "The selected changes will be removed from the file in the working tree.",
+                  undo: "This cannot be undone. Uncommitted changes are not stored anywhere, not even in the reflog.",
+                  scope: scope ?? null,
+                  confirmLabel: "Discard",
+                  danger: true,
+                }
+              : undefined,
           call: () => api.gitApplyPatch(path, patch, cached, reverse),
         }),
 
       clean: (paths) =>
-        run({
+        exec({
           success: `Deleted ${fileWord(paths.length)}`,
           failure: "Clean failed",
           confirm: {
@@ -327,14 +370,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // ── 커밋 ─────────────────────────────────────────────
       commit: (options) =>
-        run({
+        exec({
           success: options.amend ? "Commit amended" : "Committed",
           failure: options.amend ? "Amend failed" : "Commit failed",
           call: () => api.gitCommit(path, options),
         }),
 
       undoCommit: () =>
-        run({
+        exec({
           success: "Last commit undone, changes are staged",
           failure: "Undo commit failed",
           call: () => api.gitUndoCommit(path),
@@ -342,21 +385,21 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // ── 브랜치 ───────────────────────────────────────────
       checkout: (target, createLocal) =>
-        run({
+        exec({
           success: `Checked out ${target}`,
           failure: `Checkout of ${target} failed`,
           call: () => api.gitCheckout(path, target, createLocal),
         }),
 
       createBranch: (name, startPoint, checkout) =>
-        run({
+        exec({
           success: checkout ? `Created and checked out ${name}` : `Created ${name}`,
           failure: `Creating ${name} failed`,
           call: () => api.gitCreateBranch(path, name, startPoint, checkout),
         }),
 
       deleteBranch: (name, force, remote) =>
-        run({
+        exec({
           success: remote ? `Deleted ${name} on the remote` : `Deleted ${name}`,
           failure: `Deleting ${name} failed`,
           confirm: remote
@@ -382,14 +425,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }),
 
       renameBranch: (from, to) =>
-        run({
+        exec({
           success: `Renamed ${from} to ${to}`,
           failure: `Renaming ${from} failed`,
           call: () => api.gitRenameBranch(path, from, to),
         }),
 
       setUpstream: (branch, upstream) =>
-        run({
+        exec({
           success:
             upstream === null
               ? `Cleared upstream of ${branch}`
@@ -400,7 +443,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // ── 네트워크 ─────────────────────────────────────────
       fetch: (o) =>
-        run({
+        exec({
           success: o?.allRemotes === true ? "Fetched all remotes" : "Fetched",
           failure: "Fetch failed",
           call: () =>
@@ -414,14 +457,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }),
 
       pull: (mode) =>
-        run({
+        exec({
           success: "Pulled",
           failure: "Pull failed",
           call: () => api.gitPull(path, mode, null, null),
         }),
 
       push: (o) =>
-        run({
+        exec({
           success: o?.tags === true ? "Pushed tags" : "Pushed",
           failure: "Push failed",
           confirm:
@@ -429,7 +472,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
               ? {
                   title: "Force push with lease?",
                   body: "The remote branch will be overwritten with your local history. Commits that live only on the remote stop being reachable there.",
-                  undo: "Anyone who still has the old commits can push them back. --force-with-lease refuses the push if the remote moved since your last fetch, so this is not a blind overwrite.",
+                  undo: "Anyone who still has the old commits can push them back. The push is refused if the remote branch moved since your last fetch, or if it has commits you never integrated into your local branch, even when you fetched just now.",
                   scope: `${o?.remote ?? "origin"}/${o?.branch ?? "current branch"}`,
                   confirmLabel: "Force push",
                   danger: true,
@@ -448,7 +491,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // ── 히스토리 ─────────────────────────────────────────
       merge: (source, o) =>
-        run({
+        exec({
           success: o?.squash === true ? `Squash merged ${source}` : `Merged ${source}`,
           failure: `Merging ${source} failed`,
           call: () =>
@@ -458,35 +501,35 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
       // autostash를 켜둔다. 워킹 트리가 더러우면 git이 시작 자체를 거부하는데,
       // 그 실패는 사용자가 고칠 방법이 다이얼로그에 없다. 스태시는 리베이스 끝에 되돌아온다
       rebase: (upstream, onto) =>
-        run({
+        exec({
           success: `Rebased onto ${onto ?? upstream}`,
           failure: `Rebase onto ${onto ?? upstream} failed`,
           call: () => api.gitRebase(path, upstream, onto ?? null, true),
         }),
 
       rebaseInteractive: (base, steps) =>
-        run({
+        exec({
           success: `Rebased ${steps.length === 1 ? "1 commit" : `${steps.length} commits`}`,
           failure: "Interactive rebase failed",
           call: () => api.gitRebaseInteractive(path, base, steps),
         }),
 
       cherryPick: (shas, noCommit) =>
-        run({
+        exec({
           success: `Cherry-picked ${shas.length === 1 ? "1 commit" : `${shas.length} commits`}`,
           failure: "Cherry-pick failed",
           call: () => api.gitCherryPick(path, shas, noCommit, null),
         }),
 
       revert: (shas, noCommit) =>
-        run({
+        exec({
           success: `Reverted ${shas.length === 1 ? "1 commit" : `${shas.length} commits`}`,
           failure: "Revert failed",
           call: () => api.gitRevert(path, shas, noCommit, null),
         }),
 
       reset: (target, mode) =>
-        run({
+        exec({
           success: `Reset (${mode}) to ${target}`,
           failure: "Reset failed",
           confirm:
@@ -523,7 +566,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           .filter((part): part is string => part !== null && part !== "")
           .join(", ");
 
-        await run({
+        await exec({
           success:
             action === "abort"
               ? `Aborted the ${label}`
@@ -562,14 +605,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // ── 태그 ─────────────────────────────────────────────
       createTag: (name, target, message) =>
-        run({
+        exec({
           success: `Created tag ${name}`,
           failure: `Creating tag ${name} failed`,
           call: () => api.gitCreateTag(path, name, target, message),
         }),
 
       deleteTag: (name) =>
-        run({
+        exec({
           success: `Deleted tag ${name}`,
           failure: `Deleting tag ${name} failed`,
           confirm: {
@@ -584,7 +627,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }),
 
       pushTag: (remote, name, del) =>
-        run({
+        exec({
           success: del ? `Deleted tag ${name} on ${remote}` : `Pushed tag ${name}`,
           failure: del ? `Deleting tag ${name} on ${remote} failed` : `Pushing tag ${name} failed`,
           confirm: del
@@ -602,7 +645,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // ── 스태시 ───────────────────────────────────────────
       stashPush: (o) =>
-        run({
+        exec({
           success: "Stashed",
           failure: "Stash failed",
           call: () =>
@@ -616,14 +659,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }),
 
       stashApply: (stashRef, drop) =>
-        run({
+        exec({
           success: drop ? `Popped ${stashRef}` : `Applied ${stashRef}`,
           failure: drop ? `Popping ${stashRef} failed` : `Applying ${stashRef} failed`,
           call: () => api.gitStashApply(path, stashRef, drop),
         }),
 
       stashDrop: (stashRef) =>
-        run({
+        exec({
           success: `Dropped ${stashRef}`,
           failure: `Dropping ${stashRef} failed`,
           confirm: {
@@ -638,7 +681,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         }),
 
       stashBranch: (stashRef, name) =>
-        run({
+        exec({
           success: `Created ${name} from ${stashRef}`,
           failure: `Creating ${name} from ${stashRef} failed`,
           call: () => api.gitStashBranch(path, stashRef, name),
@@ -646,28 +689,28 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // ── remote ───────────────────────────────────────────
       addRemote: (name, url) =>
-        run({
+        exec({
           success: `Added remote ${name}`,
           failure: `Adding remote ${name} failed`,
           call: () => api.gitAddRemote(path, name, url),
         }),
 
       removeRemote: (name) =>
-        run({
+        exec({
           success: `Removed remote ${name}`,
           failure: `Removing remote ${name} failed`,
           call: () => api.gitRemoveRemote(path, name),
         }),
 
       renameRemote: (from, to) =>
-        run({
+        exec({
           success: `Renamed remote ${from} to ${to}`,
           failure: `Renaming remote ${from} failed`,
           call: () => api.gitRenameRemote(path, from, to),
         }),
 
       setRemoteUrl: (name, url) =>
-        run({
+        exec({
           success: `Updated the URL of ${name}`,
           failure: `Updating the URL of ${name} failed`,
           call: () => api.gitSetRemoteUrl(path, name, url),
@@ -675,14 +718,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // ── 워크트리 ─────────────────────────────────────────
       addWorktree: (dir, branch, createBranch) =>
-        run({
+        exec({
           success: `Added worktree at ${dir}`,
           failure: `Adding a worktree at ${dir} failed`,
           call: () => api.gitAddWorktree(path, dir, branch, createBranch),
         }),
 
       removeWorktree: (dir, force) =>
-        run({
+        exec({
           success: `Removed worktree at ${dir}`,
           failure: `Removing the worktree at ${dir} failed`,
           confirm: {
@@ -698,14 +741,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
 
       // ── 충돌 ─────────────────────────────────────────────
       resolveWith: (file, side) =>
-        run({
+        exec({
           success: `Resolved ${file} with ${side}`,
           failure: `Resolving ${file} failed`,
           call: () => api.gitResolveWith(path, file, side),
         }),
 
       markResolved: (files) =>
-        run({
+        exec({
           success: `Marked ${nameList(files)} resolved`,
           failure: "Marking resolved failed",
           call: () => api.gitMarkResolved(path, files),

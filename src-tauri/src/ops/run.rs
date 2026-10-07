@@ -97,10 +97,60 @@ pub fn op_command<S: AsRef<OsStr>>(repo: &str, args: &[S]) -> Command {
     // 편집기를 띄우려는 경로가 남아 있어도 여기서 막힌다
     cmd.env("GIT_EDITOR", "true");
 
+    // 경로 인자는 glob이 아니라 리터럴이다. 없으면 `note*` 하나를 discard할 때 clean이
+    // `note_draft.txt`까지 지운다(untracked라 복구 불가). 확인 다이얼로그에는 파일 하나만 보인다.
+    if takes_literal_pathspecs(args) {
+        cmd.env("GIT_LITERAL_PATHSPECS", "1");
+    }
+
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd
+}
+
+/// 사용자 훅을 돌리면서 우리에게서 경로 인자를 받지 않는 명령.
+///
+/// `GIT_LITERAL_PATHSPECS`는 환경변수라 훅 프로세스에 그대로 물려진다(`git --literal-pathspecs`도
+/// 내부에서 같은 변수를 세운다). 그러면 pre-commit 훅 안의 `git diff --cached -- '*.py'`가
+/// 아무것도 못 찾고, 린트가 조용히 건너뛰어진 채 커밋이 통과한다. 이 명령들은 경로를
+/// 받지 않으니 변수를 걸 이유가 없고, 걸지 않아야 사용자 훅이 터미널에서와 똑같이 돈다.
+///
+/// 기본은 "건다"다. 목록에 빠진 명령이 생겨도 결과는 훅의 glob이 리터럴이 되는 정도지만,
+/// 반대로 경로를 받는 명령에서 빠지면 다른 파일이 지워진다.
+const HOOK_RUNNING_VERBS: [&str; 8] = [
+    "commit",
+    "merge",
+    "rebase",
+    "cherry-pick",
+    "revert",
+    "push",
+    "pull",
+    "am",
+];
+
+/// `GIT_LITERAL_PATHSPECS`를 걸지 정한다. 예외는 두 갈래다.
+///
+/// - [`HOOK_RUNNING_VERBS`]: 훅으로 새어 들어가지 않게 뺀다
+/// - 경로 없는 `stash`: git이 내부에서 `clean -- :/`, `checkout -- :/`처럼 pathspec magic을
+///   쓴다. 변수가 걸리면 `:/`가 리터럴이 돼서 `stash -u`가 untracked 파일을 스태시에 넣고도
+///   워킹 트리에 그대로 남기고(pop이 "already exists"로 실패), `--keep-index`는 오류로 끝난다.
+///   경로를 넘기면 git이 그 경로를 내부 명령에 그대로 전달해 리터럴 처리가 정상 동작한다
+///   (v0.15.1 git 2.50에서 실측)
+fn takes_literal_pathspecs<S: AsRef<OsStr>>(args: &[S]) -> bool {
+    let verb = args.first().and_then(|verb| verb.as_ref().to_str());
+    match verb {
+        Some(verb) if HOOK_RUNNING_VERBS.contains(&verb) => false,
+        Some("stash") => has_paths(args),
+        _ => true,
+    }
+}
+
+/// `--` 뒤에 경로가 하나라도 있는가.
+fn has_paths<S: AsRef<OsStr>>(args: &[S]) -> bool {
+    args.iter()
+        .position(|arg| arg.as_ref() == "--")
+        .is_some_and(|at| at + 1 < args.len())
 }
 
 /// 자식 프로세스를 타임아웃과 함께 실행한다.
@@ -374,12 +424,24 @@ pub fn validate_remote(repo: &str, remote: &str) -> Result<String, String> {
 
 /// 파일 경로 목록을 검증한다. `--` 뒤에 놓더라도 빈 문자열은 git이 싫어한다.
 ///
+/// 경로는 **바이트 그대로** 쓴다. trim하면 ` a.txt`(앞에 공백)를 discard할 때 `a.txt`를
+/// 되돌린다. 공백으로 시작하거나 끝나는 파일 이름은 합법이고, 그 파일을 고른 것은 사용자다.
+///
+/// NUL은 프로세스 인자에 실을 수 없어 spawn이 "git이 설치되어 있는지 확인하세요"로 실패한다.
+/// 엉뚱한 안내가 뜨지 않게 여기서 먼저 거절한다.
+///
 /// `-` 시작 경로까지 막는 이유는 호출자가 `--`를 빠뜨렸을 때의 사고를 줄이기 위해서다.
 pub fn validate_paths(files: &[String]) -> Result<Vec<String>, String> {
+    if let Some(bad) = files.iter().find(|file| file.contains('\0')) {
+        return Err(format!(
+            "경로에 NUL 문자가 있습니다: {}",
+            bad.replace('\0', "\\0")
+        ));
+    }
     let cleaned: Vec<String> = files
         .iter()
-        .map(|file| file.trim().to_string())
         .filter(|file| !file.is_empty())
+        .cloned()
         .collect();
 
     if cleaned.is_empty() {
@@ -604,14 +666,57 @@ mod tests {
         assert_eq!(get("GIT_DIR"), Some(None));
     }
 
+    fn literal_env(args: &[&str]) -> Option<Option<String>> {
+        op_command(".", args)
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_LITERAL_PATHSPECS")
+            .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn 경로를_받는_명령에는_리터럴_pathspec이_걸린다() {
+        for args in [
+            &["add", "--", "a"][..],
+            &["restore", "--worktree", "--", "a"],
+            &["clean", "-q", "-fd", "--", "a"],
+            &["checkout", "--ours", "--", "a"],
+            &["stash", "push", "--", "a"],
+            &["status"],
+        ] {
+            assert_eq!(literal_env(args), Some(Some("1".to_string())), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn 훅을_돌리는_명령에는_리터럴_pathspec을_걸지_않는다() {
+        // 걸면 훅 안의 `git diff -- '*.py'`가 리터럴이 돼서 린트가 조용히 빠진다
+        for verb in HOOK_RUNNING_VERBS {
+            assert_eq!(literal_env(&[verb]), None, "{verb}");
+        }
+    }
+
+    #[test]
+    fn 경로_없는_stash에는_리터럴_pathspec을_걸지_않는다() {
+        // git stash가 내부에서 쓰는 `:/` magic이 리터럴이 되면 -u, --keep-index가 깨진다
+        for args in [
+            &["stash", "push", "--include-untracked"][..],
+            &["stash", "push", "--keep-index", "--"],
+            &["stash", "pop", "stash@{0}"],
+        ] {
+            assert_eq!(literal_env(args), None, "{args:?}");
+        }
+    }
+
     #[test]
     fn 경로_검증은_빈_목록과_옵션처럼_보이는_경로를_막는다() {
         assert!(validate_paths(&[]).is_err());
-        assert!(validate_paths(&["  ".to_string()]).is_err());
+        assert!(validate_paths(&[String::new()]).is_err());
         assert!(validate_paths(&["--cached".to_string()]).is_err());
+        assert!(validate_paths(&["a\0b".to_string()]).is_err());
+        // 앞뒤 공백은 이름의 일부다. 빈 문자열만 버린다
         assert_eq!(
             validate_paths(&[" a.txt ".to_string(), String::new(), "b/c.txt".to_string()]).unwrap(),
-            ["a.txt", "b/c.txt"]
+            [" a.txt ", "b/c.txt"]
         );
     }
 }

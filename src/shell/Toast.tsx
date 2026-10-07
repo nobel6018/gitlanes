@@ -26,6 +26,12 @@ export interface ToastProps {
   stderr?: string;
   /** 실제로 실행한 git 인자. 터미널 핸드오프에 그대로 넘긴다 */
   command?: string[];
+  /**
+   * "Run in terminal"이 실제로 보낼 한 줄 (`git -C <레포> ...`, 인용 포함).
+   * 화면 문구와 실행 명령이 어긋나지 않게 셸이 formatCommand로 만들어 넘긴다.
+   * 없으면 인자를 공백으로 이어 보여준다
+   */
+  commandLine?: string;
   /** stderr가 인증/권한 실패로 보이면 true */
   needsAuth?: boolean;
   /** 내장 PTY로 명령을 넘겨 사용자의 진짜 셸에서 실행시킨다 */
@@ -51,6 +57,7 @@ export function Toast({
   copyable,
   stderr,
   command,
+  commandLine,
   needsAuth,
   onRunInTerminal,
 }: ToastProps) {
@@ -66,7 +73,9 @@ export function Toast({
   }, [message, onClose, ms]);
 
   const hasStderr = stderr !== undefined && stderr.trim() !== "";
-  const cmdLine = command === undefined || command.length === 0 ? null : `git ${command.join(" ")}`;
+  const cmdLine =
+    commandLine ??
+    (command === undefined || command.length === 0 ? null : `git ${command.join(" ")}`);
   const copyPayload = hasStderr ? `${message}\n\n${stderr}` : message;
 
   return (

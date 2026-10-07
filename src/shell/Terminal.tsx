@@ -96,6 +96,10 @@ export function Terminal({ repoPath, visible, onClose, onSession }: TerminalProp
   const sawDataRef = useRef(false);
   const nudgeRef = useRef<number | null>(null);
   const [status, setStatus] = useState<Status>("idle");
+  /** 지금 보여줘야 할 레포. 아래 repoPath effect가 갱신한다 */
+  const pathRef = useRef(repoPath);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
 
   /** 현재 세션의 이벤트 구독을 모두 해제한다 */
   const dropListeners = useCallback(() => {
@@ -128,6 +132,11 @@ export function Terminal({ repoPath, visible, onClose, onSession }: TerminalProp
     exitedRef.current = false;
     sawDataRef.current = false;
     setStatus("opening");
+    // 세션을 여는 동안 탭의 레포가 바뀌면 이 세션은 옛 레포 디렉토리의 셸이다.
+    // 그대로 채택하면 헤더는 새 레포인데 명령은 옛 레포에서 돈다 (audit-state H1 시나리오 3)
+    const requested = repoPath;
+    const stale = () => pathRef.current !== requested;
+    let discarded = false;
     try {
       fitRef.current?.fit();
       const id = await invoke<string>("term_open", {
@@ -135,8 +144,9 @@ export function Terminal({ repoPath, visible, onClose, onSession }: TerminalProp
         cols: term.cols,
         rows: term.rows,
       });
-      if (disposedRef.current) {
+      if (disposedRef.current || stale()) {
         void invoke("term_close", { id }).catch(() => undefined);
+        discarded = !disposedRef.current;
         return;
       }
       setSessionId(id);
@@ -153,10 +163,16 @@ export function Terminal({ repoPath, visible, onClose, onSession }: TerminalProp
           `\r\n\x1b[2m[process exited: ${event.payload}] press Enter to restart\x1b[0m\r\n`,
         );
       });
-      if (disposedRef.current) {
+      if (disposedRef.current || stale()) {
+        // 리스너를 기다리는 사이 레포가 바뀌었다면 repoPath effect가 이미 이 id를 닫았다.
+        // 여기서 리스너를 남기면 옛 세션의 늦은 exit 이벤트가 새 세션 상태를 지운다
         onData();
         onExit();
+        if (idRef.current === id) {
+          setSessionId(null);
+        }
         void invoke("term_close", { id }).catch(() => undefined);
+        discarded = !disposedRef.current;
         return;
       }
       unlistenRef.current.push(onData, onExit);
@@ -175,6 +191,11 @@ export function Terminal({ repoPath, visible, onClose, onSession }: TerminalProp
       }
     } finally {
       openingRef.current = false;
+    }
+    // 버린 세션 대신 지금 레포로 다시 연다. 열려 있는 동안 들어온 repoPath effect는
+    // openingRef 때문에 새 세션을 열지 못했다
+    if (discarded && visibleRef.current) {
+      void openRef.current();
     }
   }, [repoPath, dropListeners]);
 
@@ -281,7 +302,6 @@ export function Terminal({ repoPath, visible, onClose, onSession }: TerminalProp
   }, [visible, status, openSession]);
 
   // repoPath가 바뀌면 이전 PTY는 버린다 (repoPath당 1개)
-  const pathRef = useRef(repoPath);
   useEffect(() => {
     if (pathRef.current === repoPath) {
       return;

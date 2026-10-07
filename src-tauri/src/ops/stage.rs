@@ -5,7 +5,7 @@
 use crate::git;
 use crate::model::OpResult;
 
-use super::run::{lines_of, run_op, run_op_with_input, validate_paths, LOCAL_TIMEOUT};
+use super::run::{run_op, run_op_with_input, validate_paths, LOCAL_TIMEOUT};
 
 /// 인덱스에 올린다. 추적되지 않는 파일도 `add`가 그대로 받는다.
 #[tauri::command]
@@ -71,9 +71,18 @@ pub fn git_discard(path: String, files: Vec<String>, area: String) -> Result<OpR
 }
 
 /// 추적되지 않는 파일 경로 집합. `git_discard`가 되돌릴지 지울지 가르는 데 쓴다.
+///
+/// `-z`로 받아 `\0`로만 나눈다. 줄 단위로 읽고 trim하면 ` a.txt`가 `a.txt`로 바뀌어
+/// untracked 판정에서 빠지고, clean 대신 restore로 가서 아무것도 안 지운 채 성공한다.
+/// 개행이 든 파일 이름도 `-z`여야 한 덩어리로 온다.
 fn untracked_set(repo: &str) -> std::collections::HashSet<String> {
-    git::run(repo, &["ls-files", "--others", "--exclude-standard"])
-        .map(|out| lines_of(&out).into_iter().collect())
+    git::run(repo, &["ls-files", "-z", "--others", "--exclude-standard"])
+        .map(|out| {
+            out.split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -108,8 +117,11 @@ pub fn git_clean(path: String, paths: Vec<String>) -> Result<OpResult, String> {
 /// 패치는 **stdin으로** 넘긴다. 임시 파일을 쓰면 경로 인코딩, 권한, 정리 실패가 전부
 /// 새로운 실패 지점이 된다.
 ///
-/// `--unidiff-zero`는 프론트가 재구성한 패치에 문맥 줄이 0개일 수 있어서 필요하다.
-/// git은 문맥 0인 패치를 기본적으로 거부한다(적용 위치를 추정할 수 없다고 본다).
+/// `--unidiff-zero`는 쓰지 않는다. 그 옵션은 context 없는 패치를 받으려고 git의 위치
+/// 검증("뒤쪽 context가 없는 hunk는 파일 끝에서만 맞는다")을 끈다. 그러면 낡은 diff로 같은
+/// hunk를 두 번 stage할 때 파일 끝/앞 삽입이 거절되지 않고 줄이 중복된다. 원료 diff를
+/// `-U3`으로 고정했으므로(commands.rs `PATCH_SOURCE_DIFF_ARGS`) 엔진이 만드는 패치에는
+/// context가 남고, 이 옵션이 필요 없다.
 /// `--whitespace=nowarn`은 원본에 이미 있던 공백 문제로 스테이징이 실패하지 않게 한다.
 #[tauri::command]
 pub fn git_apply_patch(
@@ -122,7 +134,7 @@ pub fn git_apply_patch(
         return Err("패치가 비어 있습니다".to_string());
     }
 
-    let mut args: Vec<&str> = vec!["apply", "--unidiff-zero", "--whitespace=nowarn"];
+    let mut args: Vec<&str> = vec!["apply", "--whitespace=nowarn"];
     if cached {
         args.push("--cached");
     }
@@ -203,6 +215,7 @@ pub fn git_create_patch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::run::lines_of;
     use crate::testrepo::TempRepo;
 
     /// 커밋 하나와 그 위의 변경 하나를 가진 저장소.
@@ -419,6 +432,103 @@ mod tests {
         assert!(exists(&repo, "keep.txt"));
     }
 
+    /// glob 문자가 든 이름의 추적 파일과, 그 glob에 걸리는 다른 추적 파일이 함께 있는 저장소.
+    fn glob_names() -> TempRepo {
+        let repo = TempRepo::init("gitlanes-literal");
+        repo.write("data[1].csv", "base\n");
+        repo.write("data1.csv", "base\n");
+        repo.write("pages/[id].tsx", "base\n");
+        repo.write("pages/i.tsx", "base\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        for name in ["data[1].csv", "data1.csv", "pages/[id].tsx", "pages/i.tsx"] {
+            repo.write(name, "changed\n");
+        }
+        repo
+    }
+
+    #[test]
+    fn discard는_대괄호_이름을_glob으로_풀지_않는다() {
+        let repo = glob_names();
+
+        let result = git_discard(
+            repo.path(),
+            vec!["data[1].csv".to_string()],
+            "worktree".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(read(&repo, "data[1].csv"), "base\n");
+        assert_eq!(
+            read(&repo, "data1.csv"),
+            "changed\n",
+            "glob [1]에 걸린 data1.csv의 수정이 사라졌다"
+        );
+    }
+
+    #[test]
+    fn clean은_별표_이름을_glob으로_풀지_않는다() {
+        let repo = TempRepo::init("gitlanes-literal-clean");
+        repo.write("base.txt", "base\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("note*", "지울 파일\n");
+        repo.write("note_draft.txt", "남겨야 할 초안\n");
+
+        let result =
+            git_discard(repo.path(), vec!["note*".to_string()], "all".to_string()).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(!exists(&repo, "note*"));
+        assert!(
+            exists(&repo, "note_draft.txt"),
+            "glob note*에 걸린 untracked 파일이 지워졌다(복구 불가)"
+        );
+
+        repo.write("note*", "다시\n");
+        let cleaned = git_clean(repo.path(), vec!["note*".to_string()]).unwrap();
+        assert!(cleaned.ok, "{cleaned:?}");
+        assert!(exists(&repo, "note_draft.txt"));
+    }
+
+    #[test]
+    fn stage는_대괄호_이름을_glob으로_풀지_않는다() {
+        let repo = glob_names();
+
+        let result = git_stage(repo.path(), vec!["pages/[id].tsx".to_string()]).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(staged_files(&repo), ["pages/[id].tsx"]);
+    }
+
+    #[test]
+    fn 앞에_공백이_있는_경로는_공백_없는_파일과_다른_파일이다() {
+        let repo = TempRepo::init("gitlanes-space");
+        repo.write("a.txt", "a\n");
+        repo.write(" a.txt", "a\n");
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("a.txt", "중요한 수정\n");
+        repo.write(" a.txt", "버릴 수정\n");
+        repo.write(" fresh.txt", "버릴 새 파일\n");
+
+        let result = git_discard(
+            repo.path(),
+            vec![" a.txt".to_string(), " fresh.txt".to_string()],
+            "worktree".to_string(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(read(&repo, " a.txt"), "a\n");
+        assert_eq!(
+            read(&repo, "a.txt"),
+            "중요한 수정\n",
+            "trim 때문에 다른 파일(a.txt)을 되돌렸다"
+        );
+        assert!(
+            !exists(&repo, " fresh.txt"),
+            "untracked 판정이 trim으로 어긋나 clean이 아니라 restore로 갔다"
+        );
+    }
+
     /// 파일 두 군데를 고친 뒤 한 hunk만 스테이지한다. hunk 단위 스테이징의 핵심 시나리오다.
     #[test]
     fn apply_patch는_고른_hunk만_인덱스에_올린다() {
@@ -473,6 +583,39 @@ mod tests {
         assert!(git::run(repo.path(), &["diff", "--cached"])
             .unwrap()
             .is_empty());
+    }
+
+    /// 낡은 diff로 같은 hunk를 두 번 stage하는 상황. 파일 끝 삽입은 뒤쪽 context가 없어서
+    /// `--unidiff-zero`가 "파일 끝에서만 맞는다" 검사를 끄면 두 번째도 성공해 줄이 중복된다.
+    #[test]
+    fn 파일_끝_삽입_패치를_두_번_적용하면_두_번째는_거절된다() {
+        let repo = TempRepo::init("gitlanes-apply-twice");
+        let base: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+        repo.write("f.txt", &base);
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.write("f.txt", &format!("{base}NEW\n"));
+
+        let patch = git::run(
+            repo.path(),
+            &[
+                "diff",
+                "-U3",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--",
+                "f.txt",
+            ],
+        )
+        .unwrap();
+
+        let first = git_apply_patch(repo.path(), patch.clone(), true, false).unwrap();
+        assert!(first.ok, "{first:?}");
+        let second = git_apply_patch(repo.path(), patch, true, false).unwrap();
+        assert!(!second.ok, "이미 적용된 패치가 또 적용됐다: {second:?}");
+
+        let index = git::run(repo.path(), &["show", ":f.txt"]).unwrap();
+        assert_eq!(index, format!("{base}NEW\n"), "인덱스에 줄이 중복됐다");
     }
 
     #[test]

@@ -11,9 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 24: tests/*.mts를 플래그 없이 바로 실행한다 (22는 22.18 미만에서 --experimental-strip-types 필요)
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -35,6 +36,11 @@ jobs:
           fi
 
       - run: npm run build
+
+      # 부분 스테이징 엔진(hunks.ts)을 실제 git으로 검증한다. Rust와 같은 diff/apply 인자를 흉내 낸다
+      - name: Patch engine test
+        run: npm run test:patch
+
       - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
