@@ -5,7 +5,7 @@
 use crate::git;
 use crate::model::{CommitOptions, OpResult};
 
-use super::run::{run_op, LOCAL_TIMEOUT};
+use super::run::{finish, run_op, Outcome, LOCAL_TIMEOUT};
 
 /// 인덱스에 올라간 것을 커밋한다.
 ///
@@ -84,9 +84,69 @@ fn expand_home(raw: &str) -> std::path::PathBuf {
 ///
 /// `reset --soft HEAD~1`은 머지 커밋에서도 안전하다. 첫 부모로 옮기고 트리를 손대지
 /// 않으므로 머지 결과가 전부 인덱스에 남는다. `--hard`였다면 그게 사라진다.
+///
+/// 루트 커밋은 `HEAD~1`이 없어 git 원문 오류("ambiguous argument 'HEAD~1'")가 그대로 떴다.
+/// 거절 문구로 바꾸는 대신 실제로 되돌린다. 브랜치 ref를 지우면 첫 커밋 전 상태가 되고
+/// 트리는 인덱스에 남는다(`A a.txt`). 프론트의 성공 문구 "changes are staged"와 정확히 같은
+/// 결과이고, 원래 sha는 `.git/logs/HEAD`에 남아 `git reset --soft <sha>`로 되찾는다.
+/// 일반 커밋의 `reset --soft`와 되돌릴 수 있는 정도가 같아 거절할 이유가 없다.
+///
+/// 루트 판정은 커밋 객체의 `parent` 줄로 한다. 얕은 클론의 경계 커밋은 `HEAD~1`이 없지만
+/// 부모가 있다. 그걸 루트로 보면 멀쩡한 브랜치를 첫 커밋 전으로 만든다.
 #[tauri::command(async)]
 pub fn git_undo_commit(path: String) -> Result<OpResult, String> {
-    run_op(&path, &["reset", "--soft", "HEAD~1"], LOCAL_TIMEOUT)
+    const RESET: [&str; 3] = ["reset", "--soft", "HEAD~1"];
+
+    let Ok(raw) = git::run(&path, &["cat-file", "commit", "HEAD"]) else {
+        return Ok(refused(&path, &RESET, "There is no commit to undo yet."));
+    };
+    let header = raw.split("\n\n").next().unwrap_or_default();
+    if header.lines().any(|line| line.starts_with("parent ")) {
+        if git::run(&path, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_err() {
+            return Ok(refused(
+                &path,
+                &RESET,
+                "The parent commit is not in this shallow clone. Fetch more history (git fetch --deepen=1) and try again.",
+            ));
+        }
+        return run_op(&path, &RESET, LOCAL_TIMEOUT);
+    }
+
+    // detached HEAD에 `update-ref -d HEAD`를 걸면 HEAD 파일 자체가 지워져 레포가 깨진다
+    let Ok(branch) = git::run(&path, &["symbolic-ref", "-q", "HEAD"]) else {
+        return Ok(refused(
+            &path,
+            &RESET,
+            "Cannot undo the first commit on a detached HEAD. Check out a branch first.",
+        ));
+    };
+    let branch = branch.trim_end().to_string();
+    let head = git::run(&path, &["rev-parse", "HEAD"])?.trim().to_string();
+    // 옛 값을 붙여 확인과 삭제 사이에 브랜치가 움직였으면 git이 거절하게 한다
+    run_op(
+        &path,
+        &[
+            "update-ref",
+            "-m",
+            "undo first commit (GitLanes)",
+            "-d",
+            branch.as_str(),
+            head.as_str(),
+        ],
+        LOCAL_TIMEOUT,
+    )
+}
+
+/// git을 돌리지 않고 실패 결과를 만든다. OpResult를 직접 만들지 않고 [`finish`]를 거쳐
+/// 필드가 늘어도 이 파일이 깨지지 않게 한다.
+fn refused(repo: &str, command: &[&str], message: &str) -> OpResult {
+    let outcome = Outcome {
+        code: Some(1),
+        stdout: String::new(),
+        stderr: message.to_string(),
+        timed_out: false,
+    };
+    finish(repo, command, outcome, LOCAL_TIMEOUT)
 }
 
 #[cfg(test)]
@@ -273,11 +333,69 @@ mod tests {
         assert_eq!(staged.trim(), "b.txt");
     }
 
+    /// R-L1. 루트 커밋에는 `HEAD~1`이 없다. 브랜치를 첫 커밋 전으로 돌려 변경을 인덱스에 남긴다.
     #[test]
-    fn 첫_커밋에서는_undo가_실패한다() {
+    fn 첫_커밋의_undo는_브랜치를_첫_커밋_전으로_돌린다() {
         let repo = based("gitlanes-undo-root");
+        let root = repo.rev("HEAD");
+
+        let result = git_undo_commit(repo.path()).unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(
+            git::run(repo.path(), &["rev-parse", "--verify", "-q", "HEAD"]).is_err(),
+            "HEAD가 아직 커밋을 가리킨다"
+        );
+        assert_eq!(
+            git::run(repo.path(), &["status", "--porcelain"]).unwrap(),
+            "A  a.txt\n",
+            "변경이 인덱스에 남아야 한다"
+        );
+        // 되찾을 길이 남아 있다. HEAD reflog에 원래 sha가 있다
+        let reflog = std::fs::read_to_string(format!("{}/.git/logs/HEAD", repo.path())).unwrap();
+        assert!(reflog.contains(&root), "{reflog}");
+    }
+
+    #[test]
+    fn 커밋이_없으면_undo는_읽을_수_있는_이유로_실패한다() {
+        let repo = TempRepo::init("gitlanes-undo-unborn");
         let result = git_undo_commit(repo.path()).unwrap();
         assert!(!result.ok, "{result:?}");
-        assert!(!result.stderr.is_empty(), "{result:?}");
+        assert!(result.stderr.contains("no commit to undo"), "{result:?}");
+    }
+
+    /// detached HEAD의 루트 커밋은 지울 브랜치가 없다. `update-ref -d HEAD`는 HEAD 파일 자체를
+    /// 지워 레포를 망가뜨리므로 거절한다.
+    #[test]
+    fn detached_루트_커밋의_undo는_거절한다() {
+        let repo = based("gitlanes-undo-detached");
+        let root = repo.rev("HEAD");
+        repo.git(&["checkout", "-q", "--detach"]);
+
+        let result = git_undo_commit(repo.path()).unwrap();
+        assert!(!result.ok, "{result:?}");
+        assert!(result.stderr.contains("detached"), "{result:?}");
+        assert_eq!(repo.rev("HEAD"), root);
+        assert_eq!(repo.rev("main"), root);
+    }
+
+    /// 얕은 클론의 경계 커밋은 부모가 있지만 받아 오지 않았다. 루트로 오인해 브랜치를 지우면 안 된다.
+    #[test]
+    fn 얕은_클론의_경계_커밋은_루트로_보지_않는다() {
+        let origin = based("gitlanes-undo-origin");
+        origin.write("b.txt", "b\n");
+        origin.git(&["add", "-A"]);
+        origin.git(&["commit", "-qm", "두 번째"]);
+
+        let shallow = TempRepo::init("gitlanes-undo-shallow");
+        let url = format!("file://{}", origin.path());
+        shallow.git(&["fetch", "-q", "--depth", "1", url.as_str(), "main"]);
+        shallow.git(&["update-ref", "refs/heads/main", "FETCH_HEAD"]);
+        shallow.git(&["reset", "-q", "--hard"]);
+        let tip = shallow.rev("HEAD");
+
+        let result = git_undo_commit(shallow.path()).unwrap();
+        assert!(!result.ok, "{result:?}");
+        assert!(result.stderr.contains("shallow"), "{result:?}");
+        assert_eq!(shallow.rev("main"), tip, "브랜치가 지워졌다");
     }
 }
