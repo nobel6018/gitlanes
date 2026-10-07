@@ -797,3 +797,57 @@ ui-hub는 각 메서드에서 다음을 한다: 확인이 필요하면 다이얼
 | fix-patch | `src/shell/hunks.ts`, `src/shell/DiffPanel.tsx`, 신규 `tests/**`, `package.json`(scripts만), `.github/workflows/ci.yml` | `npm run build` + `npm run test:patch` |
 
 동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`. 새 npm 의존성 금지(테스트는 Node 내장 기능만 쓴다).
+
+---
+
+# v0.15.2 - 멈춤 제거 + 범위를 좁힌 새로고침
+
+> 2026-10-07 감사 후속. 타입 변경 없음. 기능 추가 없음.
+
+## 1. git을 실행하는 command는 메인 스레드를 떠난다
+
+Tauri 2에서 `async`가 없는 command는 IPC 핸들러 안에서 바로 실행되고, macOS에서 그 핸들러는 메인 스레드다.
+push가 최대 120초 걸리는 동안 창 전체가 멈춘다. 동기 함수에 `#[tauri::command(async)]`를 붙이면 본문은 그대로
+스레드 풀에서 돈다(tauri-macros `sync_threadpool` 경로).
+
+| 대상 | 실행 위치 | 이유 |
+|---|---|---|
+| `commands::*` (git 읽기), `ops::*` (git 쓰기), `term_open` | 스레드 풀 (`async`) | git이나 셸을 띄우고 기다린다 |
+| `term_write`, `term_resize`, `term_close` | 메인 스레드 (그대로) | 키 입력 순서가 보장돼야 한다. 스레드 풀로 보내면 호출 순서가 뒤바뀔 수 있다 |
+| `native::set_recent_repos` | 메인 스레드 (그대로) | macOS 메뉴(AppKit)를 다시 만든다 |
+| `native::reveal_path`, `native::open_in_terminal` | 메인 스레드 (그대로) | 즉시 끝나고 바꿀 이유가 없다 |
+
+## 2. 타임아웃은 프로세스 그룹 전체를 죽인다
+
+`child.kill()`은 git만 죽인다. 훅의 셸, ssh, git-remote-https가 stdout/stderr를 상속해 쥐고 있으면 리더 스레드가
+끝나지 않아 함수가 반환하지 않는다. 유닉스에서는 새 프로세스 그룹으로 띄우고 타임아웃 때 그룹 전체를 죽인다.
+kill 뒤 리더 join에도 상한을 둔다.
+
+## 3. graphToken에 체크아웃된 브랜치와 스태시 목록을 넣는다
+
+지금은 ref(종류, 이름, sha)와 HEAD sha만 섞는다. 같은 커밋을 가리키는 다른 브랜치로 checkout하거나
+`stash@{1}`을 drop하면 지문이 안 바뀐다. 각 ref의 `is_head`와 스태시 목록(sha 순서)을 함께 섞는다.
+`load_graph`와 `get_repo_state`가 같은 함수로 계산한다.
+
+## 4. 새로고침은 graphToken이 바뀔 때만 그래프를 다시 읽는다
+
+쓰기 뒤와 폴링 모두 같은 규칙:
+- `get_repo_state`를 먼저 읽는다
+- `graphToken`이 바뀌었으면 그래프를 다시 읽는다(skip=0, 깊이 유지) + `list_refs`
+- 안 바뀌었으면 그래프 행은 그대로 두고 `data.wip`만 새 `RepoState.wip`으로 교체한다(WIP 행 배지와 존재 여부)
+- 쓰기 뒤에는 WIP 상세, 열린 WIP diff, sync, conflicts를 항상 다시 읽는다
+
+## 5. 쓰기 도중에는 폴링하지 않는다
+
+command가 메인 스레드를 떠나면 IPC가 동시에 돈다. 폴링이 쓰기 도중 끼어들어 리베이스 중간 상태를 읽거나
+`index.lock`과 부딪친다. 쓰기가 진행 중(`busy`)이면 폴링을 건너뛴다. 쓰기가 끝나면 4번 새로고침이 어차피 돈다.
+
+## 소유권
+
+| 패키지 | 소유 파일 | 완료 기준 |
+|---|---|---|
+| async-rust | `src-tauri/**` | `cargo test` + `cargo clippy --all-targets -- -D warnings` + `cargo fmt --check` |
+| async-ui | `src/shell/RepoWorkspace.tsx`, `src/shell/actions.ts`, `src/shell/devApp.tsx` | `npm run build` + `npm run test:patch` |
+
+동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm 의존성 금지.
+Rust 의존성은 이미 `Cargo.lock`에 있는 크레이트(`libc` 등)를 직접 의존으로 올리는 것만 허용한다.
