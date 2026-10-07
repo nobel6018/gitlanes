@@ -361,3 +361,371 @@ fn looks_like_full_ref(name: &str) -> bool {
 fn is_oid(text: &str) -> bool {
     matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testrepo::TempRepo;
+
+    fn snapshot(repo: &TempRepo) -> RefSnapshot {
+        get_ref_snapshot(repo.path()).unwrap()
+    }
+
+    /// 프론트 액션 계층이 하는 일: 작업 전후로 스냅샷을 찍어 항목을 만든다
+    fn record(repo: &TempRepo, kind: UndoKind, action: impl FnOnce()) -> UndoEntry {
+        let before = snapshot(repo);
+        action();
+        UndoEntry {
+            kind,
+            label: format!("Undo {kind:?}"),
+            before,
+            after: snapshot(repo),
+            reset_mode: None,
+        }
+    }
+
+    fn undo(repo: &TempRepo, entry: &UndoEntry) -> OpResult {
+        git_undo(repo.path(), entry.clone()).unwrap()
+    }
+
+    fn out(repo: &TempRepo, args: &[&str]) -> String {
+        git::run(repo.path(), args).unwrap().trim().to_string()
+    }
+
+    fn base() -> TempRepo {
+        TempRepo::linear("gitlanes-undo", 2)
+    }
+
+    #[test]
+    fn 스냅샷은_head와_브랜치와_태그_객체_sha를_담는다() {
+        let repo = base();
+        repo.git(&["branch", "topic", "HEAD~1"]);
+        repo.git(&["tag", "light"]);
+        repo.git(&["tag", "-a", "-m", "릴리스", "v1"]);
+
+        let snap = snapshot(&repo);
+        assert_eq!(snap.head_ref.as_deref(), Some("refs/heads/main"));
+        assert_eq!(snap.head_sha, repo.rev("HEAD"));
+        assert_eq!(snap.refs["refs/heads/topic"], repo.rev("HEAD~1"));
+        assert_eq!(snap.refs["refs/tags/light"], repo.rev("HEAD"));
+        // annotated 태그는 커밋이 아니라 태그 객체 sha
+        assert_eq!(snap.refs["refs/tags/v1"], repo.rev("refs/tags/v1"));
+        assert_ne!(snap.refs["refs/tags/v1"], repo.rev("HEAD"));
+        assert_eq!(snap.refs.len(), 4);
+
+        repo.git(&["checkout", "-q", "--detach", "HEAD~1"]);
+        let detached = snapshot(&repo);
+        assert_eq!(detached.head_ref, None);
+        assert_eq!(detached.head_sha, repo.rev("HEAD"));
+
+        let empty = TempRepo::init("gitlanes-undo-empty");
+        let unborn = snapshot(&empty);
+        assert_eq!(unborn.head_ref.as_deref(), Some("refs/heads/main"));
+        assert_eq!(unborn.head_sha, "");
+        assert!(unborn.refs.is_empty());
+    }
+
+    #[test]
+    fn 커밋_취소는_변경을_스테이지에_남긴다() {
+        let repo = base();
+        let old_head = repo.rev("HEAD");
+        let entry = record(&repo, UndoKind::Commit, || {
+            repo.write("new.txt", "새 파일\n");
+            repo.git(&["add", "new.txt"]);
+            repo.git(&["commit", "-qm", "추가"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(repo.rev("HEAD"), old_head);
+        assert_eq!(out(&repo, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+        assert_eq!(out(&repo, &["diff", "--cached", "--name-only"]), "new.txt");
+    }
+
+    #[test]
+    fn amend_취소는_원래_커밋으로_돌린다() {
+        let repo = base();
+        let old_head = repo.rev("HEAD");
+        let entry = record(&repo, UndoKind::Amend, || {
+            repo.git(&["commit", "-q", "--amend", "-m", "고친 메시지"]);
+        });
+        assert_ne!(entry.after.head_sha, old_head);
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(repo.rev("HEAD"), old_head);
+    }
+
+    #[test]
+    fn 첫_커밋_취소는_브랜치를_unborn으로_돌린다() {
+        let repo = TempRepo::init("gitlanes-undo-root");
+        let entry = record(&repo, UndoKind::Commit, || {
+            repo.write("a.txt", "a\n");
+            repo.git(&["add", "a.txt"]);
+            repo.git(&["commit", "-qm", "첫 커밋"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(snapshot(&repo).head_sha, "");
+        assert_eq!(out(&repo, &["diff", "--cached", "--name-only"]), "a.txt");
+    }
+
+    #[test]
+    fn checkout_취소는_원래_브랜치로_돌아간다() {
+        let repo = base();
+        repo.git(&["branch", "topic", "HEAD~1"]);
+        let entry = record(&repo, UndoKind::Checkout, || {
+            repo.git(&["checkout", "-q", "topic"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert!(result.command.contains(&"--".to_string()), "{result:?}");
+        assert_eq!(out(&repo, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+        assert_eq!(repo.rev("HEAD"), entry.before.head_sha);
+    }
+
+    #[test]
+    fn detached에서_한_checkout_취소는_그_커밋으로_돌아간다() {
+        let repo = base();
+        repo.git(&["checkout", "-q", "--detach", "HEAD~1"]);
+        let detached_at = repo.rev("HEAD");
+        let entry = record(&repo, UndoKind::Checkout, || {
+            repo.git(&["checkout", "-q", "main"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(snapshot(&repo).head_ref, None);
+        assert_eq!(repo.rev("HEAD"), detached_at);
+    }
+
+    #[test]
+    fn 브랜치_생성_취소는_브랜치를_지운다() {
+        let repo = base();
+        let entry = record(&repo, UndoKind::CreateBranch, || {
+            repo.git(&["branch", "topic", "HEAD~1"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(snapshot(&repo), entry.before);
+    }
+
+    #[test]
+    fn checkout까지_한_브랜치_생성_취소는_원래_브랜치로_돌아간_뒤_지운다() {
+        let repo = base();
+        let entry = record(&repo, UndoKind::CreateBranch, || {
+            repo.git(&["checkout", "-qb", "topic"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(snapshot(&repo), entry.before);
+    }
+
+    #[test]
+    fn 브랜치_삭제_취소는_같은_sha로_다시_만든다() {
+        let repo = base();
+        repo.git(&["branch", "topic", "HEAD~1"]);
+        let entry = record(&repo, UndoKind::DeleteBranch, || {
+            repo.git(&["branch", "-D", "topic"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(snapshot(&repo), entry.before);
+    }
+
+    #[test]
+    fn head_브랜치_이름_변경_취소는_head와_upstream_설정도_옛_이름으로_돌린다() {
+        let repo = base();
+        repo.git(&["config", "branch.main.remote", "origin"]);
+        repo.git(&["config", "branch.main.merge", "refs/heads/main"]);
+        let entry = record(&repo, UndoKind::RenameBranch, || {
+            repo.git(&["branch", "-m", "main", "trunk"]);
+        });
+        assert_eq!(entry.after.head_ref.as_deref(), Some("refs/heads/trunk"));
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(snapshot(&repo), entry.before);
+        assert_eq!(out(&repo, &["config", "branch.main.remote"]), "origin");
+        assert!(git::run(repo.path(), &["config", "branch.trunk.remote"]).is_err());
+    }
+
+    #[test]
+    fn head가_아닌_브랜치_이름_변경_취소() {
+        let repo = base();
+        repo.git(&["branch", "topic", "HEAD~1"]);
+        let entry = record(&repo, UndoKind::RenameBranch, || {
+            repo.git(&["branch", "-m", "topic", "feature"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(snapshot(&repo), entry.before);
+    }
+
+    #[test]
+    fn 태그_생성_취소는_태그를_지운다() {
+        let repo = base();
+        let entry = record(&repo, UndoKind::CreateTag, || {
+            repo.git(&["tag", "-a", "-m", "릴리스", "v1"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(snapshot(&repo), entry.before);
+    }
+
+    #[test]
+    fn annotated_태그_삭제_취소는_태그_객체째_메시지까지_되살린다() {
+        let repo = base();
+        repo.git(&["tag", "-a", "-m", "첫 릴리스 노트", "v1"]);
+        let entry = record(&repo, UndoKind::DeleteTag, || {
+            repo.git(&["tag", "-d", "v1"]);
+        });
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(snapshot(&repo), entry.before);
+        assert_eq!(out(&repo, &["cat-file", "-t", "refs/tags/v1"]), "tag");
+        assert_eq!(
+            out(&repo, &["tag", "-l", "--format=%(contents)", "v1"]),
+            "첫 릴리스 노트"
+        );
+    }
+
+    fn reset_entry(repo: &TempRepo, mode: ResetMode, flag: &str) -> UndoEntry {
+        let mut entry = record(repo, UndoKind::Reset, || {
+            repo.git(&["reset", "-q", flag, "HEAD~1"]);
+        });
+        entry.reset_mode = Some(mode);
+        entry
+    }
+
+    #[test]
+    fn soft와_mixed_reset_취소는_같은_모드로_되돌린다() {
+        for (mode, flag) in [(ResetMode::Soft, "--soft"), (ResetMode::Mixed, "--mixed")] {
+            let repo = base();
+            let old_head = repo.rev("HEAD");
+            let entry = reset_entry(&repo, mode, flag);
+
+            let result = undo(&repo, &entry);
+            assert!(result.ok, "{mode:?} {result:?}");
+            assert!(result.command.contains(&flag.to_string()), "{result:?}");
+            assert_eq!(repo.rev("HEAD"), old_head, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn hard_reset_취소는_깨끗한_워킹트리에서만_한다() {
+        let repo = base();
+        let old_head = repo.rev("HEAD");
+        let entry = reset_entry(&repo, ResetMode::Hard, "--hard");
+
+        repo.write("scratch.txt", "작업 중\n");
+        let refused = undo(&repo, &entry);
+        assert!(!refused.ok, "{refused:?}");
+        assert!(refused.stderr.contains("uncommitted"), "{refused:?}");
+        assert!(refused.command.is_empty(), "{refused:?}");
+        assert_eq!(repo.rev("HEAD"), entry.after.head_sha);
+
+        std::fs::remove_file(std::path::Path::new(&repo.path()).join("scratch.txt")).unwrap();
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(repo.rev("HEAD"), old_head);
+        assert_eq!(out(&repo, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn reset_모드가_없는_항목은_오류다() {
+        let repo = base();
+        let entry = record(&repo, UndoKind::Reset, || {
+            repo.git(&["reset", "-q", "--soft", "HEAD~1"]);
+        });
+        assert!(git_undo(repo.path(), entry).is_err());
+    }
+
+    #[test]
+    fn 그_사이_다른_커밋이_생기면_거절하고_아무것도_바꾸지_않는다() {
+        let repo = base();
+        let entry = record(&repo, UndoKind::Commit, || {
+            repo.write("a.txt", "a\n");
+            repo.git(&["add", "a.txt"]);
+            repo.git(&["commit", "-qm", "a"]);
+        });
+        repo.write("b.txt", "b\n");
+        repo.git(&["add", "b.txt"]);
+        repo.git(&["commit", "-qm", "b"]);
+        let now = snapshot(&repo);
+
+        let result = undo(&repo, &entry);
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.stderr, STALE_MESSAGE);
+        assert_eq!(snapshot(&repo), now);
+        assert_eq!(out(&repo, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn 지운_브랜치를_그_사이_다시_만들었으면_거절한다() {
+        let repo = base();
+        repo.git(&["branch", "topic", "HEAD~1"]);
+        let entry = record(&repo, UndoKind::DeleteBranch, || {
+            repo.git(&["branch", "-D", "topic"]);
+        });
+        repo.git(&["branch", "topic", "HEAD"]);
+
+        let result = undo(&repo, &entry);
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(repo.rev("topic"), repo.rev("HEAD"));
+    }
+
+    #[test]
+    fn 작업과_무관한_ref가_바뀐_것은_막지_않는다() {
+        let repo = base();
+        let entry = record(&repo, UndoKind::CreateTag, || {
+            repo.git(&["tag", "v1"]);
+        });
+        repo.git(&["branch", "unrelated"]);
+
+        let result = undo(&repo, &entry);
+        assert!(result.ok, "{result:?}");
+        assert!(!snapshot(&repo).refs.contains_key("refs/tags/v1"));
+        assert!(snapshot(&repo).refs.contains_key("refs/heads/unrelated"));
+    }
+
+    #[test]
+    fn 줄바꿈이_섞인_ref_이름은_update_ref에_닿기_전에_거절한다() {
+        let repo = base();
+        repo.git(&["branch", "keep"]);
+        let mut entry = record(&repo, UndoKind::CreateTag, || {
+            repo.git(&["tag", "v1"]);
+        });
+        let sha = entry.after.refs.remove("refs/tags/v1").unwrap();
+        entry
+            .after
+            .refs
+            .insert("refs/tags/v1 x\ndelete refs/heads/keep".to_string(), sha);
+
+        assert!(git_undo(repo.path(), entry).is_err());
+        assert!(snapshot(&repo).refs.contains_key("refs/heads/keep"));
+    }
+
+    #[test]
+    fn undo_entry는_types_ts_모양으로_역직렬화된다() {
+        let json = r#"{
+            "kind": "renameBranch",
+            "label": "Undo rename",
+            "before": { "headRef": null, "headSha": "", "refs": {} },
+            "after": { "headRef": "refs/heads/main", "headSha": "", "refs": {} },
+            "resetMode": "hard"
+        }"#;
+        let entry: UndoEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.kind, UndoKind::RenameBranch);
+        assert_eq!(entry.reset_mode, Some(ResetMode::Hard));
+        assert_eq!(entry.after.head_ref.as_deref(), Some("refs/heads/main"));
+    }
+}
