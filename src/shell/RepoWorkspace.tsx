@@ -246,6 +246,9 @@ const TERM_WRITE_DELAY_MS = 120;
  */
 const NOTICE_ERROR_MS = 8000;
 
+/** get_rebase_steps가 이보다 오래 걸릴 때만 진행 토스트를 띄운다 */
+const REBASE_PROGRESS_DELAY_MS = 300;
+
 /** 확인 다이얼로그 한 건. resolve로 사용자의 선택을 액션 계층에 돌려준다 */
 interface PendingConfirm {
   spec: ConfirmSpec;
@@ -1488,6 +1491,8 @@ export function RepoWorkspace({
 
   /** getRebaseSteps 응답을 기다리는 중인가. 메뉴를 연달아 눌러 요청이 겹치는 것을 막는다 */
   const rebaseLoadingRef = useRef(false);
+  /** 같은 값을 화면에 보이는 쪽. 기다리는 동안 메뉴 항목을 비활성으로 그린다 */
+  const [rebaseLoading, setRebaseLoading] = useState(false);
 
   /**
    * "Interactive rebase from here". 클릭한 커밋이 base로 남고 `base..HEAD`가 편집 대상이다.
@@ -1502,6 +1507,15 @@ export function RepoWorkspace({
         return;
       }
       rebaseLoadingRef.current = true;
+      setRebaseLoading(true);
+      // 큰 레포에서는 rev-list가 수 초 걸린다. 메뉴는 클릭과 함께 닫히므로 아무 반응이 없어
+      // 보인다. 금방 끝나는 경우 깜빡임만 남지 않게 잠깐 기다렸다가 진행 토스트를 띄우고,
+      // 끝나면 직접 걷어 낸다(durationMs 0은 자동으로 사라지지 않는다)
+      let progressToast: number | null = null;
+      const progressTimer = window.setTimeout(() => {
+        pushToast({ message: "Reading the commits to rebase\u2026", tone: "info", durationMs: 0 });
+        progressToast = toastSeq.current;
+      }, REBASE_PROGRESS_DELAY_MS);
       let steps: RebaseStep[];
       try {
         steps = await getRebaseSteps(path, sha);
@@ -1511,7 +1525,12 @@ export function RepoWorkspace({
         }
         return;
       } finally {
+        window.clearTimeout(progressTimer);
+        if (progressToast !== null) {
+          dismissToast(progressToast);
+        }
         rebaseLoadingRef.current = false;
+        setRebaseLoading(false);
       }
       // 기다리는 사이 탭이 다른 레포로 바뀌었거나 에디터가 이미 열려 있으면 버린다
       if (repoRef.current?.path !== path || rebaseRef.current !== null) {
@@ -1523,7 +1542,7 @@ export function RepoWorkspace({
       }
       setRebase({ base: sha, steps });
     },
-    [showError],
+    [showError, pushToast, dismissToast],
   );
 
   const closeRebaseEditor = useCallback(() => setRebase(null), []);
@@ -1940,7 +1959,10 @@ export function RepoWorkspace({
         },
         {
           label: "Interactive rebase from here\u2026",
-          title: "Reorder, squash or drop the commits above this one",
+          disabled: rebaseLoading,
+          title: rebaseLoading
+            ? "Still reading the commits for the previous request"
+            : "Reorder, squash or drop the commits above this one",
           onSelect: () => void openRebaseEditor(sha),
         },
         {
@@ -1997,6 +2019,7 @@ export function RepoWorkspace({
     openNewBranchPrompt,
     openNewTagPrompt,
     openRebaseEditor,
+    rebaseLoading,
   ]);
 
   const previewWidth = useCallback((name: "sidebar" | "detail", width: number) => {
