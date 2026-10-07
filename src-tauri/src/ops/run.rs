@@ -31,6 +31,12 @@ pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 /// 로컬만 만지는 작업(checkout/branch/merge/stash)의 상한.
 pub const LOCAL_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// git이 끝난 뒤(정상 종료든 kill이든) 읽기 스레드를 기다리는 상한.
+///
+/// 남은 파이프 버퍼를 비우는 데는 밀리초면 충분하다. 이보다 오래 걸린다면 그룹 밖의
+/// 프로세스가 파이프를 쥐고 있다는 뜻이고, 기다려도 끝난다는 보장이 없다.
+const READER_GRACE: Duration = Duration::from_secs(2);
+
 /// 종료를 기다리는 폴링 간격. 사람이 못 느끼는 지연이면서 폴링 비용도 없는 값.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -165,6 +171,10 @@ pub fn execute(command: Command, timeout: Duration) -> Result<Outcome, String> {
 /// stdout/stderr는 물론 **stdin 쓰기도 별도 스레드**여야 한다. 패치가 파이프 버퍼(보통
 /// 64KB)보다 크면 부모는 쓰기에서, 자식은 출력 쓰기에서 서로를 기다리다 타임아웃까지
 /// 교착된다. 다 쓰고 나면 파이프를 닫아야 `git apply`가 EOF를 보고 끝난다.
+///
+/// 유닉스에서는 git을 **새 프로세스 그룹**으로 띄운다. git이 낳은 훅의 셸, ssh,
+/// git-remote-https는 파이프를 상속해 쥐고 있어서 git만 죽이면 읽기 스레드가 끝나지 않는다.
+/// 타임아웃 때 그룹 전체를 죽이고, 그래도 남는 파이프에 대비해 스레드 join에 상한을 둔다.
 pub fn execute_with_input(
     mut command: Command,
     timeout: Duration,
@@ -173,64 +183,119 @@ pub fn execute_with_input(
     if input.is_some() {
         command.stdin(Stdio::piped());
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // 0이면 자식 pid가 곧 새 그룹 id다. 앱의 그룹과 떨어지니 killpg가 앱을 건드리지 않는다.
+        command.process_group(0);
+    }
 
     let mut child = command
         .spawn()
         .map_err(|e| format!("git 실행에 실패했습니다. git이 설치되어 있는지 확인하세요: {e}"))?;
 
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let mut stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdin = child.stdin.take();
 
-    std::thread::scope(|scope| {
-        let out_reader = scope.spawn(move || drain(stdout.as_mut()));
-        let err_reader = scope.spawn(move || drain(stderr.as_mut()));
-        // 쓰기가 끝나면 stdin을 drop해서 파이프를 닫는다. 닫지 않으면 자식이 EOF를
-        // 못 보고 영원히 기다린다.
-        let in_writer = scope.spawn(move || {
-            if let (Some(mut pipe), Some(bytes)) = (stdin.take(), input) {
-                let _ = pipe.write_all(&bytes);
-                let _ = pipe.flush();
-            }
-        });
+    // scope를 쓰지 않는다. scope는 끝에서 join을 강제해서, 손자 프로세스가 파이프를 놓지
+    // 않으면 상한 없이 막힌다. 상한을 넘긴 스레드는 버려야 하므로 'static 스레드로 띄운다.
+    let out_reader = std::thread::spawn(move || drain(stdout));
+    let err_reader = std::thread::spawn(move || drain(stderr));
+    // 쓰기가 끝나면 stdin을 drop해서 파이프를 닫는다. 닫지 않으면 자식이 EOF를
+    // 못 보고 영원히 기다린다.
+    let in_writer = std::thread::spawn(move || {
+        if let (Some(mut pipe), Some(bytes)) = (stdin, input) {
+            let _ = pipe.write_all(&bytes);
+            let _ = pipe.flush();
+        }
+    });
 
-        let deadline = Instant::now() + timeout;
-        let mut status = None;
-        loop {
-            match child.try_wait() {
-                Ok(Some(done)) => {
-                    status = Some(done);
-                    break;
-                }
-                Ok(None) => {}
-                Err(error) => return Err(format!("git 종료를 기다리지 못했습니다: {error}")),
-            }
-            if Instant::now() >= deadline {
+    let deadline = Instant::now() + timeout;
+    let mut status = None;
+    loop {
+        match child.try_wait() {
+            Ok(Some(done)) => {
+                status = Some(done);
                 break;
             }
-            std::thread::sleep(POLL_INTERVAL);
+            Ok(None) => {}
+            Err(error) => {
+                kill_tree(&mut child);
+                return Err(format!("git 종료를 기다리지 못했습니다: {error}"));
+            }
         }
-
-        // kill을 해야 파이프가 닫히고 읽기 스레드가 끝난다
-        let timed_out = status.is_none();
-        if timed_out {
-            let _ = child.kill();
-            let _ = child.wait();
+        if Instant::now() >= deadline {
+            break;
         }
+        std::thread::sleep(POLL_INTERVAL);
+    }
 
-        let _ = in_writer.join();
-        Ok(Outcome {
-            code: status.and_then(|status| status.code()),
-            stdout: out_reader.join().unwrap_or_default(),
-            stderr: err_reader.join().unwrap_or_default(),
-            timed_out,
-        })
+    let timed_out = status.is_none();
+    if timed_out {
+        kill_tree(&mut child);
+    }
+
+    // git이 끝난 뒤에도 파이프를 쥔 프로세스가 있을 수 있다. 정상 종료 쪽은 훅이
+    // `서버 &`처럼 백그라운드로 띄운 것이고, 그건 사용자가 의도한 것이라 죽이지 않는다.
+    // 어느 쪽이든 git의 출력은 이미 다 나왔으니 기다리는 시간만 자른다.
+    let joined = Instant::now() + READER_GRACE;
+    join_within(in_writer, joined);
+    Ok(Outcome {
+        code: status.and_then(|status| status.code()),
+        stdout: join_within(out_reader, joined).unwrap_or_default(),
+        stderr: join_within(err_reader, joined).unwrap_or_default(),
+        timed_out,
     })
 }
 
+/// 타임아웃으로 죽일 때 git과 그 자손을 함께 죽인다.
+///
+/// 유닉스는 그룹 id(= git pid)로 `killpg`한다. pid 재사용 걱정은 없다. 아직 `wait`로
+/// 거두지 않은 자식은 끝났더라도 좀비로 남아 pid와 그룹 id를 붙들고 있다.
+/// `setsid`로 그룹을 빠져나간 프로세스(ssh ControlPersist 마스터 등)는 여기서 못 죽인다.
+/// 그 경우는 [`join_within`]의 상한이 반환을 보장한다.
+#[cfg(unix)]
+fn kill_tree(child: &mut std::process::Child) {
+    if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: 인자는 정수뿐이고, 실패(ESRCH 등)는 반환값으로만 알린다.
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
+    // killpg가 실패해도 git 자신은 확실히 죽인다
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Windows는 정식 지원 전이라 git만 죽이는 기존 동작을 유지한다.
+#[cfg(not(unix))]
+fn kill_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// 스레드가 `deadline` 안에 끝나면 결과를, 아니면 None을 준다.
+///
+/// 표준 라이브러리에는 시간 제한 join이 없어 `is_finished`를 폴링한다. 끝나지 않은 스레드는
+/// handle을 drop해서 떼어낸다(detach). 그 스레드는 파이프 읽기 끝을 쥔 채 `read`에서
+/// 기다리다가, 마지막 writer(그룹 밖으로 빠져나간 손자)가 끝나는 순간 EOF를 보고 스스로
+/// 끝난다. 그때까지 남는 것은 스레드 스택 하나와 그동안 읽은 출력뿐이고, 그 writer가 영원히
+/// 살아 있지 않는 한 새는 것은 없다. 타임아웃이 날 때마다 쌓일 수 있지만 그룹 kill이 대부분을
+/// 정리하므로 실제로 남는 경우는 드물다.
+fn join_within<T>(handle: std::thread::JoinHandle<T>, deadline: Instant) -> Option<T> {
+    while !handle.is_finished() {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    handle.join().ok()
+}
+
 /// 파이프를 끝까지 읽는다. 임의 인코딩이 올 수 있어 lossy 변환을 쓴다.
-fn drain<R: Read>(source: Option<&mut R>) -> String {
-    let Some(source) = source else {
+fn drain<R: Read>(source: Option<R>) -> String {
+    let Some(mut source) = source else {
         return String::new();
     };
     let mut buffer = Vec::new();
@@ -718,5 +783,164 @@ mod tests {
             validate_paths(&[" a.txt ".to_string(), String::new(), "b/c.txt".to_string()]).unwrap(),
             [" a.txt ", "b/c.txt"]
         );
+    }
+}
+
+/// 타임아웃 뒤 프로세스 그룹 정리. 손자 프로세스가 파이프를 쥐는 경우를 재현한다.
+///
+/// 각 시나리오를 별도 스레드에서 돌리고 상한을 걸어 기다린다. 고치기 전 코드는 여기서
+/// 영원히 반환하지 않아서, 상한이 없으면 테스트가 실패하는 대신 멈춘다.
+#[cfg(all(test, unix))]
+mod group_kill_tests {
+    use super::*;
+    use crate::testrepo::TempRepo;
+    use std::sync::mpsc;
+
+    fn within<T: Send + 'static>(limit: Duration, job: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(job());
+        });
+        receiver
+            .recv_timeout(limit)
+            .unwrap_or_else(|_| panic!("{limit:?} 안에 반환하지 않았다"))
+    }
+
+    /// 그룹에 살아 있는 프로세스가 없어질 때까지 잠깐 기다린다. 고아는 launchd/init이 거둔다.
+    fn group_is_gone(pgid: i32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            // SAFETY: 시그널 0은 존재 확인만 한다. 아무 프로세스에도 영향이 없다.
+            let alive = unsafe { libc::kill(-pgid, 0) } == 0;
+            if !alive {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    fn read_number(path: &std::path::Path) -> i32 {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(number) = text.trim().parse() {
+                    return number;
+                }
+            }
+            assert!(Instant::now() < deadline, "{path:?}를 읽지 못했다");
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// `sleep 30`을 자식으로 두고 기다리는 pre-commit 훅. sleep이 stdout/stderr 파이프를 상속한다.
+    fn repo_with_sleeping_hook() -> (TempRepo, std::path::PathBuf) {
+        let repo = TempRepo::linear("gl-group-hook", 1);
+        let marks = std::path::PathBuf::from(repo.path()).join(".git");
+        let hook = marks.join("hooks").join("pre-commit");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nps -o pgid= -p $$ > '{dir}/hook.pgid'\nsleep 30 &\necho $! > '{dir}/hook.sleep'\nwait\n",
+                dir = marks.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        repo.write("counter.txt", "changed\n");
+        repo.git(&["add", "-A"]);
+        (repo, marks)
+    }
+
+    #[test]
+    fn 훅이_파이프를_쥐어도_타임아웃에_반환한다() {
+        let (repo, _marks) = repo_with_sleeping_hook();
+        let path = repo.path();
+        let started = Instant::now();
+        let result = within(Duration::from_secs(15), move || {
+            run_op(&path, &["commit", "-m", "x"], Duration::from_secs(1)).unwrap()
+        });
+
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "타임아웃 1초인데 {:?} 걸렸다",
+            started.elapsed()
+        );
+        assert!(!result.ok);
+        assert!(result.stderr.contains("timed out"), "{result:?}");
+    }
+
+    #[test]
+    fn 타임아웃_뒤_훅의_프로세스_그룹에_남은_프로세스가_없다() {
+        let (repo, marks) = repo_with_sleeping_hook();
+        let path = repo.path();
+        let result = within(Duration::from_secs(15), move || {
+            run_op(&path, &["commit", "-m", "x"], Duration::from_secs(1)).unwrap()
+        });
+        assert!(!result.ok);
+
+        let pgid = read_number(&marks.join("hook.pgid"));
+        let sleeper = read_number(&marks.join("hook.sleep"));
+        // SAFETY: getpgrp는 인자가 없고 실패하지 않는다.
+        let own = unsafe { libc::getpgrp() };
+        assert_ne!(pgid, own, "git이 테스트 프로세스와 같은 그룹에서 돌았다");
+        assert!(group_is_gone(pgid), "그룹 {pgid}에 프로세스가 남았다");
+        // SAFETY: 시그널 0은 존재 확인만 한다.
+        assert_ne!(
+            unsafe { libc::kill(sleeper, 0) },
+            0,
+            "훅의 sleep이 살아 있다"
+        );
+    }
+
+    #[test]
+    fn 배너를_안_보내는_ssh_서버로_fetch해도_타임아웃에_반환한다() {
+        // accept만 하고 아무것도 보내지 않는다. ssh는 서버 배너를 영원히 기다린다.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+
+        let repo = TempRepo::linear("gl-group-ssh", 1);
+        let path = repo.path();
+        let url = format!("ssh://git@127.0.0.1:{port}/x.git");
+        let started = Instant::now();
+        let result = within(Duration::from_secs(15), move || {
+            run_op(&path, &["fetch", url.as_str()], Duration::from_secs(2)).unwrap()
+        });
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "타임아웃 2초인데 {:?} 걸렸다",
+            started.elapsed()
+        );
+        assert!(!result.ok);
+        assert!(result.stderr.contains("timed out"), "{result:?}");
+
+        // ssh가 고아로 남지 않았다
+        let pattern = format!("[-]p {port} ");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let found = Command::new("pgrep")
+                .args(["-f", pattern.as_str()])
+                .output()
+                .unwrap();
+            if !found.status.success() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "ssh가 남아 있다: {}",
+                String::from_utf8_lossy(&found.stdout)
+            );
+            std::thread::sleep(POLL_INTERVAL);
+        }
     }
 }
