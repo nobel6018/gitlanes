@@ -13,7 +13,7 @@ declare module "node:buffer" {
     static concat(list: readonly Uint8Array[]): Buffer;
     equals(other: Uint8Array): boolean;
     toString(encoding?: BufferEncoding): string;
-  }
+  }  export function isUtf8(input: Uint8Array): boolean;
 }
 
 declare module "node:process" {

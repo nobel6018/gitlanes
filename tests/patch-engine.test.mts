@@ -263,7 +263,7 @@ const repoCache = new Map<string, {
   file: string;
   index: Buffer;
   indexBlob: Buffer | null;
-  diffs: Map<string, string>;
+  diffs: Map<string, WipDiff>;
   work: Buffer | null;
 }>();
 /** repoFor가 되돌린 직후의 인덱스 내용. 첫 runOp가 git show를 생략하려고 한 번 꺼내 쓴다 */
@@ -282,7 +282,7 @@ function repoFor(spec: RepoSpec): { repo: string; file: string } {
   }
   const ctx = makeRepo(spec);
   const indexBlob = readIndex(ctx.repo, ctx.file);
-  const diffs = new Map<string, string>();
+  const diffs = new Map<string, WipDiff>();
   repoCache.set(key, { ...ctx, index: readIndexFile(ctx.repo), indexBlob, diffs, work: readWork(ctx.repo, ctx.file) });
   restoredIndexBlob.set(ctx.repo, indexBlob);
   pristineDiffs.set(ctx.repo, diffs);
