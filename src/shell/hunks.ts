@@ -451,7 +451,8 @@ function renameToModification(header: string[]): string[] {
     )
     .map((line) => {
       if (line.startsWith("diff --git ")) {
-        return `diff --git ${oldSide} ${newPath}`;
+        // 공백이 든 경로는 ---/+++ 끝에 탭이 붙는다. diff --git 줄에는 탭이 없다
+        return `diff --git ${oldSide.replace(/\t$/, "")} ${newPath.replace(/\t$/, "")}`;
       }
       if (line.startsWith("--- ")) {
         return `--- ${oldSide}`;

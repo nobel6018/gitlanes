@@ -25,7 +25,6 @@ const startedAt = performance.now();
 // 시나리오를 실행은 하되 실패를 세지 않는다. 고쳐져서 통과하면 표시를 지우라고 알린다.
 
 const KNOWN = {
-  M2: "skipped (audit-patch M2: staged rename diff lacks old path. v16-paths fixes it in the Rust diff, unskip after merge)",
   M3: "skipped (audit-patch M3: stale diff is a state-refresh issue, guarded by WipInfo.contentToken in the UI)",
   H4: "skipped (audit-patch H4: lossy UTF-8 decode, blocked in DiffPanel via hasLossyDecoding, not in the engine)",
 } as const;
@@ -107,11 +106,39 @@ function wipDiff(repo: string, file: string, area: "staged" | "unstaged", mode: 
   if (area === "staged") args.push("--cached");
   args.push("--no-color", "--no-ext-diff", "-M", "--src-prefix=a/", "--dst-prefix=b/", "--no-textconv");
   args.push(mode === "u0" ? "-U0" : "-U3");
-  args.push("--", file);
+  args.push("--");
+  // commands.rs get_wip_file_diff: staged 갈래는 file이 rename의 새 경로면 원 경로를 앞에 함께 넣는다
+  const source = area === "staged" ? stagedRenames(repo).find(([, to]) => to === file)?.[0] : undefined;
+  if (source !== undefined) args.push(source);
+  args.push(file);
   // Buffer.toString("utf8")은 잘못된 바이트를 U+FFFD로 바꾼다. from_utf8_lossy와 같다
   const diff = execFileSync("git", ["-C", repo, ...args], { env: BASE_ENV, stdio: ["pipe", "pipe", "pipe"] }).toString("utf8");
   cache?.set(cacheKey, diff);
   return diff;
+}
+
+/** src-tauri/src/ops/stage.rs staged_renames. 스테이지된 R 쌍 (원 경로, 새 경로). C는 원 경로가 살아 있어 뺀다 */
+function stagedRenames(repo: string): [string, string][] {
+  const out = execFileSync("git", ["-C", repo, "diff", "--cached", "-M", "--name-status", "--no-ext-diff", "-z"], {
+    env: BASE_ENV,
+    stdio: ["pipe", "pipe", "pipe"],
+  }).toString("utf8");
+  const fields = out.split("\0");
+  const pairs: [string, string][] = [];
+  for (let i = 0; i < fields.length; i++) {
+    const status = fields[i];
+    if (status === "") continue;
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const from = fields[i + 1];
+      const to = fields[i + 2];
+      i += 2;
+      if (from === undefined || to === undefined) break;
+      if (status.startsWith("R")) pairs.push([from, to]);
+    } else {
+      i += 1;
+    }
+  }
+  return pairs;
 }
 
 /** src-tauri/src/ops/stage.rs git_apply_patch */
@@ -898,17 +925,84 @@ scenario("mode change + content: discarding one hunk keeps the worktree mode", (
   const exec = (statSync(join(ctx.repo, ctx.file)).mode & 0o111) !== 0;
   check(exec, "hunk discard does not drop the executable bit from the worktree file");
 });
-scenario("staged rename + edit: unstage one line", () => {
+// staged rename은 원 경로를 함께 넣어 rename diff로 나온다(audit-patch M2, commands.rs). 부분 역방향 패치가
+// rename 헤더를 그대로 실으면 고른 줄과 함께 rename까지 풀린다. 엔진이 새 경로끼리의 수정 패치로 바꾼다
+/** old.txt(BASE20)를 to로 옮기고 MULTI로 고쳐 함께 stage한 레포. 인덱스 바이트를 돌려줘 되돌릴 수 있게 한다 */
+function stagedRenameRepo(to: string): { repo: string; file: string; index: Buffer } {
   const ctx = makeRepo({ head: BASE20, file: "old.txt" });
-  git(ctx.repo, ["mv", "old.txt", "new.txt"]);
-  writeFileSync(join(ctx.repo, "new.txt"), MULTI);
-  git(ctx.repo, ["add", "new.txt"]);
-  const diff = wipDiff(ctx.repo, "new.txt", "staged");
-  // pathspec이 new.txt 하나라 -M이 짝을 못 찾는다. 이름 변경이 "새 파일 전체 추가"로 보인다
-  check(diff.includes("rename from old.txt"), "staged WIP diff of a renamed file shows the rename", diff.split("\n").slice(0, 6).join("\n"));
-  const r = applyPatch(ctx.repo, buildLinePatch(parseUnifiedDiff(diff), new Set([lineKey(0, 1)]), true), true, true);
-  check(r.ok, "unstage one line (the L2 edit) of a renamed file", r.stderr.trim());
-}, KNOWN.M2);
+  mkdirSync(dirname(join(ctx.repo, to)), { recursive: true });
+  git(ctx.repo, ["mv", "old.txt", to]);
+  writeFileSync(join(ctx.repo, to), MULTI);
+  git(ctx.repo, ["add", "--", to]);
+  return { repo: ctx.repo, file: to, index: readIndexFile(ctx.repo) };
+}
+/** 인덱스의 rename 상태. "R old.txt -> new.txt" 같은 꼴 */
+function stagedStatus(repo: string): string {
+  const out = git(repo, ["diff", "--cached", "-M", "--name-status", "-z"]).toString("utf8").split("\0").filter((f) => f !== "");
+  const rows: string[] = [];
+  for (let i = 0; i < out.length; i++) {
+    const status = out[i];
+    rows.push(status.startsWith("R") ? `R ${out[++i]} -> ${out[++i]}` : `${status} ${out[++i]}`);
+  }
+  return rows.join(", ");
+}
+scenario("staged rename + edit: the WIP diff is a rename", () => {
+  const ctx = stagedRenameRepo("new.txt");
+  const diff = wipDiff(ctx.repo, ctx.file, "staged");
+  check(diff.includes("rename from old.txt") && !diff.includes("new file mode"), "staged WIP diff of a renamed file shows the rename", diff.split("\n").slice(0, 6).join("\n"));
+});
+for (const to of ["new.txt", 'dir/q"x y.txt']) {
+  scenario(`staged rename + edit: unstage one line keeps the rename (${to})`, () => {
+    const ctx = stagedRenameRepo(to);
+    const r = runOp(ctx, "unstage", { lines: ["+L2"] });
+    check(!r.patch.includes("rename from"), "partial reverse patch drops the rename header", r.patch.split("\n").slice(0, 4).join("\n"));
+    check(stagedStatus(ctx.repo) === `R old.txt -> ${to}`, "rename stays staged", `  status: ${stagedStatus(ctx.repo)}`);
+  });
+}
+scenario("staged rename + edit: unstage every proper subset of lines", () => {
+  const ctx = stagedRenameRepo("new.txt");
+  const keys = changeKeys(wipDiff(ctx.repo, ctx.file, "staged"));
+  for (let mask = 1; mask < (1 << keys.length) - 1; mask++) {
+    writeFileSync(join(ctx.repo, ".git", "index"), ctx.index);
+    pristineDiffs.delete(ctx.repo);
+    const pick = keys.filter((_, i) => mask & (1 << i));
+    runOp(ctx, "unstage", { keys: pick });
+    check(stagedStatus(ctx.repo) === "R old.txt -> new.txt", `rename stays staged after unstaging ${pick.join(",")}`, `  status: ${stagedStatus(ctx.repo)}`);
+  }
+});
+scenario("staged rename + edit: unstaging every line also unstages the rename", () => {
+  // 파일 단위 unstage(ops/stage.rs with_rename_sources)와 같은 결과: 원 경로가 HEAD 내용으로 인덱스에 돌아온다
+  const ctx = stagedRenameRepo("new.txt");
+  const diff = wipDiff(ctx.repo, ctx.file, "staged");
+  const patch = buildLinePatch(parseUnifiedDiff(diff), new Set(changeKeys(diff)), true);
+  check(patch.includes("rename from old.txt"), "whole-file reverse patch keeps the rename header");
+  const work = readWork(ctx.repo, ctx.file);
+  const r = applyPatch(ctx.repo, patch, true, true);
+  check(r.ok, "apply succeeds (unstage all)", r.stderr.trim());
+  eqBuf(readIndex(ctx.repo, "old.txt"), buf(BASE20), "old path is back in the index with HEAD content");
+  check(readIndex(ctx.repo, ctx.file) === null, "new path leaves the index");
+  eqBuf(readWork(ctx.repo, ctx.file), work, "worktree untouched by cached op");
+});
+scenario("staged rename + further worktree edit: stage one line keeps the rename", () => {
+  const ctx = stagedRenameRepo("new.txt");
+  writeFileSync(join(ctx.repo, ctx.file), MULTI.replace("l5\n", "L5\n").replace("l15\n", "L15\n"));
+  const r = runOp(ctx, "stage", { lines: ["+L5"] });
+  check(!r.diff.includes("rename from"), "unstaged diff of a renamed file is a plain edit");
+  check(stagedStatus(ctx.repo) === "R old.txt -> new.txt", "rename stays staged", `  status: ${stagedStatus(ctx.repo)}`);
+});
+scenario("rename header in the forward direction: partial stage carries the rename", () => {
+  // 앱의 unstaged diff에는 rename이 나오지 않는다. 엔진이 정방향 rename 헤더를 그대로 두는지만 본다.
+  // 새 경로가 아직 인덱스에 없으므로 새 경로끼리로 바꾸면 거절된다
+  const ctx = stagedRenameRepo("new.txt");
+  const diff = wipDiff(ctx.repo, ctx.file, "staged");
+  git(ctx.repo, ["reset", "-q"]);
+  const picked = resolvePick(diff, { lines: ["+L2"] });
+  const patch = buildLinePatch(parseUnifiedDiff(diff), picked, false);
+  const r = applyPatch(ctx.repo, patch, true, false);
+  check(r.ok, "apply succeeds (forward partial rename)", r.stderr.trim());
+  eqBuf(readIndex(ctx.repo, "new.txt"), Buffer.from(oracle(diff, BASE20, picked, false), "utf8"), "new path gets HEAD content plus the picked line");
+  check(readIndex(ctx.repo, "old.txt") === null, "old path leaves the index");
+});
 // 부분 선택이 new/deleted 헤더를 그대로 실으면 거절된다(audit-patch M1). 엔진이 일반 수정 패치로 바꾼다.
 // 고른 줄이 파일 전체가 아니면 결과 쪽 파일이 남아야 하고, 전체면 파일 단위 동작과 같아야 한다
 const NEW4 = lines("a", "b", "c", "d");
