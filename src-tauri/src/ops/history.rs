@@ -152,7 +152,13 @@ pub fn git_pending_action(path: String, kind: String, action: String) -> Result<
         other => return Err(format!("알 수 없는 동작입니다: {other}")),
     };
 
-    run_op(&path, &[subcommand, flag], LOCAL_TIMEOUT)
+    let result = run_op(&path, &[subcommand, flag], LOCAL_TIMEOUT);
+    if subcommand == "rebase" {
+        // 인터랙티브 리베이스의 reword 메시지 파일은 리베이스가 끝날 때까지 살아 있어야 한다.
+        // 끝났으면 여기서 치운다. 아직 멈춰 있으면 아무것도 하지 않는다.
+        super::interactive::clear_finished_workspace(&path);
+    }
+    result
 }
 
 /// 커밋 목록을 검증한다. 빈 목록은 git이 전체로 해석할 여지가 있어 먼저 막는다.
