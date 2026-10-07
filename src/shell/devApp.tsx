@@ -13,6 +13,7 @@ import type {
   GraphData,
   OpResult,
   PendingOp,
+  RebaseStep,
   RefEntry,
   RemoteInfo,
   RepoInfo,
@@ -452,7 +453,9 @@ function mockSearch(query: string, limit: number): SearchMatch[] {
   if (needle === "") {
     return [];
   }
-  const rows = mockGraph(TOTAL_COMMITS, 0).rows;
+  // 화면이 이미 읽어 둔 가장 긴 그래프를 쓴다. 전체(1만여 행) 레이아웃을 새로 만들지 않는다
+  const loaded = Math.max(0, ...graphCache.keys());
+  const rows = mockGraph(loaded > 0 ? loaded : 500, 0).rows;
   const out: SearchMatch[] = [];
   for (let i = 0; i < rows.length && out.length < limit; i++) {
     const row = rows[i];
@@ -681,8 +684,13 @@ function installForcedUpdate(): void {
 //   ?fail=all         모든 쓰기를 실패시킨다
 //   ?auth=1           위 실패에 needsAuth:true를 붙인다 (터미널 핸드오프 검증)
 //   ?conflict=1       머지 충돌이 진행 중인 상태로 시작한다
+//   ?conflict=am      git am이 충돌로 멈춘 상태로 시작한다 (Continue/Skip patch/Abort)
+//   ?conflict=conflicts  이어갈 작업 없이 충돌만 남은 상태 (stash pop 충돌 등). 해결 UI만 보이고
+//                     파일을 다 해결하면 pending이 null이 되어 패널이 사라진다
+//   ?denied=<계정>    위 실패에 403 stderr와 deniedAccount를 붙인다 (계정 힌트 검증)
 //   ?slow=1           쓰기마다 1.2초 지연 (스피너/중복 클릭 방지 검증)
 //   ?slow=6000        숫자를 주면 그 밀리초만큼 지연 (5초 폴링 틱이 쓰기 도중에 걸리게 할 때)
+//   ?rebaseErr=1      get_rebase_steps가 Err를 돌려준다 (리베이스 에디터가 열리지 않고 토스트만)
 //
 // 콘솔: __mockEdit()  파일 수는 그대로, 내용만 바꾼다 (contentToken + unstaged diff 변경)
 //       __mockCalls, __mockCallsDuringWrite, __mockResetCalls()  command 호출 횟수
@@ -698,6 +706,10 @@ const FAIL_SET = new Set(
 );
 const FAIL_ALL = FAIL_SET.has("all");
 const FORCE_AUTH = PARAMS.get("auth") === "1";
+/** ?denied=<계정>. 실패가 HTTPS 403으로 그 계정을 밝힌 것처럼 꾸민다 */
+const DENIED_ACCOUNT = PARAMS.get("denied");
+/** ?rebaseErr=1. get_rebase_steps를 거절시킨다 */
+const REBASE_STEPS_ERR = PARAMS.get("rebaseErr") === "1";
 const SLOW_PARAM = Number(PARAMS.get("slow") ?? "0");
 const SLOW_WRITES = SLOW_PARAM > 0;
 /** ?slow=1은 기존대로 1.2초, 그보다 큰 숫자는 밀리초로 읽는다 */
@@ -742,16 +754,55 @@ function changesRefs(cmd: string, payload: unknown): boolean {
   }
 }
 
-/** 진행 중인 머지/리베이스. ?conflict=1이면 처음부터 켜져 있다 */
-let pendingOp: PendingOp | null =
-  PARAMS.get("conflict") === "1"
-    ? {
-        kind: "merge",
-        progress: null,
-        conflictCount: 3,
-        detail: "origin/develop into main",
-      }
-    : null;
+/** HEAD에서 첫 부모를 따라 base까지 내려가며 todo 순서(과거가 위)로 모은다 */
+function mockRebaseSteps(base: string): RebaseStep[] {
+  // 화면이 이미 읽어 둔 가장 긴 그래프를 쓴다. 전체(1만여 행) 레이아웃을 새로 만들지 않는다
+  const loaded = Math.max(0, ...graphCache.keys());
+  const rows = mockGraph(loaded > 0 ? loaded : 500, 0).rows;
+  const bySha = new Map(rows.map((row) => [row.sha, row]));
+  const head = rows.find((row) => row.isHead) ?? rows[0];
+  const range: CommitRow[] = [];
+  let cur: CommitRow | undefined = head;
+  while (cur !== undefined && cur.sha !== base) {
+    if (cur.isMerge) {
+      throw `The range ${base.slice(0, 7)}..HEAD contains a merge commit (${cur.shortSha}). Interactive rebase can't keep merges.`;
+    }
+    range.push(cur);
+    cur = bySha.get(cur.parents[0] ?? "");
+  }
+  if (cur === undefined) {
+    throw `${base.slice(0, 7)} is not an ancestor of HEAD, so there is nothing to rebase onto it.`;
+  }
+  return range
+    .reverse()
+    .map((row) => ({ sha: row.sha, action: "pick", subject: row.subject, message: null }));
+}
+
+/** 진행 중인 작업. ?conflict=1|am|conflicts면 처음부터 켜져 있다 */
+function initialPending(): PendingOp | null {
+  switch (PARAMS.get("conflict")) {
+    case "1":
+      return { kind: "merge", progress: null, conflictCount: 3, detail: "origin/develop into main" };
+    case "am":
+      return { kind: "am", progress: "2/5", conflictCount: 3, detail: null };
+    case "conflicts":
+      return { kind: "conflicts", progress: null, conflictCount: 3, detail: null };
+    default:
+      return null;
+  }
+}
+
+let pendingOp: PendingOp | null = initialPending();
+
+/** 스태시 command가 받은 sha. 콘솔에서 __mockStashShas로 배선을 확인한다 */
+const stashShaLog: { cmd: string; ref: string; sha: unknown }[] = [];
+(window as unknown as { __mockStashShas: typeof stashShaLog }).__mockStashShas = stashShaLog;
+
+function logStashSha(cmd: string, payload: unknown): void {
+  const entry = { cmd, ref: String(readArg(payload, "ref") ?? ""), sha: readArg(payload, "sha") };
+  stashShaLog.push(entry);
+  console.log("[mock] stash sha:", entry);
+}
 
 const CONFLICT_FILES: ConflictFile[] = [
   { path: "src/shell/RepoWorkspace.tsx", kind: "bothModified", hasMarkers: true },
@@ -796,6 +847,13 @@ function shouldFail(cmd: string): boolean {
   return FAIL_ALL || FAIL_SET.has(cmd.replace(/^git_/, ""));
 }
 
+function deniedStderr(account: string): string {
+  return [
+    `remote: Permission to gitlanes/awesome-project.git denied to ${account}.`,
+    "fatal: unable to access 'https://github.com/gitlanes/awesome-project.git/': The requested URL returned error: 403",
+  ].join("\n");
+}
+
 const AUTH_STDERR = [
   "git@github.com: Permission denied (publickey).",
   "fatal: Could not read from remote repository.",
@@ -813,12 +871,11 @@ function fail(command: string[], stderr: string, conflicts: string[] = []): OpRe
   return {
     ok: false,
     stdout: "",
-    stderr: FORCE_AUTH ? AUTH_STDERR : stderr,
+    stderr: DENIED_ACCOUNT !== null ? deniedStderr(DENIED_ACCOUNT) : FORCE_AUTH ? AUTH_STDERR : stderr,
     conflicts,
     command,
     needsAuth: FORCE_AUTH,
-    // TODO(v16-ui-a): ?denied=<계정> 스위치로 403 계정 힌트를 검증할 수 있게
-    deniedAccount: null,
+    deniedAccount: DENIED_ACCOUNT,
   };
 }
 
@@ -1222,7 +1279,21 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
     case "git_pending_action": {
       const action = strArg(payload, "action");
       const kind = strArg(payload, "kind");
-      const flag = kind === "merge" ? "merge" : kind === "revert" ? "revert" : kind === "cherryPick" ? "cherry-pick" : "rebase";
+      if (kind === "conflicts") {
+        // 프론트가 막아야 하는 호출이다. 오면 배선이 틀린 것이라 눈에 띄게 남긴다
+        console.error("[mock] git_pending_action이 conflicts로 불렸다");
+        return fail(["status"], "fatal: nothing to continue: only conflicts are left");
+      }
+      const flag =
+        kind === "merge"
+          ? "merge"
+          : kind === "revert"
+            ? "revert"
+            : kind === "cherryPick"
+              ? "cherry-pick"
+              : kind === "am"
+                ? "am"
+                : "rebase";
       const command = [flag, `--${action}`];
       if (shouldFail(cmd)) {
         return fail(command, `fatal: no ${flag} in progress`);
@@ -1290,10 +1361,20 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
     }
 
     case "git_stash_apply": {
+      logStashSha(cmd, payload);
       const stashRef = strArg(payload, "ref");
       const drop = boolArg(payload, "drop");
       const command = ["stash", drop ? "pop" : "apply", stashRef];
       if (shouldFail(cmd)) {
+        // 실제 git처럼 스태시 충돌은 이어갈 작업 없이 충돌만 남긴다 (v0.16 "conflicts")
+        resolvedConflicts.clear();
+        pendingOp = {
+          kind: "conflicts",
+          progress: null,
+          conflictCount: CONFLICT_FILES.length,
+          detail: null,
+        };
+        writeSalt += 1;
         return fail(
           command,
           "CONFLICT (content): Merge conflict in src/types.ts",
@@ -1318,6 +1399,7 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
     }
 
     case "git_stash_drop": {
+      logStashSha(cmd, payload);
       const command = ["stash", "drop", strArg(payload, "ref")];
       if (shouldFail(cmd)) {
         return fail(command, "error: could not drop stash entry");
@@ -1328,6 +1410,7 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
     }
 
     case "git_stash_branch": {
+      logStashSha(cmd, payload);
       const command = ["stash", "branch", strArg(payload, "name"), strArg(payload, "ref")];
       if (shouldFail(cmd)) {
         return fail(command, "fatal: invalid branch name");
@@ -1473,7 +1556,10 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
 function resolveConflict(file: string): void {
   resolvedConflicts.add(file);
   if (pendingOp !== null) {
-    pendingOp = { ...pendingOp, conflictCount: remainingConflicts().length };
+    const left = remainingConflicts().length;
+    // "conflicts"는 충돌 파일 자체가 상태라 다 풀리면 진행 중인 것이 없다. 실제 Rust도 null을 준다
+    pendingOp =
+      pendingOp.kind === "conflicts" && left === 0 ? null : { ...pendingOp, conflictCount: left };
   }
   writeSalt += 1;
 }
@@ -1494,10 +1580,11 @@ function currentSyncState(): SyncState {
   };
 }
 
-if (FAIL_SET.size > 0 || FORCE_AUTH || pendingOp !== null || SLOW_WRITES) {
+if (FAIL_SET.size > 0 || FORCE_AUTH || DENIED_ACCOUNT !== null || pendingOp !== null || SLOW_WRITES) {
   console.log("[mock] 쓰기 시나리오:", {
     fail: [...FAIL_SET],
     auth: FORCE_AUTH,
+    denied: DENIED_ACCOUNT,
     conflict: pendingOp !== null,
     slow: SLOW_WRITES,
   });
@@ -1600,6 +1687,17 @@ mockIPC(async (cmd, payload) => {
     case "list_worktrees":
       await sleep(35);
       return worktreeStore.map((tree) => ({ ...tree }));
+
+    case "get_rebase_steps": {
+      // 실제 Rust는 `git rev-list --reverse --first-parent base..HEAD`에 가깝다. 목업은 이미 만든
+      // 그래프에서 HEAD부터 첫 부모를 따라가며 base를 찾는다. 다른 브랜치 커밋은 섞이지 않는다
+      await sleep(SLOW_WRITES ? WRITE_DELAY_MS : 120);
+      const base = String(readArg(payload, "base") ?? "");
+      if (REBASE_STEPS_ERR) {
+        throw `${base.slice(0, 7)} is not an ancestor of HEAD, so there is nothing to rebase onto it.`;
+      }
+      return mockRebaseSteps(base);
+    }
 
     case "get_last_commit_message":
       await sleep(30);

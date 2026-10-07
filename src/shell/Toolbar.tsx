@@ -31,7 +31,7 @@ export interface ToolbarActions {
     keepIndex?: boolean;
     files?: string[];
   }): Promise<void>;
-  stashApply(ref: string, drop: boolean): Promise<void>;
+  stashApply(ref: string, sha: string | null, drop: boolean): Promise<void>;
   /** 쓰기 작업 진행 중이면 액션 버튼을 잠근다 */
   busy: boolean;
 }
@@ -285,6 +285,11 @@ const ICON_STASH = (
 
 export interface ToolbarProps {
   repo: RepoInfo;
+  /**
+   * stash@{0}의 sha (load_graph의 stashes[0].sha). Pop/Apply latest가 command에 함께 실어
+   * 그 사이 다른 곳에서 스태시가 쌓였으면 Rust가 거절하게 한다. 스태시가 없거나 아직 못 읽었으면 null
+   */
+  latestStashSha: string | null;
   /** 툴바 중앙에 놓을 검색 UI */
   search: ReactNode;
   sidebarOpen: boolean;
@@ -344,6 +349,7 @@ export function Toolbar({
   sync,
   onCreateBranch,
   onOpenStashDialog,
+  latestStashSha,
 }: ToolbarProps) {
   const headerRef = useRef<HTMLElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -578,14 +584,14 @@ export function Toolbar({
                 label: "Pop latest",
                 hint: "Applies stash@{0} and drops it.",
                 disabled: (sync?.stashCount ?? 0) === 0,
-                onSelect: () => run(actions.stashApply("stash@{0}", true)),
+                onSelect: () => run(actions.stashApply("stash@{0}", latestStashSha, true)),
               },
               {
                 key: "stash-apply",
                 label: "Apply latest",
                 hint: "Applies stash@{0} and keeps it on the stack.",
                 disabled: (sync?.stashCount ?? 0) === 0,
-                onSelect: () => run(actions.stashApply("stash@{0}", false)),
+                onSelect: () => run(actions.stashApply("stash@{0}", latestStashSha, false)),
               },
             ]}
           />

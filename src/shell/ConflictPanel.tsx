@@ -1,4 +1,5 @@
-// 진행 중인 머지/리베이스/체리픽/리버트와 충돌 파일 해결 패널.
+// 진행 중인 머지/리베이스/체리픽/리버트/am과 충돌 파일 해결 패널. 이어갈 작업 없이 충돌만
+// 남은 상태("conflicts")도 같은 패널이 해결 UI만 그린다.
 // 계약: CONTRACTS.md v0.18 ui-actions. 워크스페이스 상단에 가로로 놓인다.
 import type { ConflictFile, PendingKind, PendingOp } from "../types";
 import "./actions.css";
@@ -20,14 +21,24 @@ const KIND_LABEL: Record<PendingKind, string> = {
   conflicts: "Resolving conflicts",
 };
 
-const CONTINUE_LABEL: Record<PendingKind, string> = {
+/**
+ * null이면 이어갈 작업이 없어 Continue/Skip/Abort를 그리지 않는다. "conflicts"(squash 머지,
+ * stash pop/apply 충돌)는 git에 진행 중인 작업이 없어 --continue도 --abort도 받을 대상이 없다.
+ * 파일을 다 해결하면 Rust가 pending을 null로 돌려 패널이 스스로 사라진다
+ */
+const CONTINUE_LABEL: Record<PendingKind, string | null> = {
   merge: "Continue merge",
   rebase: "Continue rebase",
   cherryPick: "Continue cherry-pick",
   revert: "Continue revert",
   am: "Continue applying patches",
-  // TODO(v16-ui-a): "conflicts"는 이어갈 작업이 없어 Continue 버튼 자체를 숨겨야 한다
-  conflicts: "Continue",
+  conflicts: null,
+};
+
+/** Skip 버튼 문구. 한 단위를 건너뛸 수 있는 작업만 둔다 */
+const SKIP_LABEL: Partial<Record<PendingKind, { label: string; title: string }>> = {
+  rebase: { label: "Skip commit", title: "Drop the commit being replayed and move on" },
+  am: { label: "Skip patch", title: "Drop the patch being applied and move on to the next one" },
 };
 
 const FILE_KIND_LABEL: Record<ConflictFile["kind"], string> = {
@@ -50,8 +61,12 @@ function sideTooltip(side: "ours" | "theirs", kind: PendingKind): string {
       ? "During a rebase, ours is the branch you are landing on (the upstream), not the branch being rebased."
       : "Ours is the branch you are currently on.";
   }
-  return rebasing
-    ? "During a rebase, theirs is the commit being replayed, which is your own work."
+  if (rebasing) {
+    return "During a rebase, theirs is the commit being replayed, which is your own work.";
+  }
+  // stash pop/apply 충돌이면 theirs는 스태시, squash 머지면 합친 브랜치다
+  return kind === "conflicts"
+    ? "Theirs is the incoming side: the stash being applied or the branch being squash merged."
     : "Theirs is the branch being merged in.";
 }
 
@@ -76,6 +91,8 @@ export function ConflictPanel({ pending, files, actions, onOpenFile }: ConflictP
   const unresolved = files.filter((f) => f.hasMarkers);
   const allResolved = files.length === 0;
   const busy = actions.busy;
+  const continueLabel = CONTINUE_LABEL[kind];
+  const skip = SKIP_LABEL[kind];
 
   // abort/skip은 파괴적이지만 확인 다이얼로그를 여기서 띄우지 않는다.
   // 파괴적 확인은 ui-hub의 RepoActions 한 곳에 모아 두는 게 이번 구조의 규칙이고
@@ -97,44 +114,48 @@ export function ConflictPanel({ pending, files, actions, onOpenFile }: ConflictP
         )}
         <span className="cfp-summary">
           {allResolved
-            ? "No conflicts left. Continue to finish the operation."
+            ? continueLabel === null
+              ? "No conflicts left."
+              : "No conflicts left. Continue to finish the operation."
             : `${files.length} conflicted ${files.length === 1 ? "file" : "files"}` +
               (unresolved.length < files.length
                 ? `, ${files.length - unresolved.length} edited by hand`
                 : "")}
         </span>
-        <span className="cfp-head-actions">
-          <button
-            className="cfp-btn primary"
-            disabled={!allResolved || busy}
-            title={
-              allResolved
-                ? "Stage is clean. Finish the operation."
-                : "Resolve every conflicted file first."
-            }
-            onClick={() => run(actions.pendingAction("continue"))}
-          >
-            {CONTINUE_LABEL[kind]}
-          </button>
-          {kind === "rebase" && (
+        {continueLabel !== null && (
+          <span className="cfp-head-actions">
             <button
-              className="cfp-btn"
-              disabled={busy}
-              title="Drop the commit being replayed and move on"
-              onClick={() => run(actions.pendingAction("skip"))}
+              className="cfp-btn primary"
+              disabled={!allResolved || busy}
+              title={
+                allResolved
+                  ? "Stage is clean. Finish the operation."
+                  : "Resolve every conflicted file first."
+              }
+              onClick={() => run(actions.pendingAction("continue"))}
             >
-              Skip commit
+              {continueLabel}
             </button>
-          )}
-          <button
-            className="cfp-btn danger"
-            disabled={busy}
-            title="Go back to the state before this operation started"
-            onClick={() => run(actions.pendingAction("abort"))}
-          >
-            Abort
-          </button>
-        </span>
+            {skip !== undefined && (
+              <button
+                className="cfp-btn"
+                disabled={busy}
+                title={skip.title}
+                onClick={() => run(actions.pendingAction("skip"))}
+              >
+                {skip.label}
+              </button>
+            )}
+            <button
+              className="cfp-btn danger"
+              disabled={busy}
+              title="Go back to the state before this operation started"
+              onClick={() => run(actions.pendingAction("abort"))}
+            >
+              Abort
+            </button>
+          </span>
+        )}
       </div>
 
       {files.length === 0 ? (

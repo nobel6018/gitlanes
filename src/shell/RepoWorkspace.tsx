@@ -29,6 +29,7 @@ import {
   getLastCommitMessage,
   getFileDiff,
   getRemoteUrl,
+  getRebaseSteps,
   getSyncState,
   getWipDetails,
   getWipFileContent,
@@ -92,7 +93,7 @@ import type { LayoutWidths } from "./layout";
 import type { PrefValues } from "./Preferences";
 import { SearchBox } from "./SearchBox";
 import { SplitHandle } from "./SplitHandle";
-import { ToastStack } from "./Toast";
+import { ToastStack, trimToasts } from "./Toast";
 import type { ToastItem } from "./Toast";
 import { Toolbar } from "./Toolbar";
 import { WelcomeScreen } from "./WelcomeScreen";
@@ -222,7 +223,7 @@ function writeFlag(key: string, value: boolean): void {
   }
 }
 
-/** 한 번에 쌓아 둘 토스트 수. 넘치면 오래된 것부터 밀어낸다 */
+/** 한 번에 쌓아 둘 토스트 수. 넘치면 오래된 성공/정보부터, 그다음 오래된 오류를 밀어낸다 */
 const MAX_TOASTS = 4;
 
 /**
@@ -265,7 +266,7 @@ type DialogState =
   | { kind: "remote"; remote: { name: string; url: string } | null }
   | { kind: "addWorktree" }
   | { kind: "stash" }
-  | { kind: "stashBranch"; ref: string };
+  | { kind: "stashBranch"; ref: string; sha: string | null };
 
 /** 인터랙티브 리베이스 에디터의 입력. steps 참조가 바뀌면 에디터가 편집 상태를 버린다 */
 interface RebaseState {
@@ -575,7 +576,8 @@ export function RepoWorkspace({
           : undefined,
       onRunInTerminal: (command) => runInTerminalRef.current(command, origin),
     };
-    setToasts((prev) => [...prev.slice(-(MAX_TOASTS - 1)), item]);
+    // 수동으로만 닫히는 오류가 뒤이은 성공 토스트에 밀려 읽기 전에 사라지지 않게 한다
+    setToasts((prev) => trimToasts([...prev, item], MAX_TOASTS));
   }, []);
 
   const showToast = useCallback(
@@ -1313,8 +1315,11 @@ export function RepoWorkspace({
     [actions, fire, runRepoCommand],
   );
   const doStashPop = useCallback(
-    () => runRepoCommand("stashPop", () => fire(actions.stashApply(TOP_STASH, true))),
-    [actions, fire, runRepoCommand],
+    () =>
+      runRepoCommand("stashPop", () =>
+        fire(actions.stashApply(TOP_STASH, data.stashes[0]?.sha ?? null, true)),
+      ),
+    [actions, fire, runRepoCommand, data.stashes],
   );
 
   /**
@@ -1363,7 +1368,7 @@ export function RepoWorkspace({
    * 확인 다이얼로그를 한 군데서만 띄운다 (ui-sidebar는 직접 띄우지 않는다).
    */
   const handleSidebarDialog = useCallback(
-    (kind: SidebarDialogKind, target: SidebarDialogTarget) => {
+    (kind: SidebarDialogKind, target: SidebarDialogTarget, stashSha?: string) => {
       switch (kind) {
         case "createBranch":
           setDialog({ kind: "createBranch", startPoint: target });
@@ -1419,12 +1424,12 @@ export function RepoWorkspace({
           return;
         case "stashDrop":
           if (target !== null) {
-            fire(actions.stashDrop(target));
+            fire(actions.stashDrop(target, stashSha ?? null));
           }
           return;
         case "stashBranch":
           if (target !== null) {
-            setDialog({ kind: "stashBranch", ref: target });
+            setDialog({ kind: "stashBranch", ref: target, sha: stashSha ?? null });
           }
           return;
         case "addRemote":
@@ -1478,31 +1483,71 @@ export function RepoWorkspace({
     }
   }, [showError]);
 
+  /** getRebaseSteps 응답을 기다리는 중인가. 메뉴를 연달아 눌러 요청이 겹치는 것을 막는다 */
+  const rebaseLoadingRef = useRef(false);
+
   /**
-   * "Interactive rebase from here". 클릭한 커밋이 base로 남고 그 위의 커밋들이 편집 대상이다.
-   * 그래프는 최신이 위지만 todo는 과거가 위라서 여기서 한 번만 뒤집는다.
-   * (onSubmit으로 돌아오는 배열은 이미 todo 순서라 다시 뒤집지 않는다)
+   * "Interactive rebase from here". 클릭한 커밋이 base로 남고 `base..HEAD`가 편집 대상이다.
+   * 목록은 그래프 행이 아니라 git에게 묻는다(get_rebase_steps). 그래프에는 다른 브랜치 커밋이
+   * 섞여 있고 페이징 때문에 범위를 다 알 수도 없다. 반환값은 이미 todo 순서(과거가 위)라 뒤집지 않는다.
+   * base가 HEAD의 조상이 아니거나 범위에 머지 커밋이 있으면 Err이고, 에디터를 열지 않고 이유를 알린다
    */
   const openRebaseEditor = useCallback(
-    (sha: string) => {
-      const index = data.rows.findIndex((row) => row.sha === sha);
-      if (index < 0) {
+    async (sha: string) => {
+      const path = repoRef.current?.path;
+      if (path === undefined || rebaseLoadingRef.current) {
         return;
       }
-      if (index === 0) {
+      rebaseLoadingRef.current = true;
+      let steps: RebaseStep[];
+      try {
+        steps = await getRebaseSteps(path, sha);
+      } catch (err) {
+        if (repoRef.current?.path === path) {
+          showError(`Can't rebase from this commit: ${errorMessage(err)}`);
+        }
+        return;
+      } finally {
+        rebaseLoadingRef.current = false;
+      }
+      // 기다리는 사이 탭이 다른 레포로 바뀌었거나 에디터가 이미 열려 있으면 버린다
+      if (repoRef.current?.path !== path || rebaseRef.current !== null) {
+        return;
+      }
+      if (steps.length === 0) {
         showError("There are no commits above this one to rebase.");
         return;
       }
-      const steps: RebaseStep[] = data.rows
-        .slice(0, index)
-        .reverse()
-        .map((row) => ({ sha: row.sha, action: "pick", subject: row.subject, message: null }));
       setRebase({ base: sha, steps });
     },
-    [data.rows, showError],
+    [showError],
   );
 
   const closeRebaseEditor = useCallback(() => setRebase(null), []);
+
+  /**
+   * 인터랙티브 리베이스가 실패하면 사용자가 편집한 순서와 메시지 그대로 에디터를 다시 연다
+   * (audit-state M4). 실행 동안 열어 두는 쪽을 택하지 않은 이유: 리베이스가 충돌이나 edit에서
+   * 멈추면 ConflictPanel이 이어받아야 하는데 모달이 그 위를 덮고 modalOpen이 단축키까지 막는다.
+   * 그래서 먼저 닫고, 실패한 뒤 진행 중인 작업이 없을 때(시작 자체가 거부됐을 때)만 다시 연다.
+   * 멈춘 리베이스 위에 다시 띄우면 같은 todo가 "already in progress"로 또 실패할 뿐이다.
+   * 상태를 못 읽으면 다시 연다. 편집을 잃는 쪽이 한 번 더 거절당하는 쪽보다 비싸다
+   */
+  const reopenRebaseAfterFailure = useCallback(
+    async (path: string, base: string, steps: RebaseStep[]) => {
+      let pending: SyncState["pending"] = null;
+      try {
+        pending = (await getSyncState(path)).pending;
+      } catch {
+        pending = null;
+      }
+      if (pending !== null || repoRef.current?.path !== path || rebaseRef.current !== null) {
+        return;
+      }
+      setRebase({ base, steps });
+    },
+    [],
+  );
 
   /**
    * 사이드바에서 끌던 ref를 커밋 행에 놓았을 때.
@@ -1893,7 +1938,7 @@ export function RepoWorkspace({
         {
           label: "Interactive rebase from here\u2026",
           title: "Reorder, squash or drop the commits above this one",
-          onSelect: () => openRebaseEditor(sha),
+          onSelect: () => void openRebaseEditor(sha),
         },
         {
           label: "Merge into current branch\u2026",
@@ -2538,6 +2583,7 @@ export function RepoWorkspace({
         sync={syncState}
         onCreateBranch={() => openNewBranchPrompt(null)}
         onOpenStashDialog={openStashPrompt}
+        latestStashSha={data.stashes[0]?.sha ?? null}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={handleToggleSidebar}
         onGoToHead={goToHead}
@@ -2929,9 +2975,9 @@ export function RepoWorkspace({
           confirmLabel="Create"
           validate={(value) => (value.trim() === "" ? "Enter a name." : refNameProblem(value))}
           onSubmit={(name) => {
-            const stashRef = dialog.ref;
+            const { ref: stashRef, sha } = dialog;
             closeDialog();
-            fire(actions.stashBranch(stashRef, name.trim()));
+            fire(actions.stashBranch(stashRef, sha, name.trim()));
           }}
           onCancel={closeDialog}
         />
@@ -2946,9 +2992,14 @@ export function RepoWorkspace({
           busy={actions.busy}
           onSubmit={(steps) => {
             const base = rebase.base;
+            const path = repoRef.current?.path;
             closeRebaseEditor();
             // steps는 이미 todo 순서(위가 과거)로 돌아온다. 다시 뒤집지 않는다
-            fire(actions.rebaseInteractive(base, steps));
+            actions.rebaseInteractive(base, steps).catch(() => {
+              if (path !== undefined) {
+                void reopenRebaseAfterFailure(path, base, steps);
+              }
+            });
           }}
         />
       )}
