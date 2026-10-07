@@ -327,6 +327,19 @@ const ICON_STASH = (
   </svg>
 );
 
+const ICON_UNDO = (
+  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+    <path
+      d="M5.4 3.4 2.6 6.2 5.4 9M2.8 6.2h6.6a3.8 3.8 0 0 1 0 7.6H6.6"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 export interface ToolbarProps {
   repo: RepoInfo;
   /**
@@ -368,6 +381,9 @@ export interface ToolbarProps {
   onOpenStashDialog?: () => void;
   /** 자동 fetch 상태. Fetch 버튼 툴팁과 경고 표시에 쓴다 (v0.17) */
   fetchStatus?: FetchStatus | null;
+  /** 되돌리기 스택 맨 위 항목의 문구. null이면 Undo 버튼을 비활성으로 그린다 (v0.17) */
+  undoLabel?: string | null;
+  onUndo?: () => void;
 }
 
 /** 액션 그룹이 글자를 접는 임계 폭. 이 아래로는 아이콘만 남는다 */
@@ -397,6 +413,8 @@ export function Toolbar({
   onOpenStashDialog,
   latestStashSha,
   fetchStatus,
+  undoLabel,
+  onUndo,
 }: ToolbarProps) {
   const headerRef = useRef<HTMLElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -659,6 +677,25 @@ export function Toolbar({
               },
             ]}
           />
+
+          {onUndo !== undefined && (
+            <button
+              className="act-main solo"
+              onClick={onUndo}
+              disabled={busy || undoLabel == null}
+              title={undoLabel == null ? "Nothing to undo" : withKbd(undoLabel, "Mod+Z")}
+              aria-label={undoLabel ?? "Undo"}
+            >
+              <span aria-hidden="true">{ICON_UNDO}</span>
+              <span
+                className="act-label"
+                // 커밋 제목이 들어가 길어질 수 있다. 툴바를 밀어내지 않게 자른다
+                style={{ maxWidth: 200 }}
+              >
+                {undoLabel ?? "Undo"}
+              </span>
+            </button>
+          )}
         </div>
       )}
 

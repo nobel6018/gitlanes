@@ -15,12 +15,14 @@ import type {
   PendingOp,
   RebaseStep,
   RefEntry,
+  RefSnapshot,
   RemoteInfo,
   RepoInfo,
   RepoState,
   SearchMatch,
   StashInfo,
   SyncState,
+  UndoEntry,
   WipDetails,
   WipInfo,
   WorktreeInfo,
@@ -695,6 +697,9 @@ function installForcedUpdate(): void {
 //   ?rebaseSlow=3000  get_rebase_steps만 그 밀리초만큼 늦춘다 (메뉴 로딩 상태 검증)
 //   ?template=1       get_commit_template이 # 주석 줄이 섞인 템플릿을 돌려준다
 //   ?latin1=1         get_wip_file_diff가 encoding:"latin1"을 돌려준다 (git_apply_patch 로그로 전달 확인)
+//   ?fail=undo        git_undo가 "상태가 바뀌었다"며 거절한다 (항목이 스택에서 빠지고 이유 토스트)
+//   ?fail=fetch&auth=1  자동 fetch가 인증 실패로 멈춘다 (Fetch 버튼의 ! 표시)
+//   자동 fetch는 Preferences > General에서 1분으로 두면 15초 틱 안에 첫 fetch가 돈다
 //
 // 콘솔: __mockEdit()  파일 수는 그대로, 내용만 바꾼다 (contentToken + unstaged diff 변경)
 //       __mockCalls, __mockCallsDuringWrite, __mockResetCalls()  command 호출 횟수
@@ -756,6 +761,7 @@ function changesRefs(cmd: string, payload: unknown): boolean {
     case "git_stash_push":
     case "git_stash_drop":
     case "git_stash_branch":
+    case "git_undo":
       return true;
     case "git_stash_apply":
       // pop만 스태시 목록을 줄인다
@@ -876,6 +882,24 @@ const AUTH_STDERR = [
   "Please make sure you have the correct access rights",
   "and the repository exists.",
 ].join("\n");
+
+/** 맨 위 커밋 sha. 하네스 커밋(extraRows)이 있으면 그것이다 */
+function mockHeadSha(): string {
+  return mockGraph(1000, 0).rows[0]?.sha ?? "";
+}
+
+/**
+ * get_ref_snapshot mock. 실제처럼 ref마다 sha를 다 들고 있지는 않고, 쓰기 횟수(refSalt)를 가짜 ref로
+ * 넣어 ref를 바꾸는 쓰기의 전후 스냅샷이 서로 달라지게만 한다
+ */
+function mockRefSnapshot(): RefSnapshot {
+  const head = mockHeadSha();
+  return {
+    headRef: "refs/heads/main",
+    headSha: head,
+    refs: { "refs/heads/main": head, "refs/mock/write-count": String(refSalt) },
+  };
+}
 
 function ok(command: string[], stdout = ""): OpResult {
   writeSalt += 1;
@@ -1544,6 +1568,35 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
       return ok(command);
     }
 
+    case "git_undo": {
+      const entry = arg(payload, "entry") as UndoEntry | undefined;
+      if (entry === undefined) {
+        return fail(["undo"], "error: missing undo entry");
+      }
+      const command =
+        entry.kind === "commit" || entry.kind === "amend"
+          ? ["reset", "--soft", entry.before.headSha]
+          : entry.kind === "checkout"
+            ? ["checkout", (entry.before.headRef ?? entry.before.headSha).replace(/^refs\/heads\//, "")]
+            : entry.kind === "reset"
+              ? ["reset", `--${entry.resetMode ?? "mixed"}`, entry.before.headSha]
+              : ["update-ref", "--stdin"];
+      // 실제 Rust처럼 이 작업이 바꾼 ref가 그 뒤 움직였으면 거절한다. mock은 HEAD만 본다
+      const moved = (entry.kind === "commit" || entry.kind === "amend") && entry.after.headSha !== mockHeadSha();
+      if (shouldFail(cmd) || moved) {
+        return fail(
+          command,
+          `Can't undo: main moved since then (now at ${mockHeadSha().slice(0, 7)}). Nothing was changed.`,
+        );
+      }
+      if (entry.kind === "commit" && extraRows.length > 0) {
+        extraRows.shift();
+        aheadCount = Math.max(0, aheadCount - 1);
+      }
+      refsCache = null;
+      return ok(command);
+    }
+
     case "git_create_patch": {
       const shas = listArg(payload, "shas");
       const command = ["format-patch", "-o", strArg(payload, "outDir"), ...shas];
@@ -1705,6 +1758,10 @@ mockIPC(async (cmd, payload) => {
       const body = mockFileContent(file).split("\n").slice(0, 60).join("\n");
       return `// ${side} version of ${file}\n${body}\n`;
     }
+
+    case "get_ref_snapshot":
+      await sleep(30);
+      return mockRefSnapshot();
 
     case "list_remotes":
       await sleep(35);

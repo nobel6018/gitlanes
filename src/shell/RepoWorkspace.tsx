@@ -17,6 +17,7 @@ import type {
   RepoState,
   SearchMatch,
   SyncState,
+  UndoEntry,
   WipArea,
   WipDiff,
   WipDetails,
@@ -131,6 +132,8 @@ const POLL_INTERVAL_MS = 5000;
  * setInterval을 주기 그대로 걸면 탭을 오갈 때마다 타이머가 처음부터 다시 세어 영영 안 돌 수 있다
  */
 const AUTO_FETCH_TICK_MS = 15_000;
+/** 탭별 되돌리기 스택 깊이. 넘치면 가장 오래된 것부터 버린다 */
+const UNDO_STACK_MAX = 20;
 /** 이만큼 연속으로 실패하면 Fetch 버튼에 표시한다 (인증 실패는 한 번에 멈춘다) */
 const AUTO_FETCH_FAILURE_LIMIT = 3;
 
@@ -500,6 +503,11 @@ export function RepoWorkspace({
   const [dropTargetSha, setDropTargetSha] = useState<string | null>(null);
   /** 자동 fetch 기록 (v0.17). 탭이 다른 레포로 바뀌면 path가 어긋나 새로 시작한다 */
   const [autoFetchState, setAutoFetchState] = useState<AutoFetchState | null>(null);
+  /**
+   * 되돌리기 스택 (v0.17). 마지막 항목이 맨 위다. path가 지금 레포와 다르면 빈 스택으로 본다.
+   * 메모리에만 둔다. 앱을 다시 켜면 사라진다
+   */
+  const [undoStack, setUndoStack] = useState<{ path: string; entries: UndoEntry[] } | null>(null);
 
   const { recents, addRecent, removeRecent } = useRecentRepos();
   const toastSeq = useRef(0);
@@ -772,6 +780,8 @@ export function RepoWorkspace({
           setSyncState(null);
           setConflicts([]);
           contentTokenRef.current = null;
+          // 되돌리기 기록은 그 레포의 ref를 가리킨다. 다른 레포에서 쓸 수 없다
+          setUndoStack(null);
         }
         addRecent(info.path);
         setSelectedSha(null);
@@ -1314,6 +1324,17 @@ export function RepoWorkspace({
     [patchAutoFetch],
   );
 
+  /** 되돌릴 수 있는 쓰기가 성공했다. 기다리는 사이 다른 레포로 바뀌었으면 버린다 */
+  const handleUndoable = useCallback((entry: UndoEntry, path: string) => {
+    if (repoRef.current?.path !== path) {
+      return;
+    }
+    setUndoStack((prev) => {
+      const entries = prev?.path === path ? prev.entries : [];
+      return { path, entries: [...entries, entry].slice(-UNDO_STACK_MAX) };
+    });
+  }, []);
+
   const actions: RepoActions = useRepoActions({
     repoPath: repo?.path ?? "",
     refreshAll,
@@ -1323,6 +1344,7 @@ export function RepoWorkspace({
     onConflicts: handleConflicts,
     writing: writingRef,
     onFetched: handleFetched,
+    onUndoable: handleUndoable,
   });
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
@@ -1424,6 +1446,33 @@ export function RepoWorkspace({
       ),
     [actions, fire, runRepoCommand, data.stashes],
   );
+
+  /** 지금 레포의 되돌리기 맨 위 항목. 없으면 null */
+  const undoTop: UndoEntry | null =
+    undoStack !== null && undoStack.path === repo?.path
+      ? (undoStack.entries[undoStack.entries.length - 1] ?? null)
+      : null;
+  const undoTopRef = useRef(undoTop);
+  undoTopRef.current = undoTop;
+
+  /**
+   * 툴바 Undo와 ⌘Z. 맨 위 항목을 먼저 스택에서 빼고 실행한다. 실패하면(그 사이 다른 작업으로
+   * 상태가 달라졌다) 액션 계층이 이유를 토스트로 띄우고, 항목은 다시 넣지 않는다.
+   * 같은 항목을 다시 눌러도 같은 이유로 거절될 뿐이다
+   */
+  const doUndo = useCallback(() => {
+    const entry = undoTopRef.current;
+    const path = repoRef.current?.path;
+    if (entry === null || path === undefined || actions.busy) {
+      return;
+    }
+    setUndoStack((prev) =>
+      prev !== null && prev.path === path && prev.entries[prev.entries.length - 1] === entry
+        ? { path, entries: prev.entries.slice(0, -1) }
+        : prev,
+    );
+    runRepoCommand("undo", () => fire(actions.undo(entry)));
+  }, [actions, fire, runRepoCommand]);
 
   /**
    * ⌘Enter(Commit). 커밋 메시지는 CommitBox(ui-wip)가 들고 있어 여기서 바로 커밋할 수 없다.
@@ -1764,6 +1813,14 @@ export function RepoWorkspace({
       if (modalOpen()) {
         return;
       }
+      if (!event.shiftKey && event.code === "KeyZ") {
+        // ⌘Z = 마지막 작업 되돌리기. 입력창에서는 텍스트 편집의 Undo가 우선이다
+        if (!textFieldFocused()) {
+          event.preventDefault();
+          doUndo();
+        }
+        return;
+      }
       if (!event.shiftKey) {
         // ⌘Enter = Commit.
         // 커밋 메시지 상자 안에서는 CommitBox가 직접 커밋한다. 그 이벤트는
@@ -1817,6 +1874,7 @@ export function RepoWorkspace({
     doPush,
     doCommit,
     doStashPop,
+    doUndo,
     openNewBranchPrompt,
     openStashPrompt,
   ]);
@@ -2787,6 +2845,8 @@ export function RepoWorkspace({
         onCreateBranch={() => openNewBranchPrompt(null)}
         onOpenStashDialog={openStashPrompt}
         fetchStatus={fetchStatus}
+        undoLabel={undoTop?.label ?? null}
+        onUndo={doUndo}
         latestStashSha={data.stashes[0]?.sha ?? null}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={handleToggleSidebar}

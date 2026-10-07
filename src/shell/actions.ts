@@ -13,6 +13,9 @@ import type {
   PendingKind,
   PullMode,
   RebaseStep,
+  RefSnapshot,
+  UndoEntry,
+  UndoKind,
   WipDiff,
 } from "../types";
 import * as api from "./api";
@@ -126,6 +129,11 @@ export interface RepoActions {
    * 큐에 다른 쓰기가 있으면 이번 주기는 건너뛴다("skipped")
    */
   autoFetch(): Promise<AutoFetchResult>;
+  /**
+   * 기록해 둔 작업을 되돌린다 (v0.17 2번). 확인 없이 실행하고 결과를 토스트로 알린다.
+   * 상태가 그 사이 바뀌어 Rust가 거절하면 reject한다. 호출 측은 성공이든 실패든 그 항목을 버린다
+   */
+  undo(entry: UndoEntry): Promise<void>;
   // 공통
   /** 쓰기 작업이 진행 중인가 (버튼 비활성화용) */
   busy: boolean;
@@ -161,6 +169,33 @@ export interface UseRepoActionsOptions {
    * 마지막 fetch 시각을 갱신한다. repoPath는 그 fetch를 시작한 레포다
    */
   onFetched?: (repoPath: string) => void;
+  /**
+   * 되돌릴 수 있는 쓰기가 성공했을 때 (v0.17). 셸이 탭별 스택에 쌓는다.
+   * repoPath는 그 작업을 시작한 레포다. 그 사이 탭이 다른 레포로 바뀌었으면 셸이 버린다
+   */
+  onUndoable?: (entry: UndoEntry, repoPath: string) => void;
+}
+
+/** 되돌리기 문구에 넣는 커밋 제목 길이 상한 */
+const UNDO_SUBJECT_MAX = 40;
+
+function undoSubject(message: string): string {
+  const subject = message.split("\n")[0]?.trim() ?? "";
+  return subject.length > UNDO_SUBJECT_MAX
+    ? `${subject.slice(0, UNDO_SUBJECT_MAX - 1)}\u2026`
+    : subject;
+}
+
+/** 작업 전후가 같으면(이미 그 브랜치였다 등) 되돌릴 것이 없다 */
+function sameSnapshot(a: RefSnapshot, b: RefSnapshot): boolean {
+  if (a.headRef !== b.headRef || a.headSha !== b.headSha) {
+    return false;
+  }
+  const keys = Object.keys(a.refs);
+  if (keys.length !== Object.keys(b.refs).length) {
+    return false;
+  }
+  return keys.every((key) => a.refs[key] === b.refs[key]);
 }
 
 /** 확인 문구에 쓰는 진행 중 작업 이름 */
@@ -218,6 +253,11 @@ interface RunSpec {
   call: () => Promise<OpResult>;
   /** 성공했을 때 토스트와 새로고침 사이에 부른다 */
   onSuccess?: () => void;
+  /**
+   * 되돌릴 수 있는 작업이면 채운다. command 전후로 get_ref_snapshot을 찍어 UndoEntry를 만든다.
+   * 스냅샷은 command와 같은 큐 항목 안에서 찍어 다른 쓰기가 사이에 끼지 않게 한다
+   */
+  undo?: { kind: UndoKind; label: string; resetMode?: UndoEntry["resetMode"] };
 }
 
 export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
@@ -284,8 +324,32 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
       if (writing !== undefined) {
         writing.current += 1;
       }
+      // 클로저 안에서 채우므로 지역 변수 대신 상자에 담는다 (TS가 null로 좁혀 버린다)
+      const recorded: { entry: UndoEntry | null } = { entry: null };
+      const undoSpec = spec.undo;
+      const call =
+        undoSpec === undefined
+          ? spec.call
+          : async (): Promise<OpResult> => {
+              // 스냅샷을 못 찍으면 되돌리기만 포기하고 작업은 그대로 한다
+              const before = await api.getRefSnapshot(path).catch(() => null);
+              const result = await spec.call();
+              if (result.ok && before !== null) {
+                const after = await api.getRefSnapshot(path).catch(() => null);
+                if (after !== null && !sameSnapshot(before, after)) {
+                  recorded.entry = {
+                    kind: undoSpec.kind,
+                    label: undoSpec.label,
+                    before,
+                    after,
+                    resetMode: undoSpec.resetMode ?? null,
+                  };
+                }
+              }
+              return result;
+            };
       try {
-        const result = await enqueue(spec.call);
+        const result = await enqueue(call);
 
         // 다른 레포 화면에서 WIP 패널을 열어 버리면 엉뚱한 레포의 충돌처럼 보인다
         if (result.conflicts.length > 0 && !moved()) {
@@ -319,6 +383,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           o.toast({ message: label(spec.success), tone: "success" }, startPath);
         }
         spec.onSuccess?.();
+        if (recorded.entry !== null) {
+          o.onUndoable?.(recorded.entry, startPath);
+        }
         await refresh();
       } catch (err) {
         // command 자체가 reject 된 경우(인자 검증 실패 Err(String))도 여기로 온다
@@ -442,6 +509,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         exec({
           success: options.amend ? "Commit amended" : "Committed",
           failure: options.amend ? "Amend failed" : "Commit failed",
+          undo: options.amend
+            ? { kind: "amend", label: "Undo amend" }
+            : { kind: "commit", label: `Undo commit "${undoSubject(options.message)}"` },
           call: () => api.gitCommit(path, options),
         }),
 
@@ -457,6 +527,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         exec({
           success: `Checked out ${target}`,
           failure: `Checkout of ${target} failed`,
+          undo: { kind: "checkout", label: `Undo checkout of ${target}` },
           call: () => api.gitCheckout(path, target, createLocal),
         }),
 
@@ -464,6 +535,9 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         exec({
           success: checkout ? `Created and checked out ${name}` : `Created ${name}`,
           failure: `Creating ${name} failed`,
+          // 만들면서 체크아웃까지 하면 HEAD가 새 브랜치에 올라가 있어, 브랜치만 지우는
+          // createBranch 복원으로는 원상복구가 안 된다. 그 조합은 기록하지 않는다
+          undo: checkout ? undefined : { kind: "createBranch", label: `Undo create branch ${name}` },
           call: () => api.gitCreateBranch(path, name, startPoint, checkout),
         }),
 
@@ -490,6 +564,8 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
                   danger: true,
                 }
               : undefined,
+          // 원격 삭제는 서버에서 일어난 일이라 로컬 ref로 되돌릴 수 없다
+          undo: remote ? undefined : { kind: "deleteBranch", label: `Undo delete branch ${name}` },
           call: () => api.gitDeleteBranch(path, name, force, remote),
         }),
 
@@ -497,6 +573,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         exec({
           success: `Renamed ${from} to ${to}`,
           failure: `Renaming ${from} failed`,
+          undo: { kind: "renameBranch", label: `Undo rename ${from} to ${to}` },
           call: () => api.gitRenameBranch(path, from, to),
         }),
 
@@ -602,6 +679,11 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         exec({
           success: `Reset (${mode}) to ${target}`,
           failure: "Reset failed",
+          undo: {
+            kind: "reset",
+            label: `Undo reset (${mode}) to ${/^[0-9a-f]{40}$/.test(target) ? target.slice(0, 7) : target}`,
+            resetMode: mode,
+          },
           confirm:
             mode === "hard"
               ? {
@@ -716,6 +798,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         exec({
           success: `Created tag ${name}`,
           failure: `Creating tag ${name} failed`,
+          undo: { kind: "createTag", label: `Undo create tag ${name}` },
           call: () => api.gitCreateTag(path, name, target, message),
         }),
 
@@ -723,6 +806,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
         exec({
           success: `Deleted tag ${name}`,
           failure: `Deleting tag ${name} failed`,
+          undo: { kind: "deleteTag", label: `Undo delete tag ${name}` },
           confirm: {
             title: "Delete tag?",
             body: "The local tag will be removed. The remote keeps its copy.",
@@ -860,6 +944,14 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           success: `Marked ${nameList(files)} resolved`,
           failure: "Marking resolved failed",
           call: () => api.gitMarkResolved(path, files),
+        }),
+
+      // ── 되돌리기 ─────────────────────────────────────────
+      undo: (entry) =>
+        exec({
+          success: entry.label.replace(/^Undo /, "Undid "),
+          failure: `Could not ${entry.label.charAt(0).toLowerCase()}${entry.label.slice(1)}`,
+          call: () => api.gitUndo(path, entry),
         }),
 
       // 사용자 작업이 아니라서 run을 거치지 않는다. 토스트, busy, 확인창이 모두 필요 없고
