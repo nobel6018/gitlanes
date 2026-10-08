@@ -559,8 +559,20 @@ pub struct CompareResult {
     pub only_in_head: Vec<CommitSummary>,
     /// base에만 있는 커밋 (`head..base`), 최신이 먼저
     pub only_in_base: Vec<CommitSummary>,
-    pub truncated: bool,
+    /// only_in_head가 limit에 걸려 잘렸으면 true
+    pub only_in_head_truncated: bool,
+    /// only_in_base가 limit에 걸려 잘렸으면 true
+    pub only_in_base_truncated: bool,
     pub files: Vec<FileChange>,
+}
+
+/// `get_commit_template` 결과.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitTemplate {
+    pub text: String,
+    /// 주석 줄 접두. 프론트가 템플릿에서 온 줄 중 이 접두로 시작하는 줄만 커밋 직전에 지운다
+    pub comment_prefix: String,
 }
 
 #[cfg(test)]

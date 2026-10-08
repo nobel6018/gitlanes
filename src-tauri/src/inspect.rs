@@ -185,7 +185,8 @@ pub fn compare_refs(
         &diff_out.map_err(|e| format!("Could not read the changed files: {e}"))?,
     );
 
-    let truncated = only_in_head.len() > limit || only_in_base.len() > limit;
+    let only_in_head_truncated = only_in_head.len() > limit;
+    let only_in_base_truncated = only_in_base.len() > limit;
     only_in_head.truncate(limit);
     only_in_base.truncate(limit);
 
@@ -195,7 +196,8 @@ pub fn compare_refs(
         merge_base,
         only_in_head,
         only_in_base,
-        truncated,
+        only_in_head_truncated,
+        only_in_base_truncated,
         files,
     })
 }
@@ -771,7 +773,8 @@ mod tests {
         assert_eq!(result.merge_base, Some(repo.rev("main~1")));
         assert_eq!(commit_subjects(&result.only_in_head), ["f2", "f1"]);
         assert_eq!(commit_subjects(&result.only_in_base), ["m1"]);
-        assert!(!result.truncated);
+        assert!(!result.only_in_head_truncated);
+        assert!(!result.only_in_base_truncated);
 
         // base가 앞서 나간 main.txt는 섞이지 않는다
         let mut files: Vec<(&str, FileStatus, u64)> = result
@@ -791,12 +794,29 @@ mod tests {
     }
 
     #[test]
-    fn 비교는_limit을_넘으면_자르고_truncated를_켠다() {
+    fn 비교는_limit을_넘은_목록만_자르고_그_목록의_truncated만_켠다() {
         let repo = diverged_fixture();
+        // head 쪽 2개, base 쪽 1개. limit 1이면 head만 잘린다
         let result = compare_refs(repo.path(), "main".into(), "feature".into(), 1).unwrap();
         assert_eq!(commit_subjects(&result.only_in_head), ["f2"]);
         assert_eq!(commit_subjects(&result.only_in_base), ["m1"]);
-        assert!(result.truncated);
+        assert!(result.only_in_head_truncated);
+        assert!(!result.only_in_base_truncated);
+
+        // 방향을 바꾸면 잘리는 쪽도 바뀐다
+        let flipped = compare_refs(repo.path(), "feature".into(), "main".into(), 1).unwrap();
+        assert!(!flipped.only_in_head_truncated);
+        assert!(flipped.only_in_base_truncated);
+    }
+
+    #[test]
+    fn 비교_결과는_목록별_truncated를_camel_case로_직렬화한다() {
+        let repo = diverged_fixture();
+        let result = compare_refs(repo.path(), "main".into(), "feature".into(), 1).unwrap();
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["onlyInHeadTruncated"], true);
+        assert_eq!(json["onlyInBaseTruncated"], false);
+        assert!(json.get("truncated").is_none());
     }
 
     #[test]
