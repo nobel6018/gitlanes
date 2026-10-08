@@ -98,7 +98,7 @@ fn comment_prefix(config: &str) -> String {
         .split('\0')
         .filter_map(|entry| entry.split_once('\n'))
         .map(|(_, value)| value)
-        .last();
+        .next_back();
     match last {
         Some(value) if !value.is_empty() && value != "auto" => value.to_string(),
         _ => DEFAULT.to_string(),
