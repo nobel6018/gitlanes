@@ -103,7 +103,7 @@ pub fn git_submodule_remove(
         return Ok(refused(
             &path,
             &format!(
-                "The submodule {sub} has uncommitted changes. Commit or stash them inside the submodule, or remove it with force to discard them."
+                "The submodule {sub} has uncommitted changes. Commit or stash them inside the submodule, or remove it with force to discard them. The submodule list may not have shown these changes if this repository is set to ignore them (submodule.<name>.ignore, diff.ignoreSubmodules or status.showUntrackedFiles)."
             ),
         ));
     }
@@ -424,6 +424,36 @@ mod tests {
         assert!(!result.ok);
         assert!(result.command.is_empty(), "{:?}", result.command);
         assert_untouched(&fx, "a/new.txt", "new\n");
+    }
+
+    /// 목록(get_submodules)은 숨김 설정을 존중해 dirty=false로 보여 확인창에 경고가 없다.
+    /// remove의 검사는 실제 상태를 봐서 거절하고, 문구가 이유를 알린다
+    #[test]
+    fn ignore_설정으로_숨은_변경도_force_없이는_거절한다() {
+        let cases = [
+            ("submodule.a.ignore", "all", "a/counter.txt", "dirty\n"),
+            ("status.showUntrackedFiles", "no", "a/new.txt", "new\n"),
+        ];
+        for (key, value, file, content) in cases {
+            let fx = one();
+            fx.parent.git(&["config", key, value]);
+            fx.parent.write(file, content);
+            let listed = crate::submodule::get_submodules(fx.parent.path()).unwrap();
+            assert!(!listed[0].dirty, "목록은 {key}={value}를 존중한다");
+
+            let result = git_submodule_remove(fx.parent.path(), "a".into(), false).unwrap();
+            assert!(!result.ok, "{key}");
+            assert!(result.command.is_empty(), "{:?}", result.command);
+            assert!(
+                result.stderr.contains("set to ignore them"),
+                "{}",
+                result.stderr
+            );
+            assert_untouched(&fx, file, content);
+
+            let result = git_submodule_remove(fx.parent.path(), "a".into(), true).unwrap();
+            assert!(result.ok, "{key}: {}", result.stderr);
+        }
     }
 
     #[test]

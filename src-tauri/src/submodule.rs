@@ -508,11 +508,22 @@ fn parse_index_gitlinks(out: &str) -> HashMap<String, IndexEntry> {
 
 /// 제거 전 확인. (index에 gitlink로 있는가, 서브모듈 안에 커밋 안 한 변경이 있는가).
 ///
-/// dirty는 [`get_submodules`]와 같은 기준이다(같은 `status`, 같은 파서: 추적 파일 수정 또는
-/// untracked). 상위 레포 git 2회를 함께 띄운다.
+/// dirty는 [`get_submodules`]와 같은 파서(추적 파일 수정 또는 untracked)지만 레포의 숨김 설정을
+/// 덮는다. 목록은 `submodule.<name>.ignore`, `diff.ignoreSubmodules`, `status.showUntrackedFiles`를
+/// 존중하는 표시용이고, 이 검사는 늘 `-f`로 지우는 remove의 유일한 데이터 보호 장치라 실제 상태를
+/// 봐야 한다(CONTRACTS.md v0.20, 감독 결정). `--ignore-submodules=none` 하나로
+/// `status.showUntrackedFiles=no`에 숨던 untracked(U)도 다시 보인다(git 2.50.1 실측, 테스트로 고정).
+/// 상위 레포 git 2회를 함께 띄운다.
 pub(crate) fn removal_check(path: &str, sub_path: &str) -> Result<(bool, bool), String> {
     let ls_args = ["ls-files", "--stage", "-z", "--", sub_path];
-    let status_args = ["status", "--porcelain=v2", "-z", "--", sub_path];
+    let status_args = [
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--ignore-submodules=none",
+        "--",
+        sub_path,
+    ];
     let outputs = git::run_all(path, &[&ls_args[..], &status_args[..]]);
     let [ls_out, status_out] =
         <[_; 2]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
