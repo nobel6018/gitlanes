@@ -110,21 +110,30 @@ function commits(n: number): CommitSummary[] {
     timestamp: 0,
   }));
 }
-function compare(head: number, base: number, truncated: boolean): CompareResult {
+function compare(
+  head: number,
+  base: number,
+  headTruncated: boolean,
+  baseTruncated: boolean,
+): CompareResult {
   return {
     base: "main",
     head: "feature",
     mergeBase: "m",
     onlyInHead: commits(head),
     onlyInBase: commits(base),
-    truncated,
+    onlyInHeadTruncated: headTruncated,
+    onlyInBaseTruncated: baseTruncated,
     files: [],
   };
 }
-eq(truncatedLists(compare(500, 3, false)), { head: false, base: false }, "truncatedLists: 안 잘렸으면 둘 다 false");
-eq(truncatedLists(compare(500, 3, true)), { head: true, base: false }, "truncatedLists: 긴 쪽에만 +more");
-eq(truncatedLists(compare(500, 500, true)), { head: true, base: true }, "truncatedLists: 같으면 둘 다");
-eq(truncatedLists(compare(0, 0, true)), { head: false, base: false }, "truncatedLists: 빈 목록에는 달지 않는다");
+eq(truncatedLists(compare(500, 3, false, false)), { head: false, base: false }, "truncatedLists: 안 잘렸으면 둘 다 false");
+eq(truncatedLists(compare(500, 3, true, false)), { head: true, base: false }, "truncatedLists: head만 잘림");
+eq(truncatedLists(compare(3, 500, false, true)), { head: false, base: true }, "truncatedLists: base만 잘림");
+eq(truncatedLists(compare(500, 500, true, false)), { head: true, base: false }, "truncatedLists: 길이가 같아도 플래그를 따른다");
+eq(truncatedLists(compare(3, 500, true, false)), { head: true, base: false }, "truncatedLists: 짧은 쪽이 잘렸어도 플래그를 따른다");
+eq(truncatedLists(compare(500, 500, true, true)), { head: true, base: true }, "truncatedLists: 둘 다 잘림");
+eq(truncatedLists(compare(0, 0, true, true)), { head: false, base: false }, "truncatedLists: 빈 목록에는 달지 않는다");
 
 // ── 결과 ───────────────────────────────────────────────
 for (const f of failures) console.log(`FAIL ${f}`);

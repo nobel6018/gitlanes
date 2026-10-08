@@ -371,7 +371,7 @@ export interface CommitOptions {
 // [커밋]
 //   git_commit(path, options: CommitOptions)
 //   get_last_commit_message(path) -> string   // amend 초기값
-//   get_commit_template(path) -> string | null // commit.template 설정이 있으면 그 내용
+//   get_commit_template(path) -> CommitTemplate | null // commit.template 설정이 있으면 그 내용 (v0.18.1부터 객체)
 //   git_undo_commit(path)                     // reset --soft HEAD~1 (머지 커밋도 안전)
 //
 // [브랜치]
@@ -452,6 +452,19 @@ export interface RefSnapshot {
   headSha: string;
   /** 로컬 브랜치와 태그의 전체 ref 이름 → sha ("refs/heads/x", "refs/tags/v1") */
   refs: Record<string, string>;
+  /**
+   * v0.18.1. 로컬 브랜치의 upstream 설정. 키는 전체 ref 이름("refs/heads/x"), 값은
+   * `branch.<x>.remote`와 `branch.<x>.merge` 원문. 둘 다 있는 브랜치만 넣는다.
+   * 되돌리기 판단(바뀐 ref 비교)에는 쓰지 않고, 브랜치를 되살릴 때 설정을 복원하는 데만 쓴다
+   */
+  upstreams: Record<string, BranchUpstream>;
+}
+
+export interface BranchUpstream {
+  /** "origin" 같은 리모트 이름. "." 이면 로컬 브랜치를 추적 */
+  remote: string;
+  /** "refs/heads/main" 같은 리모트 쪽 ref */
+  merge: string;
 }
 
 /**
@@ -486,8 +499,13 @@ export interface UndoEntry {
 //   kind별 복원:
 //   - commit, amend: HEAD 브랜치를 before.headSha로 `reset --soft` (변경은 스테이지에 남는다)
 //   - checkout: before.headRef(없으면 before.headSha)로 checkout. 워킹트리가 막으면 git이 거절한다
+//     v0.18.1: checkout이 새로 만든 로컬 브랜치(origin/x 체크아웃으로 생긴 추적 브랜치)는 HEAD를 돌린 뒤
+//     지우고 그 브랜치의 upstream 설정도 지운다(옛 값 인자로 묶어서)
 //   - createBranch/deleteBranch/renameBranch/createTag/deleteTag: update-ref로 before 상태 복원
+//     v0.18.1: 되살린 브랜치는 before.upstreams의 설정도 복원하고, 지운 브랜치의 설정은 지운다
 //   - reset: before.headSha로 같은 모드 reset. hard는 워킹트리가 깨끗할 때만(아니면 ok=false)
+//   v0.18.1: commit, amend, reset 되돌리기의 ref 이동은 `update-ref <ref> <before> <after>`로 옛 값을 묶는다.
+//   검사와 실행 사이에 ref가 움직이면 git이 거절한다. index와 워킹트리는 그 뒤 `reset --mixed`/`--hard`(대상 없이)로 맞춘다
 
 // ════════════════════════════════════════════════════════════
 // v0.18 파일 히스토리, blame, 비교 (전부 읽기 전용)
@@ -545,8 +563,10 @@ export interface CompareResult {
   onlyInHead: CommitSummary[];
   /** base에만 있는 커밋 (`head..base`), 최신이 먼저 */
   onlyInBase: CommitSummary[];
-  /** 커밋 목록이 limit에 걸려 잘렸으면 true */
-  truncated: boolean;
+  /** v0.18.1. onlyInHead가 limit에 걸려 잘렸으면 true (v0.18.0의 truncated 하나를 목록별로 나눔) */
+  onlyInHeadTruncated: boolean;
+  /** v0.18.1. onlyInBase가 limit에 걸려 잘렸으면 true */
+  onlyInBaseTruncated: boolean;
   files: FileChange[];
 }
 
@@ -558,3 +578,17 @@ export interface CompareResult {
 // compare_refs(path, base: string, head: string, limit: number) -> CompareResult
 // get_compare_file_diff(path, base: string, head: string, file: string, oldFile: string | null) -> string
 //   `base...head` 세 점 diff. 형식은 get_file_diff와 같다(접두 고정)
+
+// ════════════════════════════════════════════════════════════
+// v0.18.1
+// ════════════════════════════════════════════════════════════
+
+/** get_commit_template 결과 */
+export interface CommitTemplate {
+  text: string;
+  /**
+   * 주석 줄 접두. `core.commentChar`와 `core.commentString`(git 2.45+) 중 git처럼 나중에 읽힌 값,
+   * 둘 다 없거나 "auto"면 "#". 템플릿에서 온 줄 중 이 접두로 시작하는 줄만 커밋 직전에 지운다
+   */
+  commentPrefix: string;
+}

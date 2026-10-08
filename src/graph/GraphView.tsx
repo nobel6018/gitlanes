@@ -1151,11 +1151,17 @@ export function GraphView({
     (event: KeyboardEvent<HTMLDivElement>) => {
       const key = event.key;
       if (key === "Escape") {
-        // 다중 선택이 있을 때만 소비한다. 없으면 상위(모달 등)가 Escape를 받게 둔다
+        // 다중 선택이 있을 때만 다룬다. 다만 상위(워크스페이스의 window 핸들러)가 같은 Esc로 더 바깥
+        // 단계(비교 화면 등)를 닫을 수 있어서 여기서 바로 풀지 않는다. 디스패치가 끝난 뒤 아무도
+        // preventDefault 하지 않았을 때만 푼다. 그래야 Esc 한 번에 한 단계만 되돌아간다
         const current = selectionRef.current.selectedShas;
         if (onSelectionChangeRef.current && current && current.length > 0) {
-          event.preventDefault();
-          clearSelection();
+          const native = event.nativeEvent;
+          window.setTimeout(() => {
+            if (!native.defaultPrevented) {
+              clearSelection();
+            }
+          }, 0);
         }
         return;
       }

@@ -3162,7 +3162,9 @@ export function RepoWorkspace({
 
   /**
    * Esc는 한 번에 한 단계만 되돌린다.
-   * 오버레이 → diff 패널 닫기 → 검색어 → 선택. 처리했으면 true
+   * 오버레이 → blame → diff 패널 닫기 → 히스토리/비교 → 검색어 → 다중 선택 → 선택. 처리했으면 true.
+   * 그래프에 포커스가 있으면 GraphView도 같은 Esc를 받지만, 여기서 처리해 preventDefault 하면
+   * 다중 선택을 풀지 않고 물러난다(GraphView의 Escape 분기)
    */
   const handleEscape = useCallback((): boolean => {
     if (quickOpen) {
@@ -3193,6 +3195,14 @@ export function RepoWorkspace({
       handleClearSearch();
       return true;
     }
+    if (selectedShas.length > 0) {
+      setSelectedShas([]);
+      // 화면에 다중 선택 패널이 떠 있을 때만 한 단계로 센다. 그래프가 다시 읽혀 둘 미만만 남았으면
+      // 눈에 보이는 변화가 없으니 이어서 주 선택까지 푼다
+      if (multiActive) {
+        return true;
+      }
+    }
     if (selectedSha !== null) {
       setSelectedSha(null);
       return true;
@@ -3207,6 +3217,8 @@ export function RepoWorkspace({
     closeSideView,
     query,
     handleClearSearch,
+    selectedShas,
+    multiActive,
     selectedSha,
   ]);
 

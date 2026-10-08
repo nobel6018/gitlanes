@@ -38,7 +38,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        // 창 크기·위치를 저장했다가 다음 실행에 복원한다. tauri.conf.json의 width/height는
+        // 창 크기와 위치를 저장했다가 다음 실행에 복원한다. tauri.conf.json의 width/height는
         // 저장된 상태가 없는 첫 실행에만 쓰인다.
         .plugin(tauri_plugin_window_state::Builder::default().build());
 
