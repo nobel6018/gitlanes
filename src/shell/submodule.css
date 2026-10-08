@@ -1,0 +1,139 @@
+/* 서브모듈 (v0.19). 사이드바 SUBMODULES 행, 파일 행 아이콘, 포인터 변경 패널.
+ * 색은 theme.css 변수만 쓴다. 패널 뼈대는 history.css(.hp-*, .cp-*)를 그대로 빌린다 */
+
+/* ---------- 아이콘 ---------- */
+
+.sm-icon {
+  flex: 0 0 auto;
+  display: block;
+}
+
+/* 사이드바 행의 체크 표시 칸(.sb-check 9px)에 아이콘을 넣는다. 색은 보조색 */
+.sb-submodule .sm-row-icon {
+  flex: 0 0 10px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-2);
+}
+
+/* ---------- 사이드바 행 ---------- */
+
+.sb-submodule .sm-dir {
+  margin-left: 6px;
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+/* 체크아웃이 없어 열 수 없는 항목. 흐리게만 하고 선택, 메뉴는 그대로 받는다 */
+.sb-submodule.uninitialized .sb-label {
+  color: var(--fg-2);
+  font-style: italic;
+}
+
+/* 상태 배지. .sb-sync와 같은 크기의 알약에 상태 색 테두리 */
+.sm-badge {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 13px;
+}
+
+.sm-uninitialized {
+  color: var(--fg-2);
+}
+
+.sm-moved,
+.sm-dirty {
+  color: var(--modified);
+}
+
+.sm-conflict {
+  color: var(--deleted);
+}
+
+.sb-item.selected .sm-badge {
+  color: var(--fg-1);
+}
+
+/* ---------- 포인터 변경 패널 ---------- */
+
+.sm-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.hp-path .path-dir.suffix {
+  margin-left: 6px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+}
+
+.sm-pointer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 12px 4px;
+  font-size: 12.5px;
+}
+
+.sm-pointer-label {
+  color: var(--fg-2);
+}
+
+.sm-sha {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-1);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.sm-sha.old {
+  color: var(--deleted);
+}
+
+.sm-sha.new {
+  color: var(--added);
+}
+
+.sm-arrow {
+  color: var(--fg-2);
+}
+
+.sm-origin {
+  padding: 0 12px 4px;
+  overflow: hidden;
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.sm-branch {
+  margin-left: 8px;
+  font-family: var(--font-ui);
+}
+
+/* 읽을 수 없음 안내. .cp-notice(경고색)와 달리 중립색이다: 고장이 아니라 아직 안 받아 온 상태 */
+.sm-notice {
+  margin: 8px 12px 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border-1);
+  border-radius: 4px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+/* 서브모듈 커밋은 이 레포 그래프에 없어 누를 곳이 없다 */
+.hp-commit.sm-commit {
+  cursor: default;
+}
