@@ -511,11 +511,17 @@ function submoduleItems(props: SidebarContextMenuProps, sub: SubmoduleInfo): Men
   const uninitialized = sub.state === "uninitialized";
   // update는 쓰기라 busy 잠금을 따른다. 셸이 핸들러를 안 주면 쓰기 액션 없이 뜬 것으로 본다
   const act = onUpdateSubmodule === undefined ? lock(undefined) : lock(props.actions);
+  // 목록 더블클릭과 같은 기준: update 도중 열면 반쯤 옮겨진 체크아웃을 보게 된다
+  const busy = props.actions?.busy === true;
   const items: MenuItem[] = [
     {
       label: "Open Submodule",
-      disabled: onOpenSubmodule === undefined || uninitialized,
-      title: uninitialized ? "Initialize the submodule first" : undefined,
+      disabled: onOpenSubmodule === undefined || uninitialized || busy,
+      title: uninitialized
+        ? "Initialize the submodule first"
+        : busy
+          ? "Another git operation is running"
+          : undefined,
       onSelect: () => onOpenSubmodule!(sub),
     },
   ];
