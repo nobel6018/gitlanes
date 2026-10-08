@@ -27,6 +27,9 @@ import type {
   RepoState,
   SearchMatch,
   StashInfo,
+  SubmoduleChange,
+  SubmoduleChangeSource,
+  SubmoduleInfo,
   SyncState,
   UndoEntry,
   WipDetails,
@@ -82,6 +85,8 @@ const wipStore: WipDetails = {
     { path: "src/shell/RepoWorkspace.tsx", oldPath: null, status: "M", additions: 42, deletions: 11 },
     { path: "src/shell/shell.css", oldPath: null, status: "M", additions: 18, deletions: 2 },
     { path: "src/graph/GraphView.tsx", oldPath: null, status: "M", additions: 7, deletions: 7 },
+    // v0.19: 서브모듈 HEAD가 기록과 다르다(SUBMODULE_STORE의 third_party/proto, moved+dirty)
+    { path: "third_party/proto", oldPath: null, status: "M", additions: 0, deletions: 0, submodule: true },
   ],
   untracked: [
     { path: "docs/wip-viewer.md", oldPath: null, status: "A", additions: 64, deletions: 0 },
@@ -641,7 +646,10 @@ function mockCompare(base: string, head: string, requested: number): CompareResu
   const lowest = Math.max(compareAnchor(base), compareAnchor(head));
   const files = COMPARE_UNRELATED
     ? mockFiles(hashOf(head)).map((file) => ({ ...file, status: "A" as const, oldPath: null, deletions: 0 }))
-    : mockFiles(hashOf([base, head].sort().join("\u0000"))).filter((_, i) => i !== 6);
+    : [
+        ...mockFiles(hashOf([base, head].sort().join("\u0000"))).filter((_, i) => i !== 6),
+        SUBMODULE_FILE,
+      ];
   return {
     base,
     head,
@@ -653,6 +661,126 @@ function mockCompare(base: string, head: string, requested: number): CompareResu
     files,
   };
 }
+
+// ── v0.19 서브모듈 ──────────────────────────────────────────
+
+/** `?noSubmodules=1`: 서브모듈이 없는 레포. get_submodules가 빈 배열이라 사이드바 구간이 숨는다 */
+const NO_SUBMODULES = new URLSearchParams(window.location.search).get("noSubmodules") === "1";
+
+const SUB_PROTO_RECORDED = fakeSha("proto-recorded");
+const SUB_PROTO_HEAD = fakeSha("proto-head");
+
+/**
+ * 서브모듈 셋: ok, moved+dirty, uninitialized. git_submodule_update가 실제로 고친다.
+ * 서브모듈 경로를 탭으로 열면 그 레포(경로가 MOCK_PATH 아래)는 서브모듈이 없는 것으로 본다
+ */
+const submoduleStore: SubmoduleInfo[] = [
+  {
+    name: "docs-theme",
+    path: "docs/theme",
+    url: "https://github.com/gitlanes/docs-theme.git",
+    branch: null,
+    recordedSha: fakeSha("theme-recorded"),
+    headSha: null,
+    state: "uninitialized",
+    dirty: false,
+  },
+  {
+    name: "proto",
+    path: "third_party/proto",
+    url: "git@github.com:gitlanes/proto.git",
+    branch: "main",
+    recordedSha: SUB_PROTO_RECORDED,
+    headSha: SUB_PROTO_HEAD,
+    state: "moved",
+    dirty: true,
+  },
+  {
+    name: "libgit-lite",
+    path: "vendor/libgit-lite",
+    url: "https://github.com/gitlanes/libgit-lite.git",
+    branch: null,
+    recordedSha: fakeSha("libgit-recorded"),
+    headSha: fakeSha("libgit-recorded"),
+    state: "ok",
+    dirty: false,
+  },
+];
+
+function mockSubmodules(path: string): SubmoduleInfo[] {
+  if (NO_SUBMODULES || path !== MOCK_PATH) {
+    return [];
+  }
+  return submoduleStore.map((sub) => ({ ...sub }));
+}
+
+/** 서브모듈 저장소의 커밋 n개 (최신이 먼저) */
+function subCommits(seed: string, count: number): CommitSummary[] {
+  const now = Math.floor(Date.now() / 1000);
+  const subjects = [
+    "fix: 빈 메시지 필드 직렬화",
+    "feat: stream 응답에 trailer 추가",
+    "chore: buf lint 규칙 갱신",
+    "refactor: 공용 타입을 common.proto로 분리",
+    "docs: 필드 번호 예약 규칙",
+  ];
+  return Array.from({ length: count }, (_, i) => {
+    const sha = fakeSha(`${seed}-${i}`);
+    return {
+      sha,
+      shortSha: sha.slice(0, 7),
+      subject: subjects[(hashOf(seed) + i) % subjects.length],
+      author: i % 2 === 0 ? "Mina Park" : "Younghoon Lee",
+      timestamp: now - (i + 1) * 5400 - (hashOf(seed) % 3600),
+    };
+  });
+}
+
+/**
+ * get_submodule_change mock. unstaged는 기록 → 체크아웃 HEAD, 그 밖은 출처별로 합성한다.
+ * uninitialized(docs/theme)는 서브모듈 저장소가 없어 available=false
+ */
+function mockSubmoduleChange(
+  subPath: string,
+  source: SubmoduleChangeSource,
+  limit: number,
+): SubmoduleChange {
+  const sub = submoduleStore.find((entry) => entry.path === subPath);
+  const unstaged = source.kind === "unstaged";
+  const seed =
+    source.kind === "commit"
+      ? source.sha
+      : source.kind === "compare"
+        ? `${source.base}...${source.head}`
+        : source.kind;
+  const oldSha = unstaged ? (sub?.recordedSha ?? null) : fakeSha(`${subPath}-old-${seed}`);
+  const newSha = unstaged ? (sub?.headSha ?? null) : fakeSha(`${subPath}-new-${seed}`);
+  const available = sub !== undefined && sub.state !== "uninitialized" && oldSha !== null && newSha !== null;
+  // 앞으로 6개, 되감기 2개. limit이 작으면 잘린다(truncated 확인)
+  const ahead = available ? subCommits(`${subPath}-ahead-${seed}`, 6) : [];
+  const behind = available ? subCommits(`${subPath}-behind-${seed}`, 2) : [];
+  return {
+    path: subPath,
+    oldSha,
+    newSha,
+    dirty: unstaged && sub?.dirty === true,
+    available,
+    ahead: ahead.slice(0, limit),
+    behind: behind.slice(0, limit),
+    aheadTruncated: ahead.length > limit,
+    behindTruncated: behind.length > limit,
+  };
+}
+
+/** 커밋 하나(HEAD)와 비교 목록에 들어가는 gitlink 변경 */
+const SUBMODULE_FILE: FileChange = {
+  path: "third_party/proto",
+  oldPath: null,
+  status: "M",
+  additions: 0,
+  deletions: 0,
+  submodule: true,
+};
 
 function mockFiles(seed: number): FileChange[] {
   return [
@@ -696,7 +824,8 @@ function mockDetails(sha: string): CommitDetails {
       "2b7d4e1c98a05f36e4d17b8c2a90f5e63d4817ba",
       "c41a90f27de6b3805c19a4f7e28d60b3947fa1cd",
     ],
-    files: mockFiles(seed),
+    // v0.19: HEAD 커밋 하나만 서브모듈 포인터를 바꾼다
+    files: sha === mockHeadSha() ? [...mockFiles(seed), SUBMODULE_FILE] : mockFiles(seed),
   };
 }
 
@@ -880,6 +1009,8 @@ function installForcedUpdate(): void {
 //   ?template=1       get_commit_template이 # 주석 줄이 섞인 템플릿을 돌려준다
 //   ?template=1&commentChar=;  주석 접두를 ;로 바꾼 템플릿 (core.commentChar 확인). # 줄은 본문으로 남아야 한다
 //   ?compareUnrelated=1&compareLimit=27  비교 목록 한쪽만 잘리게 한다 (목록별 +more 확인)
+//   ?noSubmodules=1   get_submodules가 빈 배열이다 (사이드바 SUBMODULES 구간이 숨는다)
+//   ?fail=submodule_update&auth=1  서브모듈 update가 인증 실패로 끝난다 (터미널 핸드오프 확인)
 //   ?latin1=1         get_wip_file_diff가 encoding:"latin1"을 돌려준다 (git_apply_patch 로그로 전달 확인)
 //   ?fail=undo        git_undo가 git 실패로 끝난다 (command 있음, 항목이 스택에 남는다)
 //   ?undo=stale       git_undo가 상태 불일치로 거절한다 (command 빈 배열, 항목이 스택에서 빠진다)
@@ -1347,6 +1478,35 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
         return fail(command, "fatal: the requested upstream branch does not exist");
       }
       return ok(command);
+    }
+
+    case "git_submodule_update": {
+      const paths = listArg(payload, "paths");
+      const init = boolArg(payload, "init");
+      const command = [
+        "submodule",
+        "update",
+        ...(init ? ["--init"] : []),
+        "--recursive",
+        "--",
+        ...paths,
+      ];
+      if (shouldFail(cmd)) {
+        return fail(command, "fatal: clone of 'git@github.com:gitlanes/proto.git' into submodule path failed");
+      }
+      const targets =
+        paths.length === 0 ? submoduleStore : submoduleStore.filter((sub) => paths.includes(sub.path));
+      for (const sub of targets) {
+        // --init 없이는 초기화 안 한 서브모듈을 건너뛴다(git과 같다)
+        if (sub.state === "uninitialized" && !init) {
+          continue;
+        }
+        sub.headSha = sub.recordedSha;
+        sub.state = "ok";
+        // 기록과 HEAD가 같아졌으니 상위 레포의 unstaged gitlink도 사라진다
+        removeFiles(wipStore.unstaged, [sub.path]);
+      }
+      return ok(command, "Submodule path 'third_party/proto': checked out");
     }
 
     case "git_fetch": {
@@ -2038,6 +2198,19 @@ mockIPC(async (cmd, payload) => {
       const file = String(readArg(payload, "file") ?? "");
       const oldFileArg = readArg(payload, "oldFile");
       return mockDiff(file, typeof oldFileArg === "string" ? oldFileArg : null);
+    }
+
+    // ── v0.19 서브모듈 ──────────────────────────────────
+    case "get_submodules":
+      await sleep(60);
+      return mockSubmodules(String(readArg(payload, "path") ?? ""));
+
+    case "get_submodule_change": {
+      await sleep(120);
+      const subPath = String(readArg(payload, "subPath") ?? "");
+      const source = readArg(payload, "source") as SubmoduleChangeSource;
+      const limit = Number(readArg(payload, "limit") ?? 200);
+      return mockSubmoduleChange(subPath, source, limit);
     }
 
     // plugin-dialog의 open()은 이 command로 내려온다
