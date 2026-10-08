@@ -93,6 +93,13 @@ const SIGNING_FAILED_MARKER: &str = "gpg failed to sign the data";
 /// 서명 키 자체가 없다. 터미널에서 pinentry가 떠도 똑같이 실패하므로 핸드오프하지 않는다
 const NO_SECRET_KEY_MARKER: &str = "no secret key";
 
+/// `gpg.format=ssh` 서명이 비밀번호 때문에 실패했다. git은 ssh-keygen의 stderr를 `error: ` 뒤에
+/// 그대로 붙인다(gpg 경로와 달리 고정 접두가 없다). TTY가 없으면 ssh-keygen이 프롬프트를 stderr에
+/// 쓰고 막힌 stdin에서 빈 비밀번호를 읽어 이 문구로 끝난다. 실측(git 2.50.1, OpenSSH 10.3p1):
+/// `error: Enter passphrase for "<키>": Load key "<키>": incorrect passphrase supplied to decrypt private key?`
+/// 키 파일이 없으면 `Couldn't load public key`로 끝나 여기 걸리지 않는다(터미널에서도 실패하니 맞다)
+const SSH_PASSPHRASE_MARKER: &str = "incorrect passphrase supplied to decrypt private key";
+
 /// gpg가 `--status-fd`로 쓰는 기계용 상태 줄의 접두
 const GPG_STATUS_PREFIX: &str = "[GNUPG:]";
 
@@ -546,15 +553,16 @@ pub fn finish(repo: &str, args: &[&str], outcome: Outcome, timeout: Duration) ->
     }
 }
 
-/// gpg가 비밀번호를 물으려다 TTY가 없어 실패했는지 본다.
+/// 서명(gpg 또는 ssh)이 비밀번호를 물으려다 TTY가 없어 실패했는지 본다.
 ///
-/// 앱은 stdin을 막고 터미널 없이 git을 돌려서, 비밀번호가 걸린 키는 pinentry(curses/tty)가
-/// 뜨지 못하고 곧바로 exit 128로 끝난다(멈추지는 않는다). 내장 터미널에는 TTY가 있어
-/// 같은 명령을 거기서 돌리면 비밀번호를 묻는다. 키가 아예 없는 경우는 터미널에서도
-/// 똑같이 실패하므로 뺀다.
+/// 앱은 stdin을 막고 터미널 없이 git을 돌려서, 비밀번호가 걸린 키는 pinentry(curses/tty)나
+/// ssh-keygen 프롬프트가 답을 받지 못하고 곧바로 exit 128로 끝난다(멈추지는 않는다). 내장
+/// 터미널에는 TTY가 있어 같은 명령을 거기서 돌리면 비밀번호를 묻는다. 키가 아예 없는 경우는
+/// 터미널에서도 똑같이 실패하므로 뺀다.
 pub fn looks_like_signing_prompt_failure(stderr: &str) -> bool {
     let lowered = stderr.to_lowercase();
-    lowered.contains(SIGNING_FAILED_MARKER) && !lowered.contains(NO_SECRET_KEY_MARKER)
+    let gpg = lowered.contains(SIGNING_FAILED_MARKER) && !lowered.contains(NO_SECRET_KEY_MARKER);
+    gpg || lowered.contains(SSH_PASSPHRASE_MARKER)
 }
 
 /// gpg의 `[GNUPG:]` 상태 줄을 뺀다. 지문과 내부 코드뿐이라 사용자에게는 소음이고,
@@ -988,6 +996,12 @@ mod tests {
     /// user.signingkey가 가리키는 비밀 키가 없다. 터미널에서도 똑같이 실패한다
     const GPG_NO_SECRET_KEY: &str = "error: gpg failed to sign the data:\n[GNUPG:] KEY_CONSIDERED 0123456789ABCDEF0123456789ABCDEF01234567 0\ngpg: skipped \"DEADBEEF\": No secret key\n[GNUPG:] INV_SGNR 9 DEADBEEF\n[GNUPG:] FAILURE sign 17\ngpg: signing failed: No secret key\n\nfatal: failed to write commit object";
 
+    /// gpg.format=ssh, 비밀번호 걸린 키, TTY 없음(실측, git 2.50.1, OpenSSH 10.3p1)
+    const SSH_PASSPHRASE: &str = "error: Enter passphrase for \"/k/key\": Load key \"/k/key\": incorrect passphrase supplied to decrypt private key?\n\nfatal: failed to write commit object";
+
+    /// gpg.format=ssh인데 user.signingkey 파일이 없다(실측). 터미널에서도 실패한다
+    const SSH_NO_KEY: &str = "error: Couldn't load public key /k/nope: No such file or directory?\n\nfatal: failed to write commit object";
+
     #[test]
     fn gpg_비밀번호_실패는_로컬_명령이어도_needs_auth다() {
         for args in [
@@ -1023,10 +1037,99 @@ mod tests {
         }
     }
 
+    /// 비밀번호 걸린 ssh 키로 실제 서명을 시켜 git의 stderr를 받는다. ssh-keygen이 없으면 None.
+    ///
+    /// 우리 실행기와 같은 환경(op_command)에서 돌리되 setsid로 제어 터미널을 떼어 앱과 같게 만든다.
+    /// 테스트를 터미널에서 돌리면 ssh-keygen이 /dev/tty를 열어 비밀번호를 기다리기 때문이다.
+    /// ssh-agent가 키를 갖고 있으면 서명이 성공해 버리니 `SSH_AUTH_SOCK`을 비운다.
+    #[cfg(unix)]
+    fn ssh_signing_failure(args: &[&str], key_file: Option<&str>) -> Option<Outcome> {
+        use std::os::unix::process::CommandExt;
+
+        let probe = Command::new("ssh-keygen")
+            .arg("-?")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if probe.is_err() {
+            eprintln!("ssh-keygen이 없어 ssh 서명 테스트를 건너뛴다");
+            return None;
+        }
+
+        let repo = crate::testrepo::TempRepo::linear("gitlanes-ssh-sign", 1);
+        let key = format!("{}/.git/signing-key", repo.path());
+        let made = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "secret-pass", "-C", "test", "-f"])
+            .arg(&key)
+            .stdin(Stdio::null())
+            .status()
+            .expect("ssh-keygen 실행");
+        assert!(made.success());
+        repo.git(&["config", "gpg.format", "ssh"]);
+        let signing_key = key_file.map_or(key.clone(), |name| format!("{}/{name}", repo.path()));
+        repo.git(&["config", "user.signingkey", &signing_key]);
+        repo.git(&["config", "commit.gpgsign", "true"]);
+        repo.git(&["config", "tag.gpgsign", "true"]);
+
+        let mut command = op_command(&repo.path(), args);
+        command.env("SSH_AUTH_SOCK", "");
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        // SAFETY: setsid는 async-signal-safe다. fork 뒤 exec 전에 메모리를 할당하지 않는다
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let output = command.output().expect("git 실행");
+        Some(Outcome {
+            code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            timed_out: false,
+        })
+    }
+
+    #[test]
+    #[cfg(unix)] // setsid와 ssh-keygen 키 파일 권한(0600)이 유닉스 전제다
+    fn ssh_서명_비밀번호_실패는_로컬_명령이어도_needs_auth다() {
+        for args in [
+            &["commit", "--allow-empty", "-m", "x"][..],
+            &["tag", "-m", "v1", "v1"],
+        ] {
+            let Some(outcome) = ssh_signing_failure(args, None) else {
+                return;
+            };
+            assert_ne!(outcome.code, Some(0), "{outcome:?}");
+            assert!(
+                outcome.stderr.contains(SSH_PASSPHRASE_MARKER),
+                "실측 문구가 바뀌었다: {}",
+                outcome.stderr
+            );
+            let result = finish(&nowhere(), args, outcome, LOCAL_TIMEOUT);
+            assert!(result.needs_auth, "{args:?} {result:?}");
+            assert!(!result.command.is_empty(), "{result:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)] // 위와 같은 픽스처
+    fn ssh_서명_키_파일이_없으면_needs_auth가_아니다() {
+        let args = ["commit", "--allow-empty", "-m", "x"];
+        let Some(outcome) = ssh_signing_failure(&args, Some("missing-key")) else {
+            return;
+        };
+        assert_ne!(outcome.code, Some(0), "{outcome:?}");
+        let result = finish(&nowhere(), &args, outcome, LOCAL_TIMEOUT);
+        assert!(!result.needs_auth, "{result:?}");
+    }
+
     #[test]
     fn gpg_실패를_가르는_판정은_stderr만_본다() {
         assert!(looks_like_signing_prompt_failure(GPG_PASSPHRASE));
         assert!(!looks_like_signing_prompt_failure(GPG_NO_SECRET_KEY));
+        assert!(looks_like_signing_prompt_failure(SSH_PASSPHRASE));
+        assert!(!looks_like_signing_prompt_failure(SSH_NO_KEY));
         assert!(!looks_like_signing_prompt_failure(""));
         assert!(!looks_like_signing_prompt_failure(
             "error: Your local changes would be overwritten by merge."
