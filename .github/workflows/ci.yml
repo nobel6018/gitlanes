@@ -50,6 +50,9 @@ jobs:
       - name: Submodule model test
         run: npm run test:submodule
 
+      - name: Submodule add test
+        run: npm run test:submodule-add
+
       - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml

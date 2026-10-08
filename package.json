@@ -11,7 +11,8 @@
     "test:patch": "node tests/patch-engine.test.mts",
     "test:multi": "node tests/multi-select.test.mts",
     "test:history": "node tests/history-model.test.mts",
-    "test:submodule": "node tests/submodule-model.test.mts"
+    "test:submodule": "node tests/submodule-model.test.mts",
+    "test:submodule-add": "node tests/submodule-add.test.mts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
