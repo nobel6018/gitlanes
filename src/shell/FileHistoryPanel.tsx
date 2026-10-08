@@ -40,6 +40,20 @@ export function FileHistoryPanel({
     setFocus(selectedIndex);
   }, [selectedIndex]);
 
+  // 목록이 나타나면(패널을 열었거나 다른 파일 히스토리로 바뀌면) 목록에 포커스를 줘서 바로 ↑↓, Enter가
+  // 먹게 한다. 로딩을 기다리는 사이 사용자가 입력창으로 옮겨 갔으면 빼앗지 않는다
+  const listShown = entries !== null && entries.length > 0;
+  useEffect(() => {
+    if (!listShown) {
+      return;
+    }
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+      return;
+    }
+    listRef.current?.focus({ preventScroll: true });
+  }, [listShown, file]);
+
   useEffect(() => {
     if (focus < 0) {
       return;

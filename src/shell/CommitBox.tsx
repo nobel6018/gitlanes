@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent } from "react";
 import { getCommitTemplate } from "./api";
 import { withKbd } from "./shortcuts";
+import type { CommitTemplate } from "../types";
 import type { WipActions } from "./WipDetailPanel";
 
 /** subject 권장 길이. 넘으면 옅은 경고만 띄우고 커밋은 막지 않는다 */
@@ -67,20 +68,22 @@ function writeAmendDraft(repoPath: string, message: string | null) {
 }
 
 /**
- * 템플릿(commit.template)에서 온 `#` 주석 줄만 지운다. git_commit은 메시지를 -m으로 넘기고,
- * -m 커밋의 기본 cleanup은 whitespace라 git이 `#` 줄을 지우지 않는다. 템플릿의 안내 문구가
- * 그대로 커밋에 박히지 않게 여기서 걷어 낸다. 사용자가 직접 쓴 `#123` 같은 줄은 템플릿에
- * 없으므로 남는다. 줄 끝 공백 차이는 무시하고 비교한다
+ * 템플릿(commit.template)에서 온 주석 줄만 지운다. git_commit은 메시지를 -m으로 넘기고,
+ * -m 커밋의 기본 cleanup은 whitespace라 git이 주석 줄을 지우지 않는다. 템플릿의 안내 문구가
+ * 그대로 커밋에 박히지 않게 여기서 걷어 낸다. 주석 접두는 core.commentChar(또는 commentString)를
+ * 따르고, 사용자가 직접 쓴 `#123` 같은 줄은 템플릿에 없으므로 남는다. 줄 끝 공백 차이는 무시한다
  */
-export function stripTemplateComments(message: string, template: string | null): string {
+export function stripTemplateComments(message: string, template: CommitTemplate | null): string {
   if (template === null) {
     return message;
   }
+  // 빈 접두는 모든 줄에 걸리므로 git 기본값으로 읽는다
+  const prefix = template.commentPrefix === "" ? "#" : template.commentPrefix;
   const comments = new Set(
-    template
+    template.text
       .split("\n")
       .map((line) => line.trimEnd())
-      .filter((line) => line.startsWith("#")),
+      .filter((line) => line.startsWith(prefix)),
   );
   if (comments.size === 0) {
     return message;
@@ -125,12 +128,12 @@ export function CommitBox({ repoPath, stagedCount, actions, onRequestLastMessage
   const amendGenRef = useRef(0);
   const repoRef = useRef(repoPath);
   /**
-   * 이 레포의 commit.template 내용. 없으면 null. 메시지가 비면 채워 넣고, 커밋 직전에
-   * 이 템플릿의 `#` 줄을 지우는 기준이 된다. 템플릿 채움은 초안(localStorage)에 쓰지 않는다.
+   * 이 레포의 commit.template 내용과 주석 접두. 없으면 null. 메시지가 비면 채워 넣고, 커밋 직전에
+   * 이 템플릿의 주석 줄을 지우는 기준이 된다. 템플릿 채움은 초안(localStorage)에 쓰지 않는다.
    * 사용자가 고치기 시작해야 초안이 되고, 그 초안에 남은 템플릿 줄도 같은 기준으로 지워진다
    */
-  const [template, setTemplate] = useState<string | null>(null);
-  const templateRef = useRef<string | null>(null);
+  const [template, setTemplate] = useState<CommitTemplate | null>(null);
+  const templateRef = useRef<CommitTemplate | null>(null);
   templateRef.current = template;
   const messageRef = useRef(message);
   messageRef.current = message;
@@ -147,15 +150,15 @@ export function CommitBox({ repoPath, stagedCount, actions, onRequestLastMessage
     setTemplate(null);
     let alive = true;
     getCommitTemplate(repoPath)
-      .then((text) => {
+      .then((loaded) => {
         if (!alive) {
           return;
         }
-        const next = text === null || text.trim() === "" ? null : text;
+        const next = loaded === null || loaded.text.trim() === "" ? null : loaded;
         setTemplate(next);
         // 기다리는 사이 사용자가 쓰기 시작했거나 amend로 바꿨으면 건드리지 않는다
         if (next !== null && messageRef.current === "" && !amendRef.current) {
-          setMessage(next);
+          setMessage(next.text);
         }
       })
       .catch(() => {
@@ -168,7 +171,7 @@ export function CommitBox({ repoPath, stagedCount, actions, onRequestLastMessage
 
   /** 일반 커밋으로 돌아가며 보여 줄 메시지. 초안이 비었으면 템플릿을 깐다 */
   function withTemplate(draft: string): string {
-    return draft === "" && templateRef.current !== null ? templateRef.current : draft;
+    return draft === "" && templateRef.current !== null ? templateRef.current.text : draft;
   }
 
   const resize = useCallback(() => {

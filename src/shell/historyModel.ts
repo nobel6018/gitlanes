@@ -78,16 +78,12 @@ export function moveIndex(current: number, delta: number, length: number): numbe
 }
 
 /**
- * truncated는 결과 전체에 하나뿐이라 어느 목록이 잘렸는지 모른다.
- * limit에 걸린 쪽은 긴 쪽이므로 길이가 최댓값인 비어 있지 않은 목록에만 "+more"를 단다
+ * 어느 목록이 limit에 걸려 잘렸는지. v0.18.1부터 결과가 목록별 플래그를 주므로 그대로 옮긴다.
+ * 빈 목록은 잘릴 수 없으니 플래그가 켜져 있어도 "+more"를 달지 않는다
  */
 export function truncatedLists(result: CompareResult): { head: boolean; base: boolean } {
-  if (!result.truncated) {
-    return { head: false, base: false };
-  }
-  const max = Math.max(result.onlyInHead.length, result.onlyInBase.length);
   return {
-    head: max > 0 && result.onlyInHead.length === max,
-    base: max > 0 && result.onlyInBase.length === max,
+    head: result.onlyInHeadTruncated && result.onlyInHead.length > 0,
+    base: result.onlyInBaseTruncated && result.onlyInBase.length > 0,
   };
 }

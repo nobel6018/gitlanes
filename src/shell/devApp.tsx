@@ -11,6 +11,7 @@ import type {
   CommitDetails,
   CommitRow,
   CommitSummary,
+  CommitTemplate,
   CompareResult,
   ConflictFile,
   FileChange,
@@ -486,6 +487,13 @@ const UNCOMMITTED_SHA = "0".repeat(40);
 /** `?compareUnrelated=1`: 공통 조상이 없는 두 히스토리 비교 */
 const COMPARE_UNRELATED =
   new URLSearchParams(window.location.search).get("compareUnrelated") === "1";
+/**
+ * `?compareLimit=<n>`: compare_refs의 limit을 n으로 줄인다. compareUnrelated(목록당 25~30개)와 같이 쓰면
+ * 한쪽 목록만 잘리는 경우를 만들 수 있다 (목록별 "+more" 확인)
+ */
+const COMPARE_LIMIT_OVERRIDE = Number(
+  new URLSearchParams(window.location.search).get("compareLimit") ?? "0",
+);
 
 function commitRows(): CommitRow[] {
   return mockGraph(1000, 0).rows.filter((row) => row.parents.length === 1);
@@ -601,9 +609,19 @@ function compareAnchor(name: string): number {
  * 갈라진 두 브랜치. 각 쪽의 고유 커밋은 자기 위치부터 아래로 몇 개, 공통 조상은 둘보다 더 아래.
  * base와 head를 맞바꾸면 두 목록도 그대로 맞바뀐다(같은 쌍에서 결정적으로 만든다)
  */
-function mockCompare(base: string, head: string, limit: number): CompareResult {
+function mockCompare(base: string, head: string, requested: number): CompareResult {
+  const limit = COMPARE_LIMIT_OVERRIDE > 0 ? Math.min(requested, COMPARE_LIMIT_OVERRIDE) : requested;
   if (base === head) {
-    return { base, head, mergeBase: null, onlyInHead: [], onlyInBase: [], truncated: false, files: [] };
+    return {
+      base,
+      head,
+      mergeBase: null,
+      onlyInHead: [],
+      onlyInBase: [],
+      onlyInHeadTruncated: false,
+      onlyInBaseTruncated: false,
+      files: [],
+    };
   }
   const rows = commitRows();
   const side = (name: string, count: number): CommitSummary[] => {
@@ -630,7 +648,8 @@ function mockCompare(base: string, head: string, limit: number): CompareResult {
     mergeBase: COMPARE_UNRELATED ? null : rows[(lowest + 30) % rows.length].sha,
     onlyInHead: onlyInHead.slice(0, limit),
     onlyInBase: onlyInBase.slice(0, limit),
-    truncated: onlyInHead.length > limit || onlyInBase.length > limit,
+    onlyInHeadTruncated: onlyInHead.length > limit,
+    onlyInBaseTruncated: onlyInBase.length > limit,
     files,
   };
 }
@@ -859,6 +878,8 @@ function installForcedUpdate(): void {
 //   ?rebaseErr=1      get_rebase_steps가 Err를 돌려준다 (리베이스 에디터가 열리지 않고 토스트만)
 //   ?rebaseSlow=3000  get_rebase_steps만 그 밀리초만큼 늦춘다 (메뉴 로딩 상태 검증)
 //   ?template=1       get_commit_template이 # 주석 줄이 섞인 템플릿을 돌려준다
+//   ?template=1&commentChar=;  주석 접두를 ;로 바꾼 템플릿 (core.commentChar 확인). # 줄은 본문으로 남아야 한다
+//   ?compareUnrelated=1&compareLimit=27  비교 목록 한쪽만 잘리게 한다 (목록별 +more 확인)
 //   ?latin1=1         get_wip_file_diff가 encoding:"latin1"을 돌려준다 (git_apply_patch 로그로 전달 확인)
 //   ?fail=undo        git_undo가 git 실패로 끝난다 (command 있음, 항목이 스택에 남는다)
 //   ?undo=stale       git_undo가 상태 불일치로 거절한다 (command 빈 배열, 항목이 스택에서 빠진다)
@@ -885,10 +906,21 @@ const DENIED_ACCOUNT = PARAMS.get("denied");
 const REBASE_STEPS_ERR = PARAMS.get("rebaseErr") === "1";
 /** ?rebaseSlow=<ms>. get_rebase_steps만 늦춘다 */
 const REBASE_STEPS_DELAY_MS = Number(PARAMS.get("rebaseSlow") ?? "0");
-/** ?template=1. commit.template이 설정된 레포처럼 군다 */
-const COMMIT_TEMPLATE =
+/** ?commentChar=<접두>. core.commentChar(또는 commentString)가 설정된 레포처럼 군다. 없으면 "#" */
+const COMMENT_PREFIX = PARAMS.get("commentChar") || "#";
+/**
+ * ?template=1. commit.template이 설정된 레포처럼 군다. 주석 줄은 COMMENT_PREFIX로 쓰고, 접두가 "#"가
+ * 아니면 "# "로 시작하는 본문 줄을 하나 섞어 그 줄은 지워지지 않는지 본다
+ */
+const COMMIT_TEMPLATE: CommitTemplate | null =
   PARAMS.get("template") === "1"
-    ? "\n\n# Why is this change needed?\n# Prevent the graph from flickering on refresh.\n#\n# Refs: #123\n"
+    ? {
+        text:
+          COMMENT_PREFIX === "#"
+            ? "\n\n# Why is this change needed?\n# Prevent the graph from flickering on refresh.\n#\n# Refs: #123\n"
+            : `\n\n# Heading kept as body text\n${COMMENT_PREFIX} Why is this change needed?\n${COMMENT_PREFIX} Prevent the graph from flickering on refresh.\n${COMMENT_PREFIX}\n`,
+        commentPrefix: COMMENT_PREFIX,
+      }
     : null;
 /** ?latin1=1. WIP diff가 UTF-8이 아닌 파일에서 나온 것처럼 군다 */
 const WIP_DIFF_ENCODING: "utf8" | "latin1" = PARAMS.get("latin1") === "1" ? "latin1" : "utf8";
@@ -1062,6 +1094,7 @@ function mockRefSnapshot(): RefSnapshot {
     headRef: "refs/heads/main",
     headSha: head,
     refs: { "refs/heads/main": head, "refs/mock/write-count": String(refSalt) },
+    upstreams: { "refs/heads/main": { remote: "origin", merge: "refs/heads/main" } },
   };
 }
 
