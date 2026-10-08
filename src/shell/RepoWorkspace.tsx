@@ -2475,7 +2475,11 @@ export function RepoWorkspace({
     }
   }, [openSubmodulePath]);
 
+  /** 패널 버튼에는 busy가 없다. 쓰기 중에 눌린 것은 버린다(사이드바 메뉴와 같은 기준) */
   const initializeFromPanel = useCallback(() => {
+    if (actionsRef.current.busy) {
+      return;
+    }
     const path = openFileRef.current?.file.path;
     const info = submodulesRef.current.find((sub) => sub.path === path);
     if (info !== undefined && info.state === "uninitialized") {
