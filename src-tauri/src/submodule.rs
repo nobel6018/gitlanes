@@ -707,10 +707,20 @@ mod tests {
     #[test]
     fn index에_없는_gitmodules_항목은_uninitialized로_보인다() {
         let fx = one();
-        fx.parent
-            .git(&["config", "-f", ".gitmodules", "submodule.ghost.path", "ghost"]);
-        fx.parent
-            .git(&["config", "-f", ".gitmodules", "submodule.ghost.url", "../ghost"]);
+        fx.parent.git(&[
+            "config",
+            "-f",
+            ".gitmodules",
+            "submodule.ghost.path",
+            "ghost",
+        ]);
+        fx.parent.git(&[
+            "config",
+            "-f",
+            ".gitmodules",
+            "submodule.ghost.url",
+            "../ghost",
+        ]);
 
         let infos = get_submodules(fx.parent.path()).unwrap();
         let ghost = find(&infos, "ghost");
