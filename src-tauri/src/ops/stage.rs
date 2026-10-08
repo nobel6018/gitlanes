@@ -1002,15 +1002,7 @@ mod tests {
         inner.git(&["commit", "-qm", "inner"]);
 
         let repo = dirty();
-        repo.git(&[
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            inner.path().as_str(),
-            "sub",
-        ]);
+        repo.add_submodule(&inner.path(), "sub");
         repo.git(&["commit", "-qm", "sub"]);
 
         let sub_path = format!("{}/sub", repo.path());

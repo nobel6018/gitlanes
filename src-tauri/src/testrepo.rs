@@ -13,6 +13,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// 줄바꿈 설정. GitHub Windows 러너의 전역 `core.autocrlf=true`가 체크아웃에 끼어들지 않게 한다.
+///
+/// - 서브커맨드 앞(`git -c ...`): `GIT_CONFIG_PARAMETERS`로 자식 git에 물려져, `submodule
+///   add`/`update`가 내부에서 하는 clone과 체크아웃에도 적용된다. 테스트의 모든 git 호출에 건다
+/// - `git clone -c ...`: 새 레포 config에 쓰고 체크아웃 전에 적용한다
+const LINE_ENDING_ARGS: [&str; 4] = ["-c", "core.autocrlf=false", "-c", "core.eol=lf"];
+
 pub struct TempRepo {
     root: PathBuf,
 }
@@ -52,8 +59,12 @@ impl TempRepo {
     /// `source`를 클론한다. 같은 리모트를 공유하는 두 번째 작업 사본이 필요할 때 쓴다.
     pub fn clone_of(prefix: &str, source: &str) -> Self {
         let repo = Self::empty_dir(prefix);
+        // 설정은 clone 시점에 넣어야 한다. clone 뒤에 박으면 이미 전역 autocrlf=true로 CRLF가
+        // 된 체크아웃 파일이 dirty로 보여 checkout이 거절된다(v0.18.1 Windows 릴리스 빌드)
         let output = Command::new("git")
-            .args(["clone", "-q", source])
+            .args(["clone", "-q"])
+            .args(LINE_ENDING_ARGS)
+            .arg(source)
             .arg(&repo.root)
             .output()
             .expect("git clone 실행 실패");
@@ -65,12 +76,7 @@ impl TempRepo {
         repo.git(&["config", "user.name", "테스터"]);
         repo.git(&["config", "user.email", "tester@example.com"]);
         repo.git(&["config", "commit.gpgsign", "false"]);
-        // GitHub의 Windows 러너는 전역 core.autocrlf=true다. 그러면 git이 복원/체크아웃
-        // 때 "1\n"을 "1\r\n"으로 바꿔 써서, 파일 내용을 문자열로 비교하는 테스트가
-        // Windows에서만 깨진다. 제품 버그가 아니라 테스트 레포가 호스트 설정을 물려받은
-        // 것이라, 다른 config와 같은 이유로 레포 로컬에 못 박는다.
-        repo.git(&["config", "core.autocrlf", "false"]);
-        repo.git(&["config", "core.eol", "lf"]);
+        // core.autocrlf, core.eol은 clone -c가 이미 레포 config에 썼다
         repo
     }
 
@@ -106,6 +112,7 @@ impl TempRepo {
     pub fn git_in(&self, dir: &str, args: &[&str]) {
         let output = Command::new("git")
             .current_dir(self.root.join(dir))
+            .args(LINE_ENDING_ARGS)
             .env("GIT_AUTHOR_NAME", "테스터")
             .env("GIT_AUTHOR_EMAIL", "tester@example.com")
             .env("GIT_COMMITTER_NAME", "커미터")
@@ -134,6 +141,11 @@ impl TempRepo {
             url,
             path,
         ]);
+        // 제품 코드는 `-c` 없이 서브모듈 안에서 git을 부른다. 서브모듈 레포 config에도 박아서
+        // 이후 체크아웃(테스트의 HEAD 이동, 제품의 update)이 전역 설정을 따르지 않게 한다.
+        // config는 `.git/modules/<name>`에 있어 deinit 뒤에도 남는다
+        self.git_in(path, &["config", "core.autocrlf", "false"]);
+        self.git_in(path, &["config", "core.eol", "lf"]);
     }
 
     pub fn write(&self, name: &str, content: &str) {
