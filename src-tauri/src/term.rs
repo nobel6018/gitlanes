@@ -428,14 +428,17 @@ mod tests {
         drop(pair.slave);
 
         let reader = pair.master.try_clone_reader().unwrap();
-        drop(pair.master);
 
         let text = collect_until(reader, needle);
         assert!(
             strip_ws(&text).contains(&strip_ws(needle)),
             "{needle:?}를 찾지 못했다: {text:?}"
         );
+        // master는 자식이 끝난 뒤에 닫는다. collect_until은 기대 문자열을 보면 바로 돌아오고, 남은
+        // 출력(줄 끝 CRLF)을 읽은 수집 스레드가 reader를 놓는다. 그때 master 쪽 fd가 하나도 없으면
+        // 커널이 아직 살아 있는 셸에 SIGHUP을 보내 종료 코드가 1이 된다(Linux 릴리스 빌드에서 실측)
         assert_eq!(child.wait().unwrap().exit_code(), 0);
+        drop(pair.master);
     }
 
     #[test]
