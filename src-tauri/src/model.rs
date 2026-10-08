@@ -459,6 +459,21 @@ pub struct RefSnapshot {
     pub head_sha: String,
     /// 로컬 브랜치와 태그의 전체 ref 이름 → sha. annotated 태그는 태그 객체 sha다
     pub refs: std::collections::BTreeMap<String, String>,
+    /// 로컬 브랜치의 전체 ref 이름 → upstream 설정. remote와 merge가 둘 다 있는 브랜치만.
+    /// 바뀐 ref 판단에는 쓰지 않고 되살린 브랜치의 설정을 복원하는 데만 쓴다.
+    /// 계약상 필수지만 빠진 항목이 와도 되돌리기 자체는 되도록 비어 있는 것으로 받는다
+    #[serde(default)]
+    pub upstreams: std::collections::BTreeMap<String, BranchUpstream>,
+}
+
+/// `branch.<x>.remote`와 `branch.<x>.merge` 원문.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchUpstream {
+    /// "origin" 같은 리모트 이름. "."이면 로컬 브랜치를 추적
+    pub remote: String,
+    /// "refs/heads/main" 같은 리모트 쪽 ref
+    pub merge: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

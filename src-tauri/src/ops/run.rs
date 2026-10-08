@@ -1059,7 +1059,16 @@ mod tests {
         let repo = crate::testrepo::TempRepo::linear("gitlanes-ssh-sign", 1);
         let key = format!("{}/.git/signing-key", repo.path());
         let made = Command::new("ssh-keygen")
-            .args(["-q", "-t", "ed25519", "-N", "secret-pass", "-C", "test", "-f"])
+            .args([
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "secret-pass",
+                "-C",
+                "test",
+                "-f",
+            ])
             .arg(&key)
             .stdin(Stdio::null())
             .status()
