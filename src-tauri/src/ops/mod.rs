@@ -29,6 +29,7 @@ pub mod remote;
 pub mod run;
 pub mod stage;
 pub mod stash;
+pub mod submodule;
 pub mod sync;
 pub mod tag;
 pub mod undo;

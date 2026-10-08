@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::commands::{
     decode_text, push_file_pathspecs, resolve_in_repo, validate_pathspec, validate_rev,
-    DIFF_PREFIX_ARGS, MAX_FILE_BYTES,
+    DIFF_PREFIX_ARGS, MAX_FILE_BYTES, SUBMODULE_SHORT_ARG,
 };
 use crate::git;
 use crate::model::{
@@ -220,6 +220,7 @@ pub fn get_compare_file_diff(
     let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "-M"];
     args.extend(range.iter().map(String::as_str));
     args.extend(DIFF_PREFIX_ARGS);
+    args.push(SUBMODULE_SHORT_ARG);
     push_file_pathspecs(&mut args, &file, old_file.as_deref());
 
     git::run(&path, &args).map_err(|e| format!("Could not read the diff: {e}"))
