@@ -129,6 +129,11 @@ export interface FileChange {
   status: FileStatus;
   additions: number;
   deletions: number;
+  /**
+   * v0.19. 서브모듈 포인터(gitlink, 모드 160000) 항목이면 true. 빠졌으면 false로 본다.
+   * 이 항목은 텍스트 diff 대신 SubmoduleChangePanel로 보여주고, hunk 스테이징과 History/Blame을 주지 않는다
+   */
+  submodule?: boolean;
 }
 
 export interface Signature {
@@ -592,3 +597,66 @@ export interface CommitTemplate {
    */
   commentPrefix: string;
 }
+
+// ════════════════════════════════════════════════════════════
+// v0.19 서브모듈 (상위 레포 기준, 최상위 서브모듈만. 중첩은 그 서브모듈을 탭으로 열어서 본다)
+// ════════════════════════════════════════════════════════════
+
+/**
+ * - uninitialized: .gitmodules에는 있지만 체크아웃이 없다 (`git submodule status`의 '-')
+ * - ok: 서브모듈 HEAD가 상위 레포 index에 기록된 커밋과 같다
+ * - moved: 서브모듈 HEAD가 기록된 커밋과 다르다 ('+')
+ * - conflict: 상위 레포에서 gitlink가 충돌 중이다 ('U')
+ */
+export type SubmoduleState = "uninitialized" | "ok" | "moved" | "conflict";
+
+/** Tauri command: get_submodules(path) -> SubmoduleInfo[] (경로순) */
+export interface SubmoduleInfo {
+  /** .gitmodules의 `submodule.<name>` 이름 */
+  name: string;
+  /** 상위 레포 기준 상대 경로 */
+  path: string;
+  url: string | null;
+  /** .gitmodules의 branch 설정. 없으면 null */
+  branch: string | null;
+  /** 상위 레포 index에 기록된 커밋. 충돌 중이거나 아직 add 전이면 null */
+  recordedSha: string | null;
+  /** 서브모듈 체크아웃의 HEAD. uninitialized면 null */
+  headSha: string | null;
+  state: SubmoduleState;
+  /** 서브모듈 안에 커밋 안 한 변경(추적 파일 수정, untracked 포함)이 있는가. uninitialized면 false */
+  dirty: boolean;
+}
+
+/** get_submodule_change에서 old/new를 어디서 읽을지 */
+export type SubmoduleChangeSource =
+  | { kind: "commit"; sha: string }               // 그 커밋의 첫 부모 → 그 커밋
+  | { kind: "staged" }                            // HEAD → index
+  | { kind: "unstaged" }                          // index → 서브모듈 체크아웃 HEAD
+  | { kind: "compare"; base: string; head: string }; // compare_refs와 같은 기준(merge-base → head)
+
+/** Tauri command: get_submodule_change(path, subPath, source, limit) -> SubmoduleChange */
+export interface SubmoduleChange {
+  path: string;
+  /** null이면 그 쪽에 서브모듈이 없다(추가 또는 삭제) */
+  oldSha: string | null;
+  newSha: string | null;
+  /** source가 unstaged일 때 서브모듈 안에 커밋 안 한 변경이 있는가. 그 외는 false */
+  dirty: boolean;
+  /**
+   * 서브모듈 저장소에서 두 커밋을 읽을 수 있는가. 초기화 안 됐거나 fetch 안 된 커밋이면 false이고
+   * 그때 ahead, behind는 빈 배열이다
+   */
+  available: boolean;
+  /** old..new: 새로 들어온 커밋, 최신이 먼저 */
+  ahead: CommitSummary[];
+  /** new..old: 포인터가 되감기며 빠진 커밋, 최신이 먼저 */
+  behind: CommitSummary[];
+  aheadTruncated: boolean;
+  behindTruncated: boolean;
+}
+
+// git_submodule_update(path, paths: string[], init: boolean) -> OpResult
+//   `submodule update [--init] --recursive -- <paths>`. paths가 비면 전부. 네트워크 명령(clone, fetch가
+//   일어날 수 있음)이라 네트워크 타임아웃과 needsAuth 판정을 쓴다. 서브모듈 HEAD를 기록된 커밋으로
+//   옮기므로 moved 상태 대상이 있으면 UI가 ConfirmDialog를 띄운다(옮기기 전 HEAD는 서브모듈 reflog에 남는다)

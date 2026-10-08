@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent, ReactNode, RefObject } from "react";
-import type { RefEntry, RemoteInfo, StashInfo, SyncState, WorktreeInfo } from "../types";
+import type {
+  RefEntry,
+  RemoteInfo,
+  StashInfo,
+  SubmoduleInfo,
+  SyncState,
+  WorktreeInfo,
+} from "../types";
 import { basename, shortSha } from "./format";
 import { kbd, withKbd } from "./shortcuts";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import { SidebarContextMenu } from "./SidebarContextMenu";
+import { SubmoduleList } from "./SubmoduleList";
 import type {
   SidebarActions,
   SidebarDialogKind,
@@ -59,6 +67,19 @@ export interface BranchSidebarProps {
   onRefDragStateChange?: (payload: RefDragPayload | null) => void;
   /** 브랜치 우클릭 "Compare with current branch" (v0.18). 인자는 그 브랜치 이름(head) */
   onCompareWithCurrent?: (name: string) => void;
+
+  // ── v0.19 서브모듈. 목록이 비었거나 없으면 구간을 숨긴다 ──
+  /** get_submodules 결과(경로순) */
+  submodules?: SubmoduleInfo[];
+  /** 사이드바에서 고른 서브모듈 경로. 강조만 한다 */
+  selectedSubmodule?: string | null;
+  onSelectSubmodule?: (sub: SubmoduleInfo) => void;
+  /** 더블클릭과 메뉴 "Open Submodule". 새 탭으로 연다 */
+  onOpenSubmodule?: (sub: SubmoduleInfo) => void;
+  /** 메뉴 Initialize / Update to Recorded Commit. 확인창은 셸이 띄운다 */
+  onUpdateSubmodule?: (sub: SubmoduleInfo) => void;
+  /** 구간 머리 "Update All" */
+  onUpdateAllSubmodules?: () => void;
 }
 
 interface RemoteGroup {
@@ -301,6 +322,12 @@ export function BranchSidebar({
   onOpenWorktree,
   onRefDragStateChange,
   onCompareWithCurrent,
+  submodules,
+  selectedSubmodule,
+  onSelectSubmodule,
+  onOpenSubmodule,
+  onUpdateSubmodule,
+  onUpdateAllSubmodules,
 }: BranchSidebarProps) {
   // refs에 안 잡히는 remote(방금 추가해 아직 fetch 안 한 것)도 헤더는 보여야 Fetch를 누를 수 있다
   const all = useMemo<Grouped>(() => {
@@ -398,6 +425,11 @@ export function BranchSidebar({
   const worktreeView = useMemo(
     () => (worktrees ?? []).filter((wt) => matches(wt.path) || matches(wt.branch ?? "")),
     [worktrees, matches],
+  );
+
+  const submoduleView = useMemo(
+    () => (submodules ?? []).filter((sub) => matches(sub.path) || matches(sub.name)),
+    [submodules, matches],
   );
 
   const defaultRemote = remotes?.[0]?.name ?? all.remotes[0]?.remote ?? "origin";
@@ -731,6 +763,29 @@ export function BranchSidebar({
           ))}
         </Section>
 
+        {submodules !== undefined && submodules.length > 0 && (
+          <Section
+            title="Submodules"
+            count={submoduleView.length}
+            collapsed={isCollapsed("submodules")}
+            emptyLabel="No matches"
+            actionLabel={onUpdateAllSubmodules === undefined ? undefined : "Update All"}
+            actionGlyph={"\u21bb"}
+            actionDisabled={actions === undefined || actions.busy}
+            onAction={() => onUpdateAllSubmodules?.()}
+            onToggle={() => toggle("submodules", rawCollapsed("submodules"))}
+          >
+            <SubmoduleList
+              submodules={submoduleView}
+              selectedPath={selectedSubmodule ?? null}
+              busy={actions === undefined || actions.busy}
+              onOpen={(sub) => onOpenSubmodule?.(sub)}
+              onSelect={(sub) => onSelectSubmodule?.(sub)}
+              onContextMenu={(sub, x, y) => openMenu({ type: "submodule", sub }, x, y)}
+            />
+          </Section>
+        )}
+
         {worktrees !== undefined && (
           <Section
             title="Worktrees"
@@ -769,6 +824,8 @@ export function BranchSidebar({
           onJumpToCommit={onSelectRef}
           onCompareWithCurrent={onCompareWithCurrent}
           onOpenWorktree={onOpenWorktree}
+          onOpenSubmodule={onOpenSubmodule}
+          onUpdateSubmodule={onUpdateSubmodule}
           onClose={() => setMenu(null)}
         />
       )}
@@ -819,6 +876,10 @@ interface SectionProps {
   emptyLabel: string;
   /** 헤더 오른쪽 "+" 버튼의 툴팁. undefined면 버튼을 숨긴다 */
   actionLabel?: string;
+  /** 헤더 버튼 글자. 기본은 "+" (v0.19 서브모듈 Update All은 새로고침 화살표) */
+  actionGlyph?: string;
+  /** 헤더 버튼 비활성(쓰기 중 등) */
+  actionDisabled?: boolean;
   onAction: () => void;
   onToggle: () => void;
   children: ReactNode;
@@ -831,6 +892,8 @@ function Section({
   collapsed,
   emptyLabel,
   actionLabel,
+  actionGlyph = "+",
+  actionDisabled = false,
   onAction,
   onToggle,
   children,
@@ -855,12 +918,13 @@ function Section({
             className="sb-head-action"
             title={actionLabel}
             aria-label={actionLabel}
+            disabled={actionDisabled}
             onClick={(event) => {
               event.stopPropagation();
               onAction();
             }}
           >
-            +
+            {actionGlyph}
           </button>
         )}
       </div>

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::commands::{
     decode_text, push_file_pathspecs, resolve_in_repo, validate_pathspec, validate_rev,
-    DIFF_PREFIX_ARGS, MAX_FILE_BYTES,
+    DIFF_PREFIX_ARGS, MAX_FILE_BYTES, SUBMODULE_SHORT_ARG,
 };
 use crate::git;
 use crate::model::{
@@ -21,7 +21,7 @@ use crate::parse::parse_file_changes;
 const HISTORY_FORMAT: &str = "--format=%x1e%H%x1f%an%x1f%ae%x1f%at%x1f%s";
 
 /// 비교 화면 커밋 목록. 레코드 끝에 `\x1e`를 둔다.
-const SUMMARY_FORMAT: &str = "--format=%H%x1f%an%x1f%at%x1f%s%x1e";
+pub(crate) const SUMMARY_FORMAT: &str = "--format=%H%x1f%an%x1f%at%x1f%s%x1e";
 
 /// blame 출력을 사용자 설정에서 떼어 낸다(v0.15.1 원칙: 파싱하는 출력은 설정에 기대지 않는다).
 ///
@@ -220,6 +220,7 @@ pub fn get_compare_file_diff(
     let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "-M"];
     args.extend(range.iter().map(String::as_str));
     args.extend(DIFF_PREFIX_ARGS);
+    args.push(SUBMODULE_SHORT_ARG);
     push_file_pathspecs(&mut args, &file, old_file.as_deref());
 
     git::run(&path, &args).map_err(|e| format!("Could not read the diff: {e}"))
@@ -229,7 +230,7 @@ pub fn get_compare_file_diff(
 ///
 /// `merge-base`는 공통 조상이 없으면 출력 없이 종료 코드 1로 끝난다. 잘못된 ref는 128이라
 /// 1까지 성공으로 보는 실행기를 쓰고 출력이 비었는지로 가른다.
-fn merge_base(path: &str, base: &str, head: &str) -> Result<Option<String>, String> {
+pub(crate) fn merge_base(path: &str, base: &str, head: &str) -> Result<Option<String>, String> {
     let out = git::run_bytes_allow_diff(path, &["merge-base", base, head])
         .map_err(|e| format!("Could not compare: {e}"))?;
     let sha = String::from_utf8_lossy(&out).trim().to_string();
@@ -240,7 +241,7 @@ fn merge_base(path: &str, base: &str, head: &str) -> Result<Option<String>, Stri
 ///
 /// `base...head`를 그대로 넘기지 않는 이유: 공통 조상이 여럿(criss-cross)이면 git이 그중 하나를
 /// 다시 고른다. 화면에 보이는 mergeBase와 파일 목록, 파일 diff가 같은 조상을 쓰게 못 박는다.
-fn diff_range(base: &str, head: &str, merge_base: Option<&str>) -> Vec<String> {
+pub(crate) fn diff_range(base: &str, head: &str, merge_base: Option<&str>) -> Vec<String> {
     match merge_base {
         Some(ancestor) => vec![ancestor.to_string(), head.to_string()],
         None => vec![base.to_string(), head.to_string()],
@@ -350,7 +351,7 @@ fn parse_file_history(out: &str, file: &str) -> Vec<FileHistoryEntry> {
 }
 
 /// [`SUMMARY_FORMAT`] 출력을 커밋 요약으로 바꾼다.
-fn parse_summaries(out: &str) -> Vec<CommitSummary> {
+pub(crate) fn parse_summaries(out: &str) -> Vec<CommitSummary> {
     out.split('\x1e')
         .map(|record| record.trim_start_matches('\n'))
         .filter_map(|record| {

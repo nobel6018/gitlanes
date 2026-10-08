@@ -16,6 +16,7 @@ mod ops;
 mod parse;
 mod remote;
 mod search;
+mod submodule;
 mod term;
 #[cfg(test)]
 mod testrepo;
@@ -153,6 +154,10 @@ pub fn run() {
         inspect::get_blame,
         inspect::compare_refs,
         inspect::get_compare_file_diff,
+        // 서브모듈 (v0.19)
+        submodule::get_submodules,
+        submodule::get_submodule_change,
+        ops::submodule::git_submodule_update,
     ]);
 
     // RunEvent를 받으려면 build + run으로 나눠야 한다. 앱이 닫힐 때 남은 셸을 죽인다.

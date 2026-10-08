@@ -14,6 +14,7 @@ import type {
   PullMode,
   RebaseStep,
   RefSnapshot,
+  SubmoduleInfo,
   UndoEntry,
   UndoKind,
   WipDiff,
@@ -126,6 +127,13 @@ export interface RepoActions {
   // 충돌
   resolveWith(file: string, side: "ours" | "theirs"): Promise<void>;
   markResolved(files: string[]): Promise<void>;
+  // 서브모듈 (v0.19)
+  /**
+   * `submodule update [--init] --recursive`. paths가 비면 전부다. targets는 확인 문구를 고를 항목이다
+   * (전부면 목록 전체). moved 대상이 있으면 확인창을 띄운다. 네트워크 명령이라 fetch처럼
+   * 인증 실패 시 터미널 핸드오프가 붙는다
+   */
+  updateSubmodules(paths: string[], targets: SubmoduleTarget[], init: boolean): Promise<void>;
   /**
    * 자동 fetch (v0.17 1번). 쓰기와 같은 직렬 큐로 돌지만 토스트도 busy도 없다.
    * 큐에 다른 쓰기가 있으면 이번 주기는 건너뛴다("skipped")
@@ -142,6 +150,49 @@ export interface RepoActions {
   // 공통
   /** 쓰기 작업이 진행 중인가 (버튼 비활성화용) */
   busy: boolean;
+}
+
+/**
+ * 서브모듈 update 확인 문구 재료. get_submodules에서 못 찾은 경로(목록이 아직 안 왔거나 낡았다)는
+ * info를 null로 둔다. 그 경로의 HEAD가 어디 있는지 모르니 moved로 보고 묻는다
+ */
+export interface SubmoduleTarget {
+  path: string;
+  info: SubmoduleInfo | null;
+}
+
+/**
+ * update가 서브모듈 HEAD를 옮기는 대상이 있으면 확인 문구를, 없으면 undefined를 돌려준다.
+ * uninitialized 대상의 init은 옮길 HEAD가 없어 묻지 않는다
+ */
+export function submoduleUpdateConfirm(targets: SubmoduleTarget[]): ConfirmSpec | undefined {
+  const moving = targets.filter(
+    (t) => t.info === null || t.info.state === "moved" || t.info.state === "conflict",
+  );
+  if (moving.length === 0) {
+    return undefined;
+  }
+  const heads = moving
+    .map((t) => t.info?.headSha ?? null)
+    .filter((sha): sha is string => sha !== null)
+    .map((sha) => sha.slice(0, 7));
+  const headNote =
+    moving.length === 1 && heads.length === 1
+      ? `The current HEAD (${heads[0]}) stays in the submodule reflog.`
+      : heads.length > 0
+        ? `The current HEADs (${nameList(heads)}) stay in each submodule's reflog.`
+        : "The current HEAD stays in the submodule reflog.";
+  const dirty = moving.some((t) => t.info?.dirty === true);
+  return {
+    title: "Update to recorded commit?",
+    body: `The submodule HEAD moves to the commit recorded in this repository.${
+      dirty ? " Git refuses to overwrite files that overlap with uncommitted changes inside the submodule." : ""
+    }`,
+    undo: `${headNote} Check out that commit inside the submodule to go back.`,
+    scope: nameList(moving.map((t) => t.path)),
+    confirmLabel: "Update",
+    danger: false,
+  };
 }
 
 /** 되돌리기 한 번의 결과. RepoActions.undo 참고 */
@@ -963,6 +1014,19 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           success: `Marked ${nameList(files)} resolved`,
           failure: "Marking resolved failed",
           call: () => api.gitMarkResolved(path, files),
+        }),
+
+      // ── 서브모듈 ─────────────────────────────────────────
+      updateSubmodules: (paths, targets, init) =>
+        exec({
+          success: init
+            ? `Initialized ${nameList(paths)}`
+            : paths.length === 0
+              ? "Updated all submodules"
+              : `Updated ${nameList(paths)}`,
+          failure: init ? "Initializing the submodule failed" : "Updating submodules failed",
+          confirm: submoduleUpdateConfirm(targets),
+          call: () => api.gitSubmoduleUpdate(path, paths, init),
         }),
 
       // ── 되돌리기 ─────────────────────────────────────────

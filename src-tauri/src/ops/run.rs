@@ -84,8 +84,9 @@ const AUTH_MARKERS_403: [&str; 2] = ["returned error: 403", "403 forbidden"];
 /// 로컬 명령도 stderr에 `Permission denied`를 쓴다(`chmod 000` 파일을 add하면
 /// `error: open("x"): Permission denied`). 이걸 인증 실패로 보면 스테이징 실패 토스트에
 /// "터미널에서 실행"이 뜨는데, 터미널에서도 똑같이 실패한다.
-/// 원격 브랜치 삭제와 태그 push는 `push`로 나간다.
-const NETWORK_VERBS: [&str; 4] = ["fetch", "pull", "push", "ls-remote"];
+/// 원격 브랜치 삭제와 태그 push는 `push`로 나간다. `submodule`은 우리가 `update`로만 부르고,
+/// 거기서 clone과 fetch가 일어난다(v0.19).
+const NETWORK_VERBS: [&str; 5] = ["fetch", "pull", "push", "ls-remote", "submodule"];
 
 /// 서명 실패. git이 gpg 오류 앞에 붙이는 문구라 commit, merge, tag, rebase 어디서 서명하든 같다.
 const SIGNING_FAILED_MARKER: &str = "gpg failed to sign the data";
@@ -235,7 +236,7 @@ const HOOK_RUNNING_VERBS: [&str; 8] = [
     "am",
 ];
 
-/// `GIT_LITERAL_PATHSPECS`를 걸지 정한다. 예외는 두 갈래다.
+/// `GIT_LITERAL_PATHSPECS`를 걸지 정한다. 예외는 세 갈래다.
 ///
 /// - [`HOOK_RUNNING_VERBS`]: 훅으로 새어 들어가지 않게 뺀다
 /// - 경로 없는 `stash`: git이 내부에서 `clean -- :/`, `checkout -- :/`처럼 pathspec magic을
@@ -243,11 +244,16 @@ const HOOK_RUNNING_VERBS: [&str; 8] = [
 ///   워킹 트리에 그대로 남기고(pop이 "already exists"로 실패), `--keep-index`는 오류로 끝난다.
 ///   경로를 넘기면 git이 그 경로를 내부 명령에 그대로 전달해 리터럴 처리가 정상 동작한다
 ///   (v0.15.1 git 2.50에서 실측)
+/// - 경로 없는 `submodule`: 서브모듈 안의 훅으로 새어 들어가지 않게 뺀다(v0.19)
 fn takes_literal_pathspecs<S: AsRef<OsStr>>(args: &[S]) -> bool {
     let verb = args.first().and_then(|verb| verb.as_ref().to_str());
     match verb {
         Some(verb) if HOOK_RUNNING_VERBS.contains(&verb) => false,
         Some("stash") => has_paths(args),
+        // 서브모듈 update는 서브모듈 안에서 checkout을 돌려 post-checkout 훅이 변수를 물려받는다.
+        // 경로가 없으면(전부) 걸 이유가 없다. 경로가 있으면 `lib*`가 확인하지 않은 다른
+        // 서브모듈의 HEAD까지 옮기지 않게 리터럴로 둔다
+        Some("submodule") => has_paths(args),
         _ => true,
     }
 }
@@ -1035,7 +1041,13 @@ mod tests {
         }
         // 같은 문구라도 네트워크 명령이면 자격증명 문제다
         let ssh = "git@github.com: Permission denied (publickey).";
-        for args in [&["push"][..], &["fetch", "--all"], &["pull", "--ff-only"]] {
+        for args in [
+            &["push"][..],
+            &["fetch", "--all"],
+            &["pull", "--ff-only"],
+            // v0.19: 서브모듈 update는 clone과 fetch를 한다
+            &["submodule", "update", "--init", "--recursive", "--"],
+        ] {
             let result = finish(&nowhere(), args, failed(ssh), NETWORK_TIMEOUT);
             assert!(result.needs_auth, "{args:?}");
         }

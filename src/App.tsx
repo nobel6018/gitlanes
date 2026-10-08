@@ -839,6 +839,7 @@ export default function App() {
           active={tab.id === activeId}
           onRepoOpened={handleRepoOpened}
           onRequestOpen={handleRequestOpen}
+          openInNewTab={openInTab}
           update={updateProps}
           banner={tab.id === activeId ? banner : null}
           commands={commands[tab.id] ?? NO_COMMANDS}
@@ -868,6 +869,8 @@ interface TabPanelProps {
   active: boolean;
   onRepoOpened: (tabId: number, path: string, name: string) => void;
   onRequestOpen: (tabId: number, path: string) => boolean;
+  /** 서브모듈 열기(v0.19). 이미 열린 레포면 그 탭으로 간다 */
+  openInNewTab: (path: string) => void;
   update: WorkspaceUpdateProps;
   /** 활성 탭에만 실제 배너가 내려온다 */
   banner: ReactNode;
@@ -887,6 +890,7 @@ function TabPanel({
   active,
   onRepoOpened,
   onRequestOpen,
+  openInNewTab,
   update,
   banner,
   commands,
@@ -913,6 +917,7 @@ function TabPanel({
         active={active}
         onRepoOpened={handleRepoOpened}
         requestOpen={handleRequestOpen}
+        openInNewTab={openInNewTab}
         update={update}
         banner={banner}
         openDialogNonce={commands.open}

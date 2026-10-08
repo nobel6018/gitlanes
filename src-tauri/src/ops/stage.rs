@@ -223,7 +223,7 @@ fn reject_submodules(repo: &str, tracked: &[&String]) -> Result<(), String> {
         .find_map(|entry| entry.split_once('\t').map(|(_, path)| path.to_string()));
     match submodule {
         Some(path) => Err(format!(
-            "Discarding changes in a submodule is not supported: {path}. Run `git submodule update --init -- {path}` in the terminal to return it to the recorded commit."
+            "Discard does not apply to a submodule: {path}. Use \"Update to Recorded Commit\" to move it back to the commit recorded in this repository."
         )),
         None => Ok(()),
     }
@@ -995,22 +995,14 @@ mod tests {
 
     /// R-L9. `restore`는 서브모듈 안을 건드리지 않고 0으로 끝난다. 성공 토스트가 사실과 다르다.
     #[test]
-    fn 서브모듈_discard는_지원하지_않는다고_거절한다() {
+    fn 서브모듈_discard는_거절하고_update를_안내한다() {
         let inner = TempRepo::init("gitlanes-sub-inner");
         inner.write("s.txt", "1\n");
         inner.git(&["add", "-A"]);
         inner.git(&["commit", "-qm", "inner"]);
 
         let repo = dirty();
-        repo.git(&[
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            inner.path().as_str(),
-            "sub",
-        ]);
+        repo.add_submodule(&inner.path(), "sub");
         repo.git(&["commit", "-qm", "sub"]);
 
         let sub_path = format!("{}/sub", repo.path());
@@ -1039,6 +1031,8 @@ mod tests {
             )
             .unwrap_err();
             assert!(error.contains("submodule"), "{error}");
+            // v0.19: 터미널 명령 대신 앱의 "Update to Recorded Commit"을 안내한다
+            assert!(error.contains("Update to Recorded Commit"), "{error}");
         }
         // 섞여 온 다른 경로도 건드리지 않는다
         assert_eq!(read(&repo, "a.txt"), "changed\n");

@@ -1,4 +1,4 @@
-import type { PullMode, RefEntry, StashInfo, WorktreeInfo } from "../types";
+import type { PullMode, RefEntry, StashInfo, SubmoduleInfo, WorktreeInfo } from "../types";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 
@@ -74,7 +74,8 @@ export type SidebarMenuTarget =
   | { type: "ref"; entry: RefEntry }
   | { type: "stash"; stash: StashInfo; ref: string }
   | { type: "worktree"; worktree: WorktreeInfo }
-  | { type: "remote"; remote: string };
+  | { type: "remote"; remote: string }
+  | { type: "submodule"; sub: SubmoduleInfo };
 
 export interface SidebarContextMenuProps {
   x: number;
@@ -99,6 +100,13 @@ export interface SidebarContextMenuProps {
   onCompareWithCurrent?: (name: string) => void;
   /** 워크트리를 새 탭으로 연다. undefined면 항목을 비활성 */
   onOpenWorktree?: (path: string) => void;
+  /** 서브모듈을 새 탭으로 연다 (v0.19). undefined면 항목을 비활성 */
+  onOpenSubmodule?: (sub: SubmoduleInfo) => void;
+  /**
+   * 서브모듈 Initialize(uninitialized일 때) 또는 Update to Recorded Commit(moved일 때) (v0.19).
+   * 어느 쪽인지는 셸이 sub.state로 정하고 확인창도 셸이 띄운다
+   */
+  onUpdateSubmodule?: (sub: SubmoduleInfo) => void;
   onClose: () => void;
 }
 
@@ -135,6 +143,8 @@ function buildItems(props: SidebarContextMenuProps): MenuItem[] {
       return worktreeItems(props, props.target.worktree);
     case "remote":
       return remoteItems(props, props.target.remote);
+    case "submodule":
+      return submoduleItems(props, props.target.sub);
   }
 }
 
@@ -494,4 +504,46 @@ function remoteItems(props: SidebarContextMenuProps, remote: string): MenuItem[]
     },
     { label: "Copy Name", separatorBefore: true, onSelect: () => props.onCopyName(remote) },
   ];
+}
+
+function submoduleItems(props: SidebarContextMenuProps, sub: SubmoduleInfo): MenuItem[] {
+  const { onOpenSubmodule, onUpdateSubmodule } = props;
+  const uninitialized = sub.state === "uninitialized";
+  // update는 쓰기라 busy 잠금을 따른다. 셸이 핸들러를 안 주면 쓰기 액션 없이 뜬 것으로 본다
+  const act = onUpdateSubmodule === undefined ? lock(undefined) : lock(props.actions);
+  // 목록 더블클릭과 같은 기준: update 도중 열면 반쯤 옮겨진 체크아웃을 보게 된다
+  const busy = props.actions?.busy === true;
+  const items: MenuItem[] = [
+    {
+      label: "Open Submodule",
+      disabled: onOpenSubmodule === undefined || uninitialized || busy,
+      title: uninitialized
+        ? "Initialize the submodule first"
+        : busy
+          ? "Another git operation is running"
+          : undefined,
+      onSelect: () => onOpenSubmodule!(sub),
+    },
+  ];
+  if (uninitialized) {
+    items.push({
+      label: "Initialize",
+      disabled: act.disabled,
+      title: act.title ?? "Clones the submodule and checks out the recorded commit",
+      onSelect: () => onUpdateSubmodule!(sub),
+    });
+  } else if (sub.state === "moved") {
+    items.push({
+      label: "Update to Recorded Commit",
+      disabled: act.disabled,
+      title: act.title ?? "Moves the submodule HEAD back to the commit this repository records",
+      onSelect: () => onUpdateSubmodule!(sub),
+    });
+  }
+  items.push({
+    label: "Copy Path",
+    separatorBefore: true,
+    onSelect: () => props.onCopyName(sub.path),
+  });
+  return items;
 }

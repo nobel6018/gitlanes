@@ -42,6 +42,14 @@ const STASH_SHA_ARGS: [&str; 3] = ["stash", "list", "--format=%H"];
 /// `c/` `w/` 같은 접두로 바꾼다. 프론트가 파일 헤더를 파싱하므로 표시용 커밋 diff에도 건다.
 pub(crate) const DIFF_PREFIX_ARGS: [&str; 2] = ["--src-prefix=a/", "--dst-prefix=b/"];
 
+/// 서브모듈(gitlink) 항목의 텍스트 diff 모양을 `Subproject commit <sha>` 두 줄로 고정한다(v0.19).
+///
+/// 사용자 설정 `diff.submodule=log`면 헤더 없이 `Submodule a 1234..5678:` 요약이, `=diff`면
+/// 서브모듈 안의 파일 diff가 상위 레포 diff에 섞여 온다. 프론트 diff 파서가 그걸 상위 레포의
+/// 파일로 읽는다. 텍스트 diff를 만드는 모든 호출에 건다. `--raw`, `--numstat`은 영향이 없다.
+/// `format-patch`는 설정과 관계없이 short라 걸지 않는다(git 2.50 실측).
+pub(crate) const SUBMODULE_SHORT_ARG: &str = "--submodule=short";
+
 /// 패치의 원료가 되는 WIP diff의 형식. 사용자 git 설정이 새어 들어오지 않게 전부 명시한다.
 ///
 /// - `-U3`: `diff.context=0`이면 context 없는 hunk가 와서 순수 삽입이 한 줄 어긋난 자리에
@@ -535,6 +543,7 @@ pub fn get_file_diff(
     };
 
     args.extend(DIFF_PREFIX_ARGS);
+    args.push(SUBMODULE_SHORT_ARG);
     push_file_pathspecs(&mut args, &file, old_file.as_deref());
 
     git::run(&path, &args).map_err(|e| format!("Could not read the diff: {e}"))
@@ -636,6 +645,7 @@ pub fn get_wip_file_diff(path: String, file: String, area: String) -> Result<Wip
     let mut args: Vec<&str> = PATCH_SOURCE_CONFIG_ARGS.to_vec();
     args.extend(head);
     args.extend(PATCH_SOURCE_DIFF_ARGS);
+    args.push(SUBMODULE_SHORT_ARG);
     args.push("--");
 
     if area == "untracked" {
@@ -692,6 +702,7 @@ fn untracked_changes(repo: &str, out: &str) -> Vec<FileChange> {
             status: FileStatus::Added,
             old_path: None,
             path: path.to_string(),
+            submodule: false,
         })
         .collect()
 }
@@ -828,7 +839,7 @@ fn load_file_changes(path: &str, sha: &str, is_merge: bool) -> Result<Vec<FileCh
 }
 
 /// `git rev-list --parents -n 1`로 부모 목록만 얻는다.
-fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
+pub(crate) fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
     let out = git::run(path, &["rev-list", "--parents", "--max-count=1", sha])
         .map_err(|e| format!("Commit not found: {e}"))?;
     let mut tokens = out.split_whitespace();

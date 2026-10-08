@@ -20,6 +20,9 @@ import type {
   RepoInfo,
   RepoState,
   SearchMatch,
+  SubmoduleChange,
+  SubmoduleChangeSource,
+  SubmoduleInfo,
   SyncState,
   UndoEntry,
   WipArea,
@@ -578,6 +581,28 @@ export function getCompareFileDiff(
   oldFile: string | null,
 ): Promise<string> {
   return invoke<string>("get_compare_file_diff", { path, base, head, file, oldFile });
+}
+
+// ── 서브모듈 (v0.19) ────────────────────────────────────────
+
+/** 최상위 서브모듈 목록(경로순). .gitmodules가 없으면 [] */
+export function getSubmodules(path: string): Promise<SubmoduleInfo[]> {
+  return invoke<SubmoduleInfo[]>("get_submodules", { path });
+}
+
+/** 서브모듈 포인터 변경(old → new)과 그 사이 커밋. source별 old/new 기준은 SubmoduleChangeSource 주석 */
+export function getSubmoduleChange(
+  path: string,
+  subPath: string,
+  source: SubmoduleChangeSource,
+  limit: number,
+): Promise<SubmoduleChange> {
+  return invoke<SubmoduleChange>("get_submodule_change", { path, subPath, source, limit });
+}
+
+/** `submodule update [--init] --recursive -- <paths>`. paths가 비면 전부. 네트워크 명령이라 needsAuth가 올 수 있다 */
+export function gitSubmoduleUpdate(path: string, paths: string[], init: boolean): Promise<OpResult> {
+  return invoke<OpResult>("git_submodule_update", { path, paths, init });
 }
 
 // ── 내장 터미널 (인증 핸드오프) ─────────────────────────────
