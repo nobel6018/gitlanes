@@ -54,7 +54,8 @@ export type SidebarDialogKind =
   | "renameRemote"
   | "removeRemote"
   | "addWorktree"
-  | "removeWorktree";
+  | "removeWorktree"
+  | "addSubmodule";
 
 /**
  * 다이얼로그 대상. 종류별로 의미가 다르다.
@@ -64,7 +65,7 @@ export type SidebarDialogKind =
  *  - deleteTag / deleteTagOnRemote: 태그 이름
  *  - stashDrop / stashBranch: "stash@{0}" 형태 ref. 그 행의 StashInfo.sha를 세 번째 인자로 함께
  *    넘긴다 (v0.16). 셸이 command에 실어 Rust가 번호 밀림을 잡는다
- *  - addRemote / stashPush / addWorktree: null
+ *  - addRemote / stashPush / addWorktree / addSubmodule: null
  *  - editRemoteUrl / renameRemote / removeRemote: remote 이름
  *  - removeWorktree: 워크트리 절대 경로
  */
@@ -107,6 +108,8 @@ export interface SidebarContextMenuProps {
    * 어느 쪽인지는 셸이 sub.state로 정하고 확인창도 셸이 띄운다
    */
   onUpdateSubmodule?: (sub: SubmoduleInfo) => void;
+  /** 서브모듈 제거 (v0.20). 확인창은 셸이 띄운다. undefined면 항목을 넣지 않는다 */
+  onRemoveSubmodule?: (sub: SubmoduleInfo) => void;
   onClose: () => void;
 }
 
@@ -545,5 +548,17 @@ function submoduleItems(props: SidebarContextMenuProps, sub: SubmoduleInfo): Men
     separatorBefore: true,
     onSelect: () => props.onCopyName(sub.path),
   });
+  const { onRemoveSubmodule } = props;
+  if (onRemoveSubmodule !== undefined) {
+    const remove = lock(props.actions);
+    items.push({
+      label: "Remove Submodule…",
+      separatorBefore: true,
+      danger: true,
+      disabled: remove.disabled,
+      title: remove.title ?? "Removes the submodule and stages the change. Commit to record it",
+      onSelect: () => onRemoveSubmodule(sub),
+    });
+  }
   return items;
 }
