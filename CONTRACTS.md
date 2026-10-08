@@ -1053,3 +1053,49 @@ onShowBlame?: () => void;     // 있으면 머리에 Blame 버튼
 
 동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. rust18은 `/Users/levit/leedo/target-rust18`.
 **세션이 자주 끊긴다. 단계마다 커밋하고, 추가 지시는 끝나면 한 줄로 알린다.**
+
+---
+
+# v0.18.1 - 기존 기능 한계 정리
+
+> 2026-10-08. v0.17, v0.18 릴리스 노트의 "알려진 한계"와 v0.16 handoff의 범위 밖 항목. 새 화면 없음. 테스트 픽스처 규칙(v0.16.1 절) 적용.
+
+## 계약 변경 (types.ts, 감독이 반영함)
+
+- `RefSnapshot.upstreams: Record<string, BranchUpstream>` 필수 필드 추가. `sameSnapshot`, `still_after` 같은 "바뀐 ref" 판단에는 넣지 않는다
+- `CompareResult.truncated` 삭제 → `onlyInHeadTruncated`, `onlyInBaseTruncated`
+- `get_commit_template` 반환이 `string | null`에서 `CommitTemplate | null`(`text`, `commentPrefix`)로
+
+## 항목
+
+### Rust (rust181)
+
+1. **되돌리기 경쟁 보호**: commit, amend, reset 되돌리기의 ref 이동을 `update-ref -m "undo (GitLanes)" <HEAD 브랜치 또는 --no-deref HEAD> <before.headSha> <after.headSha>`로 바꾼다. mixed는 이어서 `reset --mixed -q`, hard는 `reset --hard -q`(둘 다 대상 없이 HEAD 기준). soft, commit, amend는 ref 이동만(= 기존 `reset --soft`와 같은 결과). 테스트는 "검사 통과 뒤 ref가 움직이면 거절"을 옛 값 불일치로 재현한다
+2. **브랜치 upstream 복원**: `get_ref_snapshot`이 `upstreams`를 채운다(`git config -z --get-regexp` 한 번, 다른 둘과 병렬). 브랜치 이름에 `.`이 있어도 키를 바르게 자른다. deleteBranch, renameBranch 되돌리기는 되살린 브랜치의 before 설정을 쓰고, 되돌리면서 지운 브랜치의 설정을 지운다. 설정 쓰기는 ref 쓰기가 성공한 뒤에만
+3. **checkout 되돌리기의 추적 브랜치**: checkout 전후로 새로 생긴 로컬 브랜치가 있으면 HEAD를 돌린 뒤 옛 값 인자로 지우고 upstream 설정도 지운다. 그 브랜치가 그 사이 움직였으면 지우지 않는다(HEAD 복원은 그대로 성공, 메시지로 알림은 선택)
+4. **비교 목록별 truncated**: 위 계약대로
+5. **커밋 템플릿 주석 접두**: 위 계약대로. `core.commentChar=auto`는 "#"
+6. **SSH 서명 실패**: `gpg.format=ssh`로 서명이 비밀번호 때문에 실패하면 gpg 실패와 같은 터미널 핸드오프 표시를 켠다. 실제 stderr 문구를 실측해서 판정하고, 테스트 픽스처는 비밀번호 걸린 ssh 키로 재현한다(ssh-keygen이 없으면 skip)
+
+### UI (ui181)
+
+1. **Esc 순서**: 다중 선택 상태에서 비교를 열고 Esc를 누르면 비교만 닫히고 다중 선택 패널로 돌아온다. 두 번째 Esc에서 다중 선택이 풀린다. 지금은 GraphView의 keydown과 RepoWorkspace의 window 핸들러가 같은 Esc에 둘 다 반응한다
+2. **파일 히스토리 포커스**: 패널을 열면 목록(`.hp-list`)에 포커스가 가서 바로 ↑↓, Enter가 먹는다. 히스토리 항목을 골라 diff가 열려도 포커스는 목록에 남는다
+3. **비교 "+more"**: 목록별 플래그로 정확히 표시(`historyModel.truncatedLists` 정리, 테스트 갱신)
+4. **커밋 템플릿**: `CommitBox`가 `commentPrefix`로 주석 줄을 지운다(`stripTemplateComments` 시그니처 변경, 기존 동작은 "#"일 때와 같아야 함)
+5. mock(devApp)을 새 계약에 맞춘다: `upstreams`, 비교 플래그 둘, 템플릿 객체. `?commentChar=;` 같은 쿼리로 다른 접두 확인 경로를 둔다
+
+## 하지 않는 것
+
+- `get_compare_file_diff`가 호출마다 merge-base를 다시 구하는 것: 수 ms라 계약을 바꿀 가치가 없다
+- `test:patch`의 skip 1(낡은 diff): UI의 `contentToken`이 막는 경우라 그대로 둔다
+
+## 소유권
+
+| 패키지 | 소유 파일 | 항목 |
+|---|---|---|
+| rust181 | `src-tauri/**` | Rust 1~6 |
+| ui181 | `src/shell/{RepoWorkspace,devApp,CommitBox,ComparePanel,FileHistoryPanel}.tsx`, `src/shell/{api,historyModel,actions}.ts`, `tests/history-model.test.mts`, `src/graph/GraphView.tsx`(Esc 처리만) | UI 1~5 |
+
+동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지. rust181은 `/Users/levit/leedo/target-rust181`.
+**세션이 자주 끊긴다. 단계마다 커밋하고, 추가 지시는 끝나면 한 줄로 알린다.**
