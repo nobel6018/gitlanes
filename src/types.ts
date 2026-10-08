@@ -587,7 +587,7 @@ export interface CompareResult {
 export interface CommitTemplate {
   text: string;
   /**
-   * 주석 줄 접두. `core.commentString`(git 2.45+)이 있으면 그 값, 없으면 `core.commentChar`,
+   * 주석 줄 접두. `core.commentChar`와 `core.commentString`(git 2.45+) 중 git처럼 나중에 읽힌 값,
    * 둘 다 없거나 "auto"면 "#". 템플릿에서 온 줄 중 이 접두로 시작하는 줄만 커밋 직전에 지운다
    */
   commentPrefix: string;
