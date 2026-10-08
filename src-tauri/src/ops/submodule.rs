@@ -99,6 +99,14 @@ pub fn git_submodule_remove(
             &format!("{sub} is not a submodule in the index. Nothing was removed."),
         ));
     }
+    if cfg!(windows) && has_glob_magic(sub) {
+        return Ok(refused(
+            &path,
+            &format!(
+                "Removing a submodule whose path contains *, ? or [ is not supported on Windows: {sub}. Git for Windows also unregistered a neighboring submodule in this case (CI observation), so nothing was changed. Run `git submodule deinit` and `git rm` for it in the terminal."
+            ),
+        ));
+    }
     if !force && dirty {
         return Ok(refused(
             &path,
@@ -120,6 +128,13 @@ pub fn git_submodule_remove(
         append_stop_note(&mut result, sub);
     }
     Ok(result)
+}
+
+/// glob 문자를 담은 경로인가. Windows용 git의 `submodule deinit`은 `GIT_LITERAL_PATHSPECS`를 걸어도
+/// `a[b]`를 지울 때 `ab`까지 등록을 풀었다(v0.20.0 릴리스 Windows 빌드에서 관측, 원인 미확인).
+/// deinit은 `-f`라 그 서브모듈 안의 커밋 안 한 변경까지 버리므로 Windows에서는 이런 경로를 받지 않는다
+fn has_glob_magic(path: &str) -> bool {
+    path.contains(['*', '?', '['])
 }
 
 /// 실패한 단계(result.command의 첫 인자로 가른다)와 남은 상태를 stderr 끝에 붙인다.
@@ -600,6 +615,33 @@ mod tests {
 
     /// 이름 자체가 glob 문자를 담은 서브모듈. index 확인과 `rm -n`을 통과하므로 deinit의 리터럴
     /// 처리만 남은 가드다. glob이면 `a[b]`가 `ab`까지 deinit한다
+    #[test]
+    fn glob_문자_판정은_별표_물음표_여는_대괄호다() {
+        for path in ["a*", "a?b", "a[b]", "x/[y"] {
+            assert!(has_glob_magic(path), "{path}");
+        }
+        for path in ["ab", "a]b", "libs/core", "a-b_c.d"] {
+            assert!(!has_glob_magic(path), "{path}");
+        }
+    }
+
+    /// Windows용 git은 이 경우 `ab`의 등록까지 풀었다(v0.20.0 릴리스 빌드). 그래서 Windows에서는
+    /// git을 실행하지 않고 거절하고, 다른 플랫폼에서는 리터럴로 지워지는지 본다
+    #[cfg(windows)]
+    #[test]
+    fn windows에서는_glob_문자_경로의_서브모듈_제거를_거절한다() {
+        let parent = TempRepo::linear("gitlanes-subrm-bracket-win", 1);
+        let lib_br = lib("gitlanes-subrm-bracket-win-br");
+        parent.add_submodule(&lib_br.path(), "a[b]");
+        parent.git(&["commit", "-qm", "one"]);
+
+        let result = git_submodule_remove(parent.path(), "a[b]".into(), true).unwrap();
+        assert!(!result.ok);
+        assert!(result.command.is_empty(), "{result:?}");
+        assert_eq!(staged(&parent), "");
+    }
+
+    #[cfg(not(windows))]
     #[test]
     fn 대괄호_이름의_서브모듈을_지워도_다른_서브모듈은_남는다() {
         let parent = TempRepo::linear("gitlanes-subrm-bracket", 1);
