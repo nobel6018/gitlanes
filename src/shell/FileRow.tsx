@@ -15,6 +15,19 @@ export const STATUS_LETTER: Record<FileStatus, string> = {
   T: "T",
 };
 
+/**
+ * 서브모듈(gitlink) 아이콘. 상자 안의 커밋 점: "저장소 안의 저장소"를 가리킨다.
+ * FileRow 배지와 사이드바 SUBMODULES 행이 같이 쓴다
+ */
+export function SubmoduleIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg className="sm-icon" viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
+      <rect x="2" y="2" width="12" height="12" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="8" cy="8" r="2.2" fill="currentColor" />
+    </svg>
+  );
+}
+
 /** hover 시 행 오른쪽에 뜨는 버튼 하나 */
 export interface FileRowAction {
   key: string;
@@ -65,7 +78,9 @@ export function FileRow({
   onOpen,
 }: FileRowProps) {
   const { dir, base } = splitPath(file.path);
-  const kind = untracked === true ? "새 파일(untracked)" : statusLabel(file.status);
+  const submodule = file.submodule === true;
+  const status = untracked === true ? "새 파일(untracked)" : statusLabel(file.status);
+  const kind = submodule ? `Submodule ${status.toLowerCase()}` : status;
   const title = file.oldPath === null ? `${kind}: ${file.path}` : `${kind}: ${file.oldPath} → ${file.path}`;
   const hasCheck = checked !== undefined && onToggleCheck !== undefined;
   const hasActs = actions !== undefined && actions.length > 0;
@@ -111,7 +126,8 @@ export function FileRow({
           className={untracked === true ? "file-icon st-U" : `file-icon st-${file.status}`}
           aria-hidden="true"
         >
-          {untracked === true ? "U" : STATUS_LETTER[file.status]}
+          {/* 서브모듈은 글자 대신 아이콘. 배경색(st-*)이 상태를 계속 알려준다 */}
+          {submodule ? <SubmoduleIcon /> : untracked === true ? "U" : STATUS_LETTER[file.status]}
         </span>
         {/* GitKraken 배치: 파일명 먼저, 디렉토리는 뒤에 흐리게. 좁아지면 경로만 말줄임 */}
         <span className="file-path">
@@ -120,9 +136,10 @@ export function FileRow({
             <span className="path-dir suffix">{dir.replace(/\/$/, "")}</span>
           )}
         </span>
+        {/* gitlink의 numstat은 늘 +1 -1이라 의미가 없어 서브모듈은 숫자를 찍지 않는다 */}
         <span className="file-stat">
-          {file.additions > 0 && <span className="stat-add">+{file.additions}</span>}
-          {file.deletions > 0 && <span className="stat-del">-{file.deletions}</span>}
+          {!submodule && file.additions > 0 && <span className="stat-add">+{file.additions}</span>}
+          {!submodule && file.deletions > 0 && <span className="stat-del">-{file.deletions}</span>}
         </span>
       </button>
       {hasActs && (
