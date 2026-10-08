@@ -301,13 +301,27 @@ pub fn capture(
     crate::blocking::wait(|| execute_blocking(command, timeout, input))
 }
 
-/// 자식을 새 프로세스 그룹으로 띄우게 한다. 타임아웃 때 [`kill_group`]이 그룹 전체를 죽인다.
+/// 자식을 새 세션(곧 새 프로세스 그룹)으로 띄운다. 타임아웃 때 [`kill_group`]이 그룹 전체를 죽인다.
+///
+/// 그룹만 새로 만들면(`process_group(0)`) 앱의 제어 터미널을 물려받는다. 터미널에서 띄운 앱
+/// (`tauri dev`)에서는 ssh-keygen이나 pinentry가 `/dev/tty`를 열어 비밀번호를 기다리고,
+/// 백그라운드 그룹이라 SIGTTIN으로 멈춘 채 타임아웃까지 간다. Finder에서 띄운 앱은 제어 터미널이
+/// 없어 곧바로 실패한다. setsid로 세션을 새로 열면 제어 터미널이 없어 두 경우가 같아진다.
+/// 새 세션의 리더는 pid가 곧 그룹 id라 killpg는 그대로 동작한다.
 pub fn isolate_group(command: &mut Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // 0이면 자식 pid가 곧 새 그룹 id다. 앱의 그룹과 떨어지니 killpg가 앱을 건드리지 않는다.
-        command.process_group(0);
+        // SAFETY: setsid는 async-signal-safe다. fork 뒤 exec 전에 메모리를 할당하지 않는다.
+        // fork된 자식은 그룹 리더가 아니라 EPERM이 날 수 없지만, 실패하면 spawn을 실패시킨다.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     #[cfg(not(unix))]
     let _ = command;
@@ -833,6 +847,43 @@ mod tests {
         command
     }
 
+    /// 테스트 프로세스 자신이 제어 터미널을 가졌는지. 없으면(CI, 파이프로 띄운 셸) 아래 단정이
+    /// 실행기와 상관없이 성립해 아무것도 검증하지 못한다
+    #[cfg(unix)]
+    fn has_controlling_tty() -> bool {
+        std::fs::File::open("/dev/tty").is_ok()
+    }
+
+    #[test]
+    #[cfg(unix)] // 제어 터미널과 세션은 유닉스 개념이다
+    fn 실행기로_띄운_자식은_제어_터미널이_없다() {
+        if !has_controlling_tty() {
+            eprintln!("테스트 프로세스에 제어 터미널이 없어 건너뛴다(`script -q /dev/null cargo test`로 돌린다)");
+            return;
+        }
+        let outcome = execute(piped("sh", &["-c", "exec 3</dev/tty"]), LOCAL_TIMEOUT).unwrap();
+        assert!(!outcome.timed_out, "{outcome:?}");
+        assert_ne!(
+            outcome.code,
+            Some(0),
+            "자식이 /dev/tty를 열었다: {outcome:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)] // pgid는 유닉스 개념이다
+    fn 실행기로_띄운_자식은_자기_그룹의_리더다() {
+        // kill_group은 자식 pid를 그룹 id로 쓴다. setsid로 바꿔도 이 전제가 유지돼야 한다
+        let outcome = execute(
+            piped("sh", &["-c", "echo $$; ps -o pgid= -p $$"]),
+            LOCAL_TIMEOUT,
+        )
+        .unwrap();
+        let numbers: Vec<&str> = outcome.stdout.split_whitespace().collect();
+        assert_eq!(numbers.len(), 2, "{outcome:?}");
+        assert_eq!(numbers[0], numbers[1], "{outcome:?}");
+    }
+
     #[test]
     fn 타임아웃이_지나면_kill하고_사유를_남긴다() {
         let started = Instant::now();
@@ -1039,13 +1090,11 @@ mod tests {
 
     /// 비밀번호 걸린 ssh 키로 실제 서명을 시켜 git의 stderr를 받는다. ssh-keygen이 없으면 None.
     ///
-    /// 우리 실행기와 같은 환경(op_command)에서 돌리되 setsid로 제어 터미널을 떼어 앱과 같게 만든다.
-    /// 테스트를 터미널에서 돌리면 ssh-keygen이 /dev/tty를 열어 비밀번호를 기다리기 때문이다.
+    /// 우리 실행기(op_command + execute)로 돌린다. 실행기가 제어 터미널을 떼므로 테스트를 터미널에서
+    /// 돌려도 ssh-keygen이 /dev/tty에서 비밀번호를 기다리지 않는다.
     /// ssh-agent가 키를 갖고 있으면 서명이 성공해 버리니 `SSH_AUTH_SOCK`을 비운다.
     #[cfg(unix)]
     fn ssh_signing_failure(args: &[&str], key_file: Option<&str>) -> Option<Outcome> {
-        use std::os::unix::process::CommandExt;
-
         let probe = Command::new("ssh-keygen")
             .arg("-?")
             .stdout(Stdio::null())
@@ -1082,21 +1131,9 @@ mod tests {
 
         let mut command = op_command(&repo.path(), args);
         command.env("SSH_AUTH_SOCK", "");
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        // SAFETY: setsid는 async-signal-safe다. fork 뒤 exec 전에 메모리를 할당하지 않는다
-        unsafe {
-            command.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-        let output = command.output().expect("git 실행");
-        Some(Outcome {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            timed_out: false,
-        })
+        let outcome = execute(command, LOCAL_TIMEOUT).expect("git 실행");
+        assert!(!outcome.timed_out, "ssh-keygen이 비밀번호를 기다렸다");
+        Some(outcome)
     }
 
     #[test]
