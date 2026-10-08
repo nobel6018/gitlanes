@@ -3,7 +3,7 @@
 //! @see CONTRACTS.md
 
 use crate::git;
-use crate::model::{CommitOptions, OpResult};
+use crate::model::{CommitOptions, CommitTemplate, OpResult};
 
 use super::run::{finish, run_op, Outcome, LOCAL_TIMEOUT};
 
@@ -51,22 +51,58 @@ pub fn get_last_commit_message(path: String) -> Result<String, String> {
     git::run(&path, &["log", "-1", "--format=%B"]).map(|out| out.trim_end().to_string())
 }
 
-/// `commit.template` 설정이 있으면 그 내용. 없으면 None.
+/// `commit.template` 설정이 있으면 그 내용과 주석 줄 접두. 없으면 None.
 ///
 /// 설정만 있고 파일이 없는 경우가 흔하다(다른 기계에서 복사해 온 `.gitconfig`).
 /// 그건 오류가 아니라 "템플릿 없음"이다.
 #[tauri::command(async)]
-pub fn get_commit_template(path: String) -> Result<Option<String>, String> {
-    let Ok(raw) = git::run(&path, &["config", "--get", "commit.template"]) else {
+pub fn get_commit_template(path: String) -> Result<Option<CommitTemplate>, String> {
+    const TEMPLATE_ARGS: [&str; 3] = ["config", "--get", "commit.template"];
+    const COMMENT_ARGS: [&str; 4] = [
+        "config",
+        "-z",
+        "--get-regexp",
+        r"^core\.comment(char|string)$",
+    ];
+
+    let mut outputs = git::run_all(&path, &[&TEMPLATE_ARGS[..], &COMMENT_ARGS[..]]).into_iter();
+    let Some(Ok(raw)) = outputs.next() else {
         return Ok(None);
     };
     let raw = raw.trim();
     if raw.is_empty() {
         return Ok(None);
     }
+    let Ok(text) = std::fs::read_to_string(expand_home(raw)) else {
+        return Ok(None);
+    };
 
-    let expanded = expand_home(raw);
-    Ok(std::fs::read_to_string(expanded).ok())
+    // 설정이 하나도 없으면 git config가 exit 1로 끝난다. 그건 기본값 "#"이다
+    let comment_config = outputs.next().and_then(Result::ok).unwrap_or_default();
+    Ok(Some(CommitTemplate {
+        text,
+        comment_prefix: comment_prefix(&comment_config),
+    }))
+}
+
+/// 주석 접두를 고른다. 입력은 `git config -z --get-regexp`의 `키\n값\0` 목록이다.
+///
+/// git은 `core.commentChar`와 `core.commentString`을 같은 설정으로 읽어 나중에 나온 값이 이긴다
+/// (config.c가 두 키를 한 분기에서 처리한다). 출력이 설정 파일 읽는 순서라 마지막 항목을 쓴다.
+/// 한 파일 안에서 하나만 쓰는 보통의 경우 계약 문구("commentString이 있으면 그 값, 없으면
+/// commentChar")와 같은 결과다. "auto"는 메시지에 안 쓰인 글자를 고르는 모드인데 템플릿을 지우는
+/// 시점에는 그 글자를 알 수 없어 "#"로 둔다.
+fn comment_prefix(config: &str) -> String {
+    const DEFAULT: &str = "#";
+    let last = config
+        .split('\0')
+        .filter_map(|entry| entry.split_once('\n'))
+        .map(|(_, value)| value)
+        .next_back();
+    match last {
+        Some(value) if !value.is_empty() && value != "auto" => value.to_string(),
+        _ => DEFAULT.to_string(),
+    }
 }
 
 /// `~/`로 시작하는 설정값을 홈 경로로 편다. git은 이 표기를 그대로 받아들인다.
@@ -297,24 +333,75 @@ mod tests {
         assert_eq!(get_last_commit_message(repo.path()).unwrap(), "base");
     }
 
+    fn template_text(repo: &TempRepo) -> Option<String> {
+        get_commit_template(repo.path()).unwrap().map(|t| t.text)
+    }
+
+    fn template_prefix(repo: &TempRepo) -> String {
+        get_commit_template(repo.path())
+            .unwrap()
+            .expect("템플릿이 있어야 한다")
+            .comment_prefix
+    }
+
+    /// 템플릿 파일을 만들고 절대 경로로 건다. 상대 경로는 저장소 루트가 아니라 프로세스 cwd 기준이다
+    fn with_template(prefix: &str, content: &str) -> TempRepo {
+        let repo = based(prefix);
+        repo.write("tpl.txt", content);
+        let absolute = format!("{}/tpl.txt", repo.path());
+        repo.git(&["config", "commit.template", &absolute]);
+        repo
+    }
+
     #[test]
     fn 커밋_템플릿은_설정과_파일이_모두_있어야_값이_된다() {
         let repo = based("gitlanes-template");
-        assert_eq!(get_commit_template(repo.path()).unwrap(), None);
+        assert_eq!(template_text(&repo), None);
 
         // 설정만 있고 파일이 없으면 여전히 없음이다
         repo.git(&["config", "commit.template", "없는파일.txt"]);
-        assert_eq!(get_commit_template(repo.path()).unwrap(), None);
+        assert_eq!(template_text(&repo), None);
 
-        repo.write("tpl.txt", "제목\n\n# 안내\n");
-        repo.git(&["config", "commit.template", "tpl.txt"]);
-        // 상대 경로는 저장소 루트가 아니라 프로세스 cwd 기준이라 절대 경로로 다시 건다
-        let absolute = format!("{}/tpl.txt", repo.path());
-        repo.git(&["config", "commit.template", &absolute]);
+        let repo = with_template("gitlanes-template", "제목\n\n# 안내\n");
         assert_eq!(
-            get_commit_template(repo.path()).unwrap().as_deref(),
-            Some("제목\n\n# 안내\n")
+            get_commit_template(repo.path()).unwrap(),
+            Some(CommitTemplate {
+                text: "제목\n\n# 안내\n".to_string(),
+                comment_prefix: "#".to_string(),
+            })
         );
+    }
+
+    #[test]
+    fn 커밋_템플릿_주석_접두는_comment_char를_따르고_auto는_샵이다() {
+        let repo = with_template("gitlanes-template-char", "; 안내\n");
+        repo.git(&["config", "core.commentChar", ";"]);
+        assert_eq!(template_prefix(&repo), ";");
+
+        repo.git(&["config", "core.commentChar", "auto"]);
+        assert_eq!(template_prefix(&repo), "#");
+    }
+
+    #[test]
+    fn 커밋_템플릿_주석_접두는_comment_string을_따른다() {
+        let repo = with_template("gitlanes-template-string", "// 안내\n");
+        repo.git(&["config", "core.commentString", "//"]);
+        assert_eq!(template_prefix(&repo), "//");
+    }
+
+    #[test]
+    fn 주석_접두는_나중에_나온_설정이_이긴다() {
+        assert_eq!(comment_prefix(""), "#");
+        assert_eq!(comment_prefix("core.commentchar\n;\0"), ";");
+        assert_eq!(
+            comment_prefix("core.commentchar\n;\0core.commentstring\n//\0"),
+            "//"
+        );
+        assert_eq!(
+            comment_prefix("core.commentstring\n//\0core.commentchar\n;\0"),
+            ";"
+        );
+        assert_eq!(comment_prefix("core.commentchar\nauto\0"), "#");
     }
 
     #[test]
