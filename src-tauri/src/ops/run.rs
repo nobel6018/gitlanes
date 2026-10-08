@@ -1064,6 +1064,9 @@ mod tests {
             &["add", "--", "locked.txt"][..],
             &["checkout", "main"],
             &["commit", "-m", "x"],
+            // v0.20: deinit은 워킹 트리만 비우는 로컬 작업이다
+            &["submodule", "deinit", "-f", "--", "a"],
+            &["rm", "-f", "--", "a"],
         ] {
             let result = finish(&nowhere(), args, failed(stderr), LOCAL_TIMEOUT);
             assert!(!result.needs_auth, "{args:?}");
@@ -1076,6 +1079,8 @@ mod tests {
             &["pull", "--ff-only"],
             // v0.19: 서브모듈 update는 clone과 fetch를 한다
             &["submodule", "update", "--init", "--recursive", "--"],
+            // v0.20: 서브모듈 add는 clone을 한다
+            &["submodule", "add", "--", "git@github.com:o/r.git", "lib"],
         ] {
             let result = finish(&nowhere(), args, failed(ssh), NETWORK_TIMEOUT);
             assert!(result.needs_auth, "{args:?}");

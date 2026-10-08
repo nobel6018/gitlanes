@@ -147,7 +147,10 @@ fn validate_url(url: &str) -> Result<String, String> {
         return Err("No submodule URL was given.".to_string());
     }
     if url.starts_with('-') || url.contains('\0') {
-        return Err(format!("Invalid submodule URL: {}", url.replace('\0', "\\0")));
+        return Err(format!(
+            "Invalid submodule URL: {}",
+            url.replace('\0', "\\0")
+        ));
     }
     Ok(url.to_string())
 }
@@ -164,7 +167,7 @@ fn validate_sub_path(sub_path: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testrepo::{one, TempRepo};
+    use crate::testrepo::{lib, one, with_command_config, TempRepo, LOCAL_CLONE_CONFIG};
 
     fn status_line(repo: &TempRepo, sub: &str) -> String {
         crate::git::run(repo.path(), &["submodule", "status", "--", sub])
@@ -179,6 +182,371 @@ mod tests {
             .unwrap()
             .trim()
             .to_string()
+    }
+
+    fn staged(repo: &TempRepo) -> String {
+        crate::git::run(repo.path(), &["diff", "--cached", "--name-status"])
+            .unwrap()
+            .trim_end()
+            .to_string()
+    }
+
+    fn add_options(url: &str, sub: &str, branch: Option<&str>) -> AddSubmoduleOptions {
+        AddSubmoduleOptions {
+            url: url.to_string(),
+            path: sub.to_string(),
+            branch: branch.map(str::to_string),
+        }
+    }
+
+    /// 로컬 경로 원본을 clone할 수 있게 테스트 설정을 얹은 add
+    fn add(repo: &TempRepo, url: &str, sub: &str, branch: Option<&str>) -> OpResult {
+        with_command_config(&LOCAL_CLONE_CONFIG, || {
+            git_submodule_add(repo.path(), add_options(url, sub, branch)).unwrap()
+        })
+    }
+
+    fn modules_dir(repo: &TempRepo, name: &str) -> std::path::PathBuf {
+        std::path::Path::new(&repo.path())
+            .join(".git/modules")
+            .join(name)
+    }
+
+    fn registered(repo: &TempRepo, name: &str) -> bool {
+        crate::git::run(
+            repo.path(),
+            &["config", "--get", &format!("submodule.{name}.url")],
+        )
+        .is_ok()
+    }
+
+    #[test]
+    fn add는_gitmodules와_gitlink를_스테이지한다() {
+        let parent = TempRepo::linear("gitlanes-subadd-parent", 1);
+        let lib = lib("gitlanes-subadd-lib");
+
+        let result = add(&parent, &lib.path(), "libs/x", Some("main"));
+        assert!(result.ok, "{}", result.stderr);
+        assert_eq!(
+            result.command,
+            [
+                "submodule",
+                "add",
+                "-b",
+                "main",
+                "--",
+                lib.path().as_str(),
+                "libs/x"
+            ]
+        );
+        assert_eq!(staged(&parent), "A\t.gitmodules\nA\tlibs/x");
+
+        let stage =
+            crate::git::run(parent.path(), &["ls-files", "--stage", "--", "libs/x"]).unwrap();
+        assert!(
+            stage.starts_with(&format!("160000 {} 0", lib.rev("HEAD"))),
+            "{stage}"
+        );
+        let branch = crate::git::run(
+            parent.path(),
+            &["config", "-f", ".gitmodules", "submodule.libs/x.branch"],
+        )
+        .unwrap();
+        assert_eq!(branch.trim(), "main");
+        assert!(
+            crate::git::run(parent.path(), &["log", "-1", "--format=%s"])
+                .unwrap()
+                .contains("commit 0"),
+            "커밋은 사용자가 한다"
+        );
+    }
+
+    #[test]
+    fn branch가_없거나_비면_b를_넘기지_않는다() {
+        let parent = TempRepo::linear("gitlanes-subadd-nob", 1);
+        let lib = lib("gitlanes-subadd-nob-lib");
+        let result = add(&parent, &lib.path(), "x", Some("  "));
+        assert!(result.ok, "{}", result.stderr);
+        assert!(
+            !result.command.contains(&"-b".to_string()),
+            "{:?}",
+            result.command
+        );
+    }
+
+    #[test]
+    fn 같은_경로_재추가는_git이_거절한다() {
+        let fx = one();
+        let before = staged(&fx.parent);
+        let result = add(&fx.parent, &fx.lib(0).path(), "a", None);
+        assert!(!result.ok);
+        assert!(
+            result.stderr.contains("already exists"),
+            "{}",
+            result.stderr
+        );
+        assert_eq!(staged(&fx.parent), before);
+    }
+
+    #[test]
+    fn 옵션처럼_생긴_url과_잘못된_인자는_거절한다() {
+        let parent = TempRepo::linear("gitlanes-subadd-bad", 1);
+        let bad = [
+            add_options("--upload-pack=touch /tmp/x", "x", None),
+            add_options("  -u", "x", None),
+            add_options("", "x", None),
+            add_options("a\0b", "x", None),
+            add_options("../lib", "-x", None),
+            add_options("../lib", "", None),
+            add_options("../lib", "/", None),
+            add_options("../lib", "x\0y", None),
+            add_options("../lib", "x", Some("-f")),
+        ];
+        for options in bad {
+            let label = format!("{options:?}");
+            assert!(
+                git_submodule_add(parent.path(), options).is_err(),
+                "{label}"
+            );
+        }
+        assert_eq!(staged(&parent), "");
+    }
+
+    /// 로컬 경로 clone 허용(`protocol.file.allow`)은 사용자 설정 몫이다. 사용자가 막아 두면
+    /// 우리 command도 막히고 git stderr가 그대로 간다
+    #[test]
+    fn add는_protocol_file_allow를_덮지_않는다() {
+        let parent = TempRepo::linear("gitlanes-subadd-proto", 1);
+        let lib = lib("gitlanes-subadd-proto-lib");
+        let result = with_command_config(&[("protocol.file.allow", "never")], || {
+            git_submodule_add(parent.path(), add_options(&lib.path(), "x", None)).unwrap()
+        });
+        assert!(!result.ok);
+        assert!(
+            result.stderr.contains("transport 'file' not allowed"),
+            "{}",
+            result.stderr
+        );
+        assert!(
+            result.command.iter().all(|arg| !arg.contains("protocol")),
+            "{:?}",
+            result.command
+        );
+    }
+
+    #[test]
+    fn remove는_gitmodules와_gitlink_삭제를_스테이지하고_modules를_남긴다() {
+        let fx = one();
+        let result = git_submodule_remove(fx.parent.path(), "a".into(), false).unwrap();
+        assert!(result.ok, "{}", result.stderr);
+        assert_eq!(
+            result.command,
+            ["rm", "--", "a"],
+            "마지막 단계의 명령이 남는다"
+        );
+        assert_eq!(staged(&fx.parent), "M\t.gitmodules\nD\ta");
+        assert!(
+            modules_dir(&fx.parent, "a").join("HEAD").exists(),
+            ".git/modules/a는 남는다"
+        );
+        assert!(!registered(&fx.parent, "a"), ".git/config에서 빠진다");
+        assert!(!std::path::Path::new(&fx.parent.path())
+            .join("a/counter.txt")
+            .exists());
+        assert!(
+            crate::git::run(fx.parent.path(), &["log", "-1", "--format=%s"])
+                .unwrap()
+                .contains("add a"),
+            "커밋은 사용자가 한다"
+        );
+    }
+
+    /// moved는 dirty가 아니라 우리 가드는 통과시키지만, deinit이 안에서 돌리는 `rm -n`이 HEAD와
+    /// index의 차이를 "local modifications"로 보고 거절한다(git 2.50.1). 아무것도 바뀌지 않는다
+    #[test]
+    fn moved는_force_없이는_git이_1단계에서_거절하고_force면_지운다() {
+        let fx = one();
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        let moved_head = fx.lib(0).rev("HEAD~1");
+
+        let result = git_submodule_remove(fx.parent.path(), "a/".into(), false).unwrap();
+        assert!(!result.ok);
+        assert_eq!(
+            result.command,
+            ["submodule", "deinit", "--", "a"],
+            "끝의 /는 뗀다"
+        );
+        assert!(
+            result.stderr.contains("local modifications"),
+            "{}",
+            result.stderr
+        );
+        assert!(result.stderr.contains("step 1 of 2"), "{}", result.stderr);
+        assert!(registered(&fx.parent, "a"));
+        assert_eq!(staged(&fx.parent), "");
+
+        let result = git_submodule_remove(fx.parent.path(), "a".into(), true).unwrap();
+        assert!(result.ok, "{}", result.stderr);
+        assert_eq!(staged(&fx.parent), "M\t.gitmodules\nD\ta");
+        let kept = crate::git::run(
+            modules_dir(&fx.parent, "a").to_string_lossy().as_ref(),
+            &["cat-file", "-e", &format!("{moved_head}^{{commit}}")],
+        );
+        assert!(kept.is_ok(), "옮긴 HEAD의 커밋은 .git/modules에 남는다");
+    }
+
+    fn assert_untouched(fx: &crate::testrepo::Fixture, file: &str, content: &str) {
+        let on_disk =
+            std::fs::read_to_string(std::path::Path::new(&fx.parent.path()).join(file)).unwrap();
+        assert_eq!(on_disk, content);
+        assert!(registered(&fx.parent, "a"));
+        assert_eq!(staged(&fx.parent), "");
+    }
+
+    #[test]
+    fn dirty면_force_없이는_git을_실행하지_않고_거절한다() {
+        let fx = one();
+        fx.parent.write("a/counter.txt", "dirty\n");
+        let result = git_submodule_remove(fx.parent.path(), "a".into(), false).unwrap();
+        assert!(!result.ok);
+        assert!(result.command.is_empty(), "{:?}", result.command);
+        assert!(
+            result.stderr.contains("uncommitted changes"),
+            "{}",
+            result.stderr
+        );
+        assert!(!result.needs_auth);
+        assert_untouched(&fx, "a/counter.txt", "dirty\n");
+    }
+
+    #[test]
+    fn untracked_파일만_있어도_force_없이는_거절한다() {
+        let fx = one();
+        fx.parent.write("a/new.txt", "new\n");
+        let result = git_submodule_remove(fx.parent.path(), "a".into(), false).unwrap();
+        assert!(!result.ok);
+        assert!(result.command.is_empty(), "{:?}", result.command);
+        assert_untouched(&fx, "a/new.txt", "new\n");
+    }
+
+    #[test]
+    fn force면_dirty를_버리고_지운다() {
+        let fx = one();
+        fx.parent.write("a/counter.txt", "dirty\n");
+        fx.parent.write("a/new.txt", "new\n");
+        let result = git_submodule_remove(fx.parent.path(), "a".into(), true).unwrap();
+        assert!(result.ok, "{}", result.stderr);
+        assert_eq!(result.command, ["rm", "-f", "--", "a"]);
+        assert_eq!(staged(&fx.parent), "M\t.gitmodules\nD\ta");
+        assert!(modules_dir(&fx.parent, "a").join("HEAD").exists());
+        assert!(!std::path::Path::new(&fx.parent.path())
+            .join("a/new.txt")
+            .exists());
+    }
+
+    /// rm은 스테이지 안 한 `.gitmodules` 수정을 -f로도 거절한다. deinit -f 뒤에 알면 늦다
+    #[test]
+    fn force여도_rm이_거절할_상태면_deinit_전에_멈춘다() {
+        let fx = one();
+        let gitmodules =
+            std::fs::read_to_string(format!("{}/.gitmodules", fx.parent.path())).unwrap();
+        fx.parent
+            .write(".gitmodules", &format!("{gitmodules}# memo\n"));
+
+        let result = git_submodule_remove(fx.parent.path(), "a".into(), true).unwrap();
+        assert!(!result.ok);
+        assert!(result.stderr.contains(".gitmodules"), "{}", result.stderr);
+        assert_eq!(result.command, ["rm", "-n", "-f", "--", "a"]);
+        assert!(registered(&fx.parent, "a"), "deinit이 돌지 않았다");
+        assert!(std::path::Path::new(&fx.parent.path())
+            .join("a/counter.txt")
+            .exists());
+    }
+
+    /// deinit은 됐는데 rm이 실패한 반쪽 상태. 상위 디렉토리에 쓰기 권한이 없으면 deinit은 경고만
+    /// 내고 0으로 끝나고(빈 디렉토리를 다시 못 만든다), rm은 디렉토리를 못 지워 실패한다.
+    /// `rm -n`은 파일시스템을 건드리지 않아 미리 못 잡는다
+    #[cfg(unix)] // 권한 비트로 실패를 만든다. Windows에는 같은 픽스처가 없다
+    #[test]
+    fn deinit_뒤_rm이_실패하면_단계와_남은_상태를_적는다() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = TempRepo::linear("gitlanes-subrm-half", 1);
+        let lib = lib("gitlanes-subrm-half-lib");
+        parent.add_submodule(&lib.path(), "mods/a");
+        parent.git(&["commit", "-qm", "add mods/a"]);
+        let mods = std::path::Path::new(&parent.path()).join("mods");
+        std::fs::set_permissions(&mods, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = git_submodule_remove(parent.path(), "mods/a".into(), true);
+        std::fs::set_permissions(&mods, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let result = result.unwrap();
+
+        assert!(!result.ok);
+        assert_eq!(result.command, ["rm", "-f", "--", "mods/a"]);
+        assert!(
+            result.stderr.contains("step 2 of 2 (rm)"),
+            "{}",
+            result.stderr
+        );
+        assert!(
+            result.stderr.contains("still in the index"),
+            "{}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("git submodule update --init -- mods/a"),
+            "{}",
+            result.stderr
+        );
+        assert!(!result.needs_auth);
+        assert_eq!(staged(&parent), "", "index는 그대로다");
+        assert!(!registered(&parent, "mods/a"), "deinit은 이미 돌았다");
+    }
+
+    #[test]
+    fn deinit이_실패하면_1단계에서_멈췄다고_적는다() {
+        let fx = one();
+        // index에 없는 경로. deinit이 pathspec 오류로 끝난다
+        fx.parent.git(&["config", "submodule.zz.url", "../zz"]);
+        let result = git_submodule_remove(fx.parent.path(), "zz".into(), false).unwrap();
+        assert!(!result.ok);
+        assert_eq!(
+            result.command.first().map(String::as_str),
+            Some("submodule")
+        );
+        assert!(result.stderr.contains("step 1 of 2"), "{}", result.stderr);
+        assert!(
+            result.stderr.contains("were not changed"),
+            "{}",
+            result.stderr
+        );
+    }
+
+    /// `a*`가 glob이면 확인 대화상자에 없던 서브모듈까지 지운다
+    #[test]
+    fn remove의_경로는_glob이_아니라_리터럴이다() {
+        let fx = one();
+        let result = git_submodule_remove(fx.parent.path(), "a*".into(), true).unwrap();
+        assert!(!result.ok);
+        assert!(registered(&fx.parent, "a"));
+        assert_eq!(staged(&fx.parent), "");
+        assert!(std::path::Path::new(&fx.parent.path())
+            .join("a/counter.txt")
+            .exists());
+    }
+
+    #[test]
+    fn remove는_옵션처럼_생긴_경로와_빈_경로를_거절한다() {
+        let fx = one();
+        for bad in ["--force", "", "/", "a\0b"] {
+            assert!(
+                git_submodule_remove(fx.parent.path(), bad.into(), true).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
