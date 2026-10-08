@@ -529,13 +529,14 @@ mod tests {
     #[test]
     fn remove의_경로는_glob이_아니라_리터럴이다() {
         let fx = one();
-        let result = git_submodule_remove(fx.parent.path(), "a*".into(), true).unwrap();
-        assert!(!result.ok);
-        assert!(registered(&fx.parent, "a"));
-        assert_eq!(staged(&fx.parent), "");
-        assert!(std::path::Path::new(&fx.parent.path())
-            .join("a/counter.txt")
-            .exists());
+        for force in [false, true] {
+            let result = git_submodule_remove(fx.parent.path(), "a*".into(), force).unwrap();
+            assert!(!result.ok, "force={force}");
+            assert!(registered(&fx.parent, "a"), "force={force}");
+            assert_eq!(staged(&fx.parent), "");
+            let checkout = std::path::Path::new(&fx.parent.path()).join("a/counter.txt");
+            assert!(checkout.exists(), "force={force}");
+        }
     }
 
     #[test]
