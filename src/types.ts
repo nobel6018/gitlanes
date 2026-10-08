@@ -681,4 +681,6 @@ export interface AddSubmoduleOptions {
 // git_submodule_remove(path, subPath: string, force: boolean) -> OpResult
 //   `submodule deinit [-f] -- <subPath>` 뒤 `rm [-f] -- <subPath>`. .gitmodules 항목과 gitlink 삭제가 스테이지된다.
 //   `.git/modules/<name>`은 지우지 않는다(서브모듈 안의 push 안 한 커밋 보존). force=false인데 서브모듈 안에
-//   커밋 안 한 변경이 있으면 git을 실행하지 않고 ok=false와 이유를 돌려준다. force=true면 그 변경을 버린다
+//   커밋 안 한 변경이 있으면 git을 실행하지 않고 ok=false와 이유를 돌려준다. force=true면 그 변경을 버린다.
+//   force는 이 뜻만 가진다. 검사를 통과하면 git에는 늘 `-f`를 준다(HEAD만 옮겨진 moved 서브모듈은 git이
+//   -f 없이 거절하지만 커밋이 .git/modules에 남아 손실이 아니다)
