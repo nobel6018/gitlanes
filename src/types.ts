@@ -679,7 +679,8 @@ export interface AddSubmoduleOptions {
 //   `protocol.file.allow` 같은 사용자 설정은 덮지 않는다(로컬 경로 URL이 막히면 git stderr 그대로)
 //
 // git_submodule_remove(path, subPath: string, force: boolean) -> OpResult
-//   `submodule deinit [-f] -- <subPath>` 뒤 `rm [-f] -- <subPath>`. .gitmodules 항목과 gitlink 삭제가 스테이지된다.
+//   `rm -n -f`로 미리 본 뒤 `submodule deinit -f -- <subPath>`, `rm -f -- <subPath>`. subPath가 index의 서브모듈이
+//   아니면 git을 실행하지 않고 거절한다. 커밋 안 한 변경 검사는 ignore 설정과 무관하게 실제 상태를 본다. .gitmodules 항목과 gitlink 삭제가 스테이지된다.
 //   `.git/modules/<name>`은 지우지 않는다(서브모듈 안의 push 안 한 커밋 보존). force=false인데 서브모듈 안에
 //   커밋 안 한 변경이 있으면 git을 실행하지 않고 ok=false와 이유를 돌려준다. force=true면 그 변경을 버린다.
 //   force는 이 뜻만 가진다. 검사를 통과하면 git에는 늘 `-f`를 준다(HEAD만 옮겨진 moved 서브모듈은 git이
