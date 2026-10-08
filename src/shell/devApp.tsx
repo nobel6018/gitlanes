@@ -6,6 +6,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import App from "../App";
 import { makeMockGraph } from "../graph";
 import type {
+  AddSubmoduleOptions,
   BlameHunk,
   BlameResult,
   CommitDetails,
@@ -664,7 +665,10 @@ function mockCompare(base: string, head: string, requested: number): CompareResu
 
 // ── v0.19 서브모듈 ──────────────────────────────────────────
 
-/** `?noSubmodules=1`: 서브모듈이 없는 레포. get_submodules가 빈 배열이라 사이드바 구간이 숨는다 */
+/**
+ * `?noSubmodules=1`: 서브모듈이 없는 레포. 저장소를 빈 채로 시작해 사이드바 구간이 빈 문구로 뜬다.
+ * v0.20부터 git_submodule_add가 이 저장소에 넣으므로 추가한 서브모듈은 보인다
+ */
 const NO_SUBMODULES = new URLSearchParams(window.location.search).get("noSubmodules") === "1";
 
 const SUB_PROTO_RECORDED = fakeSha("proto-recorded");
@@ -674,7 +678,7 @@ const SUB_PROTO_HEAD = fakeSha("proto-head");
  * 서브모듈 셋: ok, moved+dirty, uninitialized. git_submodule_update가 실제로 고친다.
  * 서브모듈 경로를 탭으로 열면 그 레포(경로가 MOCK_PATH 아래)는 서브모듈이 없는 것으로 본다
  */
-const submoduleStore: SubmoduleInfo[] = [
+const submoduleStore: SubmoduleInfo[] = NO_SUBMODULES ? [] : [
   {
     name: "docs-theme",
     path: "docs/theme",
@@ -707,8 +711,13 @@ const submoduleStore: SubmoduleInfo[] = [
   },
 ];
 
+// 서브모듈이 없는 레포에는 unstaged gitlink도 없다
+if (NO_SUBMODULES) {
+  removeFiles(wipStore.unstaged, ["third_party/proto"]);
+}
+
 function mockSubmodules(path: string): SubmoduleInfo[] {
-  if (NO_SUBMODULES || path !== MOCK_PATH) {
+  if (path !== MOCK_PATH) {
     return [];
   }
   return submoduleStore.map((sub) => ({ ...sub }));
@@ -1009,8 +1018,11 @@ function installForcedUpdate(): void {
 //   ?template=1       get_commit_template이 # 주석 줄이 섞인 템플릿을 돌려준다
 //   ?template=1&commentChar=;  주석 접두를 ;로 바꾼 템플릿 (core.commentChar 확인). # 줄은 본문으로 남아야 한다
 //   ?compareUnrelated=1&compareLimit=27  비교 목록 한쪽만 잘리게 한다 (목록별 +more 확인)
-//   ?noSubmodules=1   get_submodules가 빈 배열이다 (사이드바 SUBMODULES 구간이 숨는다)
+//   ?noSubmodules=1   서브모듈 없이 시작한다 (사이드바 SUBMODULES 구간이 빈 문구, Add만 있다)
 //   ?fail=submodule_update&auth=1  서브모듈 update가 인증 실패로 끝난다 (터미널 핸드오프 확인)
+//   ?fail=submodule_add&auth=1     서브모듈 add(clone)가 인증 실패로 끝난다
+//   ?fail=submodule_remove         remove가 "확인 뒤 서브모듈 안에 변경이 생겼다"는 Rust 거절로 끝난다
+//                                  (git 미실행이라 command가 비어 있다)
 //   ?latin1=1         get_wip_file_diff가 encoding:"latin1"을 돌려준다 (git_apply_patch 로그로 전달 확인)
 //   ?fail=undo        git_undo가 git 실패로 끝난다 (command 있음, 항목이 스택에 남는다)
 //   ?undo=stale       git_undo가 상태 불일치로 거절한다 (command 빈 배열, 항목이 스택에서 빠진다)
@@ -1507,6 +1519,108 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
         removeFiles(wipStore.unstaged, [sub.path]);
       }
       return ok(command, "Submodule path 'third_party/proto': checked out");
+    }
+
+    case "git_submodule_add": {
+      const options = arg(payload, "options") as AddSubmoduleOptions | undefined;
+      const url = options?.url ?? "";
+      const subPath = options?.path ?? "";
+      const branch = options?.branch ?? null;
+      // Rust의 인자 검증과 같다. command 자체가 reject 된다
+      if (url.startsWith("-")) {
+        throw `The submodule URL cannot start with "-": ${url}`;
+      }
+      const command = ["submodule", "add", ...(branch !== null ? ["-b", branch] : []), "--", url, subPath];
+      if (shouldFail(cmd)) {
+        return fail(
+          command,
+          `Cloning into '${MOCK_PATH}/${subPath}'...\nfatal: repository '${url}' not found\nfatal: clone of '${url}' into submodule path '${MOCK_PATH}/${subPath}' failed`,
+        );
+      }
+      if (submoduleStore.some((sub) => sub.path === subPath)) {
+        return fail(command, `'${subPath}' already exists in the index`);
+      }
+      const head = fakeSha(`${subPath}-added-${url}`);
+      submoduleStore.push({
+        name: subPath,
+        path: subPath,
+        url,
+        branch,
+        recordedSha: head,
+        headSha: head,
+        state: "ok",
+        dirty: false,
+      });
+      submoduleStore.sort((a, b) => a.path.localeCompare(b.path));
+      // .gitmodules 항목과 gitlink가 스테이지된다. 커밋은 사용자가 한다
+      const lines = branch === null ? 3 : 4;
+      const gitmodules = wipStore.staged.find((file) => file.path === ".gitmodules");
+      if (gitmodules !== undefined) {
+        gitmodules.additions += lines;
+      } else {
+        wipStore.staged.unshift({
+          path: ".gitmodules",
+          oldPath: null,
+          status: submoduleStore.length === 1 ? "A" : "M",
+          additions: lines,
+          deletions: 0,
+        });
+      }
+      removeFiles(wipStore.staged, [subPath]);
+      wipStore.staged.unshift({
+        path: subPath,
+        oldPath: null,
+        status: "A",
+        additions: 0,
+        deletions: 0,
+        submodule: true,
+      });
+      return ok(command, `Cloning into '${MOCK_PATH}/${subPath}'...\ndone.`);
+    }
+
+    case "git_submodule_remove": {
+      const subPath = strArg(payload, "subPath");
+      const force = boolArg(payload, "force");
+      const command = ["rm", ...(force ? ["-f"] : []), "--", subPath];
+      const sub = submoduleStore.find((entry) => entry.path === subPath);
+      if (sub === undefined) {
+        return fail(command, `error: pathspec '${subPath}' did not match any file(s) known to git`);
+      }
+      // Rust 거절(git 미실행): force=false인데 서브모듈 안에 커밋 안 한 변경이 있다
+      const refusal = `${subPath} has uncommitted changes inside the submodule. Nothing was removed.`;
+      if (shouldFail(cmd) || (!force && sub.dirty)) {
+        return fail([], refusal);
+      }
+      submoduleStore.splice(submoduleStore.indexOf(sub), 1);
+      removeFiles(wipStore.unstaged, [subPath]);
+      // 이번 세션에 추가만 하고 커밋 안 한 서브모듈이면 스테이지 항목이 그냥 사라진다
+      const stagedLink = wipStore.staged.find((file) => file.path === subPath);
+      removeFiles(wipStore.staged, [subPath]);
+      if (stagedLink?.status !== "A") {
+        wipStore.staged.unshift({
+          path: subPath,
+          oldPath: null,
+          status: "D",
+          additions: 0,
+          deletions: 0,
+          submodule: true,
+        });
+      }
+      const gitmodules = wipStore.staged.find((file) => file.path === ".gitmodules");
+      if (gitmodules === undefined) {
+        wipStore.staged.unshift({
+          path: ".gitmodules",
+          oldPath: null,
+          status: submoduleStore.length === 0 ? "D" : "M",
+          additions: 0,
+          deletions: 3,
+        });
+      } else if (gitmodules.status === "A" && submoduleStore.length === 0) {
+        removeFiles(wipStore.staged, [".gitmodules"]);
+      } else {
+        gitmodules.deletions += 3;
+      }
+      return ok(command, `Cleared directory '${subPath}'\nrm '${subPath}'`);
     }
 
     case "git_fetch": {
