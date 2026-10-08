@@ -3,7 +3,9 @@
 // 실제 git 호출은 ui-hub의 RepoActions가 하고, 여기서는 값만 모아 onSubmit으로 넘긴다.
 import { useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
+import type { AddSubmoduleOptions } from "../types";
 import { DialogFrame } from "./Dialogs";
+import { pathAfterUrlChange, submoduleAddProblem } from "./submoduleAdd";
 import "./actions.css";
 
 // ── 공용 입력 조각 ─────────────────────────────────────────────
@@ -850,6 +852,95 @@ export function AddWorktreeDialog({
         label="Create new branch"
         note="A branch already checked out in another worktree cannot be checked out again."
       />
+    </DialogFrame>
+  );
+}
+
+// ── 9-1. 서브모듈 추가 (v0.20) ─────────────────────────────────
+
+export interface AddSubmoduleDialogProps {
+  open: boolean;
+  onClose: () => void;
+  onSubmit: (options: AddSubmoduleOptions) => void;
+  /** 이미 있는 서브모듈 경로. 같은 경로를 고르면 바로 알린다(최종 거절은 git) */
+  existingPaths?: string[];
+}
+
+export function AddSubmoduleDialog({
+  open,
+  onClose,
+  onSubmit,
+  existingPaths = [],
+}: AddSubmoduleDialogProps) {
+  const id = useId();
+  const [url, setUrl] = useState("");
+  const [path, setPath] = useState("");
+  const [branch, setBranch] = useState("");
+
+  useResetOnOpen(open, () => {
+    setUrl("");
+    setPath("");
+    setBranch("");
+  });
+
+  const problem = submoduleAddProblem(url, path, existingPaths);
+
+  return (
+    <DialogFrame
+      open={open}
+      title="Add submodule"
+      onClose={onClose}
+      onSubmit={() =>
+        onSubmit({
+          url: url.trim(),
+          path: path.trim().replace(/\/+$/, ""),
+          branch: branch.trim() === "" ? null : branch.trim(),
+        })
+      }
+      submitLabel="Add submodule"
+      disabledReason={url === "" && path === "" ? null : problem}
+      blocked={problem !== null}
+    >
+      <Field label="URL" htmlFor={`${id}-url`}>
+        <input
+          id={`${id}-url`}
+          className="dlg-input"
+          value={url}
+          placeholder="https://github.com/owner/repo.git"
+          onChange={(e) => {
+            const next = e.target.value;
+            setPath((current) => pathAfterUrlChange(url, next, current));
+            setUrl(next);
+          }}
+          spellCheck={false}
+          autoComplete="off"
+          autoFocus
+        />
+        <div className="dlg-note">A remote URL, or a path relative to this repository's origin such as ../lib.</div>
+      </Field>
+      <Field label="Path" htmlFor={`${id}-path`}>
+        <input
+          id={`${id}-path`}
+          className="dlg-input"
+          value={path}
+          placeholder="vendor/lib"
+          onChange={(e) => setPath(e.target.value)}
+          spellCheck={false}
+          autoComplete="off"
+        />
+      </Field>
+      <Field label="Branch (optional)" htmlFor={`${id}-branch`}>
+        <input
+          id={`${id}-branch`}
+          className="dlg-input"
+          value={branch}
+          placeholder="Remote default branch"
+          onChange={(e) => setBranch(e.target.value)}
+          spellCheck={false}
+          autoComplete="off"
+        />
+      </Field>
+      <div className="dlg-note">The new .gitmodules entry and submodule are staged. Commit to record them.</div>
     </DialogFrame>
   );
 }
