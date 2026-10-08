@@ -17,6 +17,7 @@ import type {
   RepoInfo,
   RepoState,
   SearchMatch,
+  SubmoduleInfo,
   SyncState,
   UndoEntry,
   WipArea,
@@ -42,6 +43,7 @@ import {
   getWipFileContent,
   getWipFileDiff,
   getRepoState,
+  getSubmodules,
   listRefs,
   listRemotes,
   listWorktrees,
@@ -52,7 +54,7 @@ import {
   termWrite,
 } from "./api";
 import { formatCommand, useRepoActions } from "./actions";
-import type { ConfirmSpec, RepoActions, ToastSpec } from "./actions";
+import type { ConfirmSpec, RepoActions, SubmoduleTarget, ToastSpec } from "./actions";
 import { copyText } from "./clipboard";
 import { BranchSidebar } from "./BranchSidebar";
 import { CommitDetailPanel } from "./CommitDetailPanel";
@@ -166,6 +168,8 @@ const GLOBAL_SEARCH_LIMIT = 500;
 /** 파일 히스토리와 비교 커밋 목록의 상한. 넘으면 비교 화면이 truncated를 알린다 */
 const HISTORY_LIMIT = 1000;
 const COMPARE_LIMIT = 1000;
+/** get_submodules가 실패했거나 아직 안 왔을 때. 렌더마다 새 배열을 만들지 않는다 */
+const NO_SUBMODULES: SubmoduleInfo[] = [];
 
 /**
  * 오른쪽 상세 패널 자리를 차지하는 목록 화면 (v0.18). 둘 다 "목록은 오른쪽, 고른 파일의 diff는
@@ -415,6 +419,11 @@ export interface RepoWorkspaceProps {
   onRepoOpened: (path: string, name: string) => void;
   /** 다른 탭이 이미 그 레포를 열었으면 App이 그 탭을 활성화하고 true를 준다 */
   requestOpen: (path: string) => boolean;
+  /**
+   * 경로를 다른 탭으로 연다(v0.19 서브모듈 열기). 이미 열린 레포면 그 탭을 활성화하고,
+   * 빈 웰컴 탭이 있으면 거기에 연다(App의 openInTab)
+   */
+  openInNewTab: (path: string) => void;
   /** 앱 전역 업데이트 확인 상태 (App 소유) */
   update: WorkspaceUpdateProps;
   /** 활성 탭에만 내려오는 업데이트 배너. 툴바 바로 아래에 놓는다 */
@@ -514,6 +523,7 @@ export function RepoWorkspace({
   active,
   onRepoOpened,
   requestOpen,
+  openInNewTab,
   update,
   banner,
   openDialogNonce,
@@ -2327,6 +2337,80 @@ export function RepoWorkspace({
     return items;
   }, [repo, remotes, worktrees, showToast, showError]);
 
+  // ── 서브모듈 (v0.19) ───────────────────────────────────────
+
+  /**
+   * 사이드바 SUBMODULES 구간과 포인터 변경 패널이 같이 쓰는 목록. 레포를 열 때, refreshAll 때
+   * (wipNonce가 오른다), 폴링이 WIP 변화를 잡았을 때(역시 wipNonce), 그래프 리로드 때 다시 읽는다.
+   * 폴링 주기마다 부르지는 않는다. 서브모듈 HEAD가 움직이면 상위 status가 달라져 WIP 지문이 바뀐다.
+   * 실패는 조용히 빈 목록으로 둔다(구간이 숨는다)
+   */
+  const submoduleLoad = useSoftLoad(
+    repo === null ? null : repo.path,
+    () => getSubmodules(repo!.path),
+    wipNonce + reloadKey,
+  );
+  const submodules = submoduleLoad.data ?? NO_SUBMODULES;
+  const submodulesRef = useRef(submodules);
+  submodulesRef.current = submodules;
+
+  /** 서브모듈은 탭 하나로 연다. 이미 열린 레포면 App이 그 탭으로 보낸다 */
+  const openSubmodulePath = useCallback(
+    (subPath: string) => {
+      const current = repoRef.current;
+      if (current === null) {
+        return;
+      }
+      openInNewTab(`${current.path.replace(/\/+$/, "")}/${subPath}`);
+    },
+    [openInNewTab],
+  );
+
+  const openSubmodule = useCallback(
+    (sub: SubmoduleInfo) => {
+      if (sub.state !== "uninitialized") {
+        openSubmodulePath(sub.path);
+      }
+    },
+    [openSubmodulePath],
+  );
+
+  /** 사이드바 메뉴. uninitialized면 Initialize(--init), 그 밖이면 기록된 커밋으로 update */
+  const updateSubmodule = useCallback(
+    (sub: SubmoduleInfo) => {
+      fire(
+        actions.updateSubmodules(
+          [sub.path],
+          [{ path: sub.path, info: sub }],
+          sub.state === "uninitialized",
+        ),
+      );
+    },
+    [actions, fire],
+  );
+
+  /**
+   * WIP unstaged gitlink의 "Update to Recorded Commit". unstaged라는 것 자체가 서브모듈 HEAD가
+   * 기록과 다르다는 뜻이라, 목록이 아직 옛 상태(ok)여도 moved로 보고 확인을 받는다
+   */
+  const updateSubmoduleAt = useCallback(
+    (path: string) => {
+      const info = submodulesRef.current.find((sub) => sub.path === path) ?? null;
+      const target: SubmoduleTarget = {
+        path,
+        info: info === null || info.state !== "ok" ? info : { ...info, state: "moved" },
+      };
+      fire(actions.updateSubmodules([path], [target], info?.state === "uninitialized"));
+    },
+    [actions, fire],
+  );
+
+  /** 구간 머리 Update All. --init은 붙이지 않는다(초기화 안 한 서브모듈을 몰래 clone하지 않는다) */
+  const updateAllSubmodules = useCallback(() => {
+    const targets = submodulesRef.current.map((sub) => ({ path: sub.path, info: sub }));
+    fire(actions.updateSubmodules([], targets, false));
+  }, [actions, fire]);
+
   // ── 파일 히스토리, blame, 비교 (v0.18) ─────────────────────
 
   const historyView = sideView?.kind === "history" ? sideView : null;
@@ -3437,6 +3521,10 @@ export function RepoWorkspace({
               onOpenRefOnRemote={remoteUrl === null ? undefined : handleOpenRefOnRemote}
               onCompareWithCurrent={compareWithCurrent}
               filterInputRef={sidebarFilterRef}
+              submodules={submodules}
+              onOpenSubmodule={openSubmodule}
+              onUpdateSubmodule={updateSubmodule}
+              onUpdateAllSubmodules={updateAllSubmodules}
             />
             <SplitHandle
               label="사이드바 폭 조절"
@@ -3568,6 +3656,7 @@ export function RepoWorkspace({
             details={wipDetails}
             loading={wipLoading}
             onOpenFile={openWipFile}
+            onUpdateSubmodule={updateSubmoduleAt}
             openFile={
               openFile === null || openFile.area === null
                 ? null

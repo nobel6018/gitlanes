@@ -46,6 +46,11 @@ export interface WipDetailPanelProps {
   repoPath?: string;
   /** Amend 체크 시 마지막 커밋 메시지를 받아온다 (get_last_commit_message) */
   onRequestLastMessage?: () => Promise<string>;
+  /**
+   * unstaged 서브모듈 항목의 Discard 자리 "Update to Recorded Commit" (v0.19).
+   * 확인창과 실행은 셸 몫이다. 없으면 그 자리를 비운다(discard는 Rust가 gitlink를 거절한다)
+   */
+  onUpdateSubmodule?: (path: string) => void;
 }
 
 type GroupId = "unstaged" | "staged";
@@ -110,6 +115,7 @@ export function WipDetailPanel({
   actions,
   repoPath,
   onRequestLastMessage,
+  onUpdateSubmodule,
 }: WipDetailPanelProps) {
   const [fileView, setFileView] = useState<FileView>(readFileView);
   const [collapsed, setCollapsed] = useState<CollapsedByGroup>(emptyCollapsed);
@@ -446,9 +452,40 @@ export function WipDetailPanel({
       return { untracked: entry.area === "untracked" };
     }
     const path = entry.file.path;
+    const submodule = entry.file.submodule === true;
+    // 서브모듈 포인터(gitlink)는 discard가 할 일이 없다(Rust가 거절한다). unstaged면 서브모듈
+    // HEAD를 기록된 커밋으로 되돌리는 update가 그 자리에 오고, staged는 Unstage로 충분해 비운다
+    const unstagedRevert: FileRowAction | null = submodule
+      ? onUpdateSubmodule === undefined
+        ? null
+        : {
+            key: "update",
+            glyph: "⤓",
+            label: `Update ${path} to Recorded Commit`,
+            disabled: busy,
+            onRun: () => onUpdateSubmodule(path),
+          }
+      : {
+          key: "discard",
+          glyph: "↺",
+          label: `Discard working tree changes in ${path}`,
+          danger: true,
+          disabled: busy,
+          onRun: () => run(actions.discard([path], "worktree")),
+        };
+    const stagedRevert: FileRowAction | null = submodule
+      ? null
+      : {
+          key: "discard",
+          glyph: "↺",
+          label: `Discard staged and unstaged changes in ${path}`,
+          danger: true,
+          disabled: busy,
+          onRun: () => run(actions.discard([path], "all")),
+        };
     // 영역이 눈에 보이게 나뉘어 있으므로, 그 영역에서 누른 만큼만 날아가야 한다.
     // Unstaged의 되돌리기는 워킹 트리만, Staged의 되돌리기는 staged까지 버린다
-    const rowActions: FileRowAction[] =
+    const rowActions: FileRowAction[] = (
       group.id === "unstaged"
         ? [
             {
@@ -458,14 +495,7 @@ export function WipDetailPanel({
               disabled: busy,
               onRun: () => run(actions.stage([path])),
             },
-            {
-              key: "discard",
-              glyph: "↺",
-              label: `Discard working tree changes in ${path}`,
-              danger: true,
-              disabled: busy,
-              onRun: () => run(actions.discard([path], "worktree")),
-            },
+            unstagedRevert,
           ]
         : [
             {
@@ -475,15 +505,9 @@ export function WipDetailPanel({
               disabled: busy,
               onRun: () => run(actions.unstage([path])),
             },
-            {
-              key: "discard",
-              glyph: "↺",
-              label: `Discard staged and unstaged changes in ${path}`,
-              danger: true,
-              disabled: busy,
-              onRun: () => run(actions.discard([path], "all")),
-            },
-          ];
+            stagedRevert,
+          ]
+    ).filter((action): action is FileRowAction => action !== null);
     return {
       untracked: entry.area === "untracked",
       checked: selected.has(entry.key),
