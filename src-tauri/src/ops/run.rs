@@ -84,9 +84,14 @@ const AUTH_MARKERS_403: [&str; 2] = ["returned error: 403", "403 forbidden"];
 /// 로컬 명령도 stderr에 `Permission denied`를 쓴다(`chmod 000` 파일을 add하면
 /// `error: open("x"): Permission denied`). 이걸 인증 실패로 보면 스테이징 실패 토스트에
 /// "터미널에서 실행"이 뜨는데, 터미널에서도 똑같이 실패한다.
-/// 원격 브랜치 삭제와 태그 push는 `push`로 나간다. `submodule`은 우리가 `update`로만 부르고,
-/// 거기서 clone과 fetch가 일어난다(v0.19).
+/// 원격 브랜치 삭제와 태그 push는 `push`로 나간다. `submodule`은 [`NETWORK_SUBMODULE_VERBS`]
+/// 일 때만 네트워크다.
 const NETWORK_VERBS: [&str; 5] = ["fetch", "pull", "push", "ls-remote", "submodule"];
+
+/// `submodule`의 하위 명령 중 clone이나 fetch가 일어나는 것(v0.19 update, v0.20 add).
+/// `deinit`은 워킹 트리를 비우는 로컬 작업이라, 파일 삭제의 `Permission denied`를 인증 실패로
+/// 보지 않는다
+const NETWORK_SUBMODULE_VERBS: [&str; 2] = ["update", "add"];
 
 /// 서명 실패. git이 gpg 오류 앞에 붙이는 문구라 commit, merge, tag, rebase 어디서 서명하든 같다.
 const SIGNING_FAILED_MARKER: &str = "gpg failed to sign the data";
@@ -157,10 +162,29 @@ pub fn op_command<S: AsRef<OsStr>>(repo: &str, args: &[S]) -> Command {
         cmd.env("GIT_LITERAL_PATHSPECS", "1");
     }
 
+    #[cfg(test)]
+    TEST_ENV.with(|envs| {
+        for (key, value) in envs.borrow().iter() {
+            cmd.env(key, value);
+        }
+    });
+
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd
+}
+
+#[cfg(test)]
+thread_local! {
+    /// 테스트가 제품 command 호출에 얹는 환경변수. [`op_command`]가 마지막에 건다.
+    ///
+    /// 제품 command는 테스트 git 호출의 `-c`를 받지 않는다. 프로세스 환경(`set_var`)을 바꾸면
+    /// 병렬로 도는 다른 테스트의 git까지 바뀐다. 테스트 하나는 한 스레드에서 돌고, command는
+    /// 그 스레드에서 [`op_command`]를 거치므로 스레드 범위면 그 테스트의 호출에만 걸린다.
+    /// 값을 넣고 빼는 것은 `testrepo::with_command_config`가 한다
+    pub static TEST_ENV: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// 사용자가 고른 ssh 명령 뒤에 `-oBatchMode=yes`를 붙인 값. `GIT_SSH_COMMAND`로 넘긴다.
@@ -611,8 +635,13 @@ pub fn looks_like_auth_failure(stderr: &str) -> bool {
 }
 
 fn is_network_command(args: &[&str]) -> bool {
-    args.first()
-        .is_some_and(|verb| NETWORK_VERBS.contains(verb))
+    match args.first() {
+        Some(&"submodule") => args
+            .get(1)
+            .is_some_and(|sub| NETWORK_SUBMODULE_VERBS.contains(sub)),
+        Some(verb) => NETWORK_VERBS.contains(verb),
+        None => false,
+    }
 }
 
 /// 원격이 거절하며 밝힌 계정 이름을 뽑는다.

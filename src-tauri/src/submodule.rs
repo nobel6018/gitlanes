@@ -506,6 +506,17 @@ fn parse_index_gitlinks(out: &str) -> HashMap<String, IndexEntry> {
     entries
 }
 
+/// 서브모듈 안에 커밋 안 한 변경(추적 파일 수정 또는 untracked)이 있는가.
+/// [`get_submodules`]의 dirty와 같은 기준이다(같은 `status`, 같은 파서). 상위 레포 git 1회.
+pub(crate) fn is_dirty(path: &str, sub_path: &str) -> Result<bool, String> {
+    let out = git::run(path, &["status", "--porcelain=v2", "-z", "--", sub_path])
+        .map_err(|e| format!("Could not read the submodule status: {e}"))?;
+    Ok(parse_status_dirty(&out)
+        .get(sub_path)
+        .copied()
+        .unwrap_or(false))
+}
+
 /// `status --porcelain=v2 -z`에서 서브모듈 항목의 dirty(추적 파일 수정 M 또는 untracked U).
 ///
 /// 서브모듈 필드는 `S<c><m><u>`이고 서브모듈이 아니면 `N...`이다. 일반(`1`), rename(`2`),

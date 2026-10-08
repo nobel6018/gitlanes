@@ -190,6 +190,40 @@ impl TempRepo {
     }
 }
 
+/// 제품 command 호출에 command 범위 git 설정을 얹고 `f`를 실행한다.
+///
+/// `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`은 `git -c`와 같은 범위라 사용자 전역 설정을 갈아 끼우지
+/// 않고, 자식 git(서브모듈 clone)에도 물려진다. 레포 로컬 설정은 서브모듈 clone에 전달되지
+/// 않는다(v0.19 실측). 값은 이 스레드의 [`op_command`]에만 걸려 병렬 테스트에 새지 않고,
+/// `f`가 패닉해도 지운다.
+///
+/// [`op_command`]: crate::ops::run::op_command
+pub fn with_command_config<T>(pairs: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            crate::ops::run::TEST_ENV.with(|envs| envs.borrow_mut().clear());
+        }
+    }
+
+    let mut envs = vec![("GIT_CONFIG_COUNT".to_string(), pairs.len().to_string())];
+    for (at, (key, value)) in pairs.iter().enumerate() {
+        envs.push((format!("GIT_CONFIG_KEY_{at}"), (*key).to_string()));
+        envs.push((format!("GIT_CONFIG_VALUE_{at}"), (*value).to_string()));
+    }
+    crate::ops::run::TEST_ENV.with(|cell| *cell.borrow_mut() = envs);
+    let _reset = Reset;
+    f()
+}
+
+/// 로컬 경로 URL로 서브모듈을 clone하는 제품 command용 설정. 테스트 git 호출의
+/// [`TempRepo::add_submodule`]과 같은 값이다(줄바꿈 고정 포함)
+pub const LOCAL_CLONE_CONFIG: [(&str, &str); 3] = [
+    ("protocol.file.allow", "always"),
+    ("core.autocrlf", "false"),
+    ("core.eol", "lf"),
+];
+
 /// 상위 레포와 서브모듈 원본들. 원본이 먼저 지워지지 않게 함께 들고 있는다
 pub struct Fixture {
     pub parent: TempRepo,
