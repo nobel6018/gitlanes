@@ -13,6 +13,7 @@ import { kbd, withKbd } from "./shortcuts";
 import { ContextMenu } from "./ContextMenu";
 import type { MenuItem } from "./ContextMenu";
 import { SidebarContextMenu } from "./SidebarContextMenu";
+import { SubmoduleList } from "./SubmoduleList";
 import type {
   SidebarActions,
   SidebarDialogKind,
@@ -322,6 +323,8 @@ export function BranchSidebar({
   onRefDragStateChange,
   onCompareWithCurrent,
   submodules,
+  selectedSubmodule,
+  onSelectSubmodule,
   onOpenSubmodule,
   onUpdateSubmodule,
   onUpdateAllSubmodules,
@@ -772,7 +775,14 @@ export function BranchSidebar({
             onAction={() => onUpdateAllSubmodules?.()}
             onToggle={() => toggle("submodules", rawCollapsed("submodules"))}
           >
-            {null}
+            <SubmoduleList
+              submodules={submoduleView}
+              selectedPath={selectedSubmodule ?? null}
+              busy={actions === undefined || actions.busy}
+              onOpen={(sub) => onOpenSubmodule?.(sub)}
+              onSelect={(sub) => onSelectSubmodule?.(sub)}
+              onContextMenu={(sub, x, y) => openMenu({ type: "submodule", sub }, x, y)}
+            />
           </Section>
         )}
 

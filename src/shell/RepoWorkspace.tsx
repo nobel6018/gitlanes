@@ -17,6 +17,7 @@ import type {
   RepoInfo,
   RepoState,
   SearchMatch,
+  SubmoduleChangeSource,
   SubmoduleInfo,
   SyncState,
   UndoEntry,
@@ -43,6 +44,7 @@ import {
   getWipFileContent,
   getWipFileDiff,
   getRepoState,
+  getSubmoduleChange,
   getSubmodules,
   listRefs,
   listRemotes,
@@ -79,6 +81,7 @@ import { ConfirmDialog, PromptDialog } from "./Dialogs";
 import { DiffPanel } from "./DiffPanel";
 import { BlameView } from "./BlameView";
 import { ComparePanel } from "./ComparePanel";
+import { SubmoduleChangePanel } from "./SubmoduleChangePanel";
 import { FileHistoryPanel } from "./FileHistoryPanel";
 import { RebaseEditor } from "./RebaseEditor";
 import { MultiCommitPanel } from "./MultiCommitPanel";
@@ -170,6 +173,8 @@ const HISTORY_LIMIT = 1000;
 const COMPARE_LIMIT = 1000;
 /** get_submodules가 실패했거나 아직 안 왔을 때. 렌더마다 새 배열을 만들지 않는다 */
 const NO_SUBMODULES: SubmoduleInfo[] = [];
+/** 서브모듈 포인터 변경 패널의 커밋 목록 상한(앞으로, 되감기 각각). 넘으면 패널이 truncated를 알린다 */
+const SUBMODULE_CHANGE_LIMIT = 200;
 
 /**
  * 오른쪽 상세 패널 자리를 차지하는 목록 화면 (v0.18). 둘 다 "목록은 오른쪽, 고른 파일의 diff는
@@ -488,6 +493,28 @@ function openFileKey(open: OpenFile): string {
   return `${source}\u0000${open.file.path}`;
 }
 
+/**
+ * 열린 파일이 서브모듈 포인터(gitlink)인가 (v0.19). 그러면 가운데에 텍스트 diff 대신
+ * SubmoduleChangePanel이 뜬다. untracked는 gitlink가 될 수 없어 빼 둔다
+ */
+function isSubmoduleOpen(open: OpenFile): boolean {
+  return open.file.submodule === true && open.area !== "untracked";
+}
+
+/** 포인터 변경을 어디서 읽을지. 출처는 OpenFile과 같은 셋(워킹 트리, 커밋, 비교)이다 */
+function submoduleSource(open: OpenFile): SubmoduleChangeSource {
+  if (open.area === "staged") {
+    return { kind: "staged" };
+  }
+  if (open.area !== null) {
+    return { kind: "unstaged" };
+  }
+  if (open.compare !== null) {
+    return { kind: "compare", base: open.compare.base, head: open.compare.head };
+  }
+  return { kind: "commit", sha: open.sha ?? "" };
+}
+
 /** 입력창(xterm의 textarea 포함)에 포커스가 있는가 */
 function textFieldFocused(): boolean {
   const el = document.activeElement;
@@ -574,6 +601,8 @@ export function RepoWorkspace({
   const [sideView, setSideView] = useState<SideView | null>(null);
   /** 가운데 자리의 blame (v0.18). 열려 있으면 DiffPanel 대신 뜨고, 닫으면 그 diff로 돌아온다 */
   const [blameTarget, setBlameTarget] = useState<BlameTarget | null>(null);
+  /** 사이드바 SUBMODULES에서 고른 항목의 경로 (v0.19). 강조만 한다 */
+  const [selectedSubmodule, setSelectedSubmodule] = useState<string | null>(null);
   const [wipDetails, setWipDetails] = useState<WipDetails | null>(null);
   const [wipLoading, setWipLoading] = useState(false);
   /** wip 요약이 바뀔 때마다 오른다. WIP 상세와 열린 WIP diff를 다시 읽는 트리거 */
@@ -903,6 +932,7 @@ export function RepoWorkspace({
         setOpenFile(null);
         setSideView(null);
         setBlameTarget(null);
+        setSelectedSubmodule(null);
         pendingJump.current = null;
         setGraph(null);
         setRefs([]);
@@ -2405,6 +2435,54 @@ export function RepoWorkspace({
     [actions, fire],
   );
 
+  const selectSubmodule = useCallback((sub: SubmoduleInfo) => {
+    setSelectedSubmodule(sub.path);
+  }, []);
+
+  /**
+   * 열린 gitlink 항목의 포인터 변경. 커밋 출처는 바뀔 수 없어 다시 읽지 않고, 워킹 트리 출처는
+   * WIP가 바뀔 때(서브모듈 HEAD 이동, update 직후), 비교는 브랜치 끝이 움직일 때 다시 읽는다
+   */
+  const submoduleFile = openFile !== null && isSubmoduleOpen(openFile) ? openFile : null;
+  const submoduleChange = useSoftLoad(
+    repo === null || submoduleFile === null
+      ? null
+      : `${repo.path}\u0000${openFileKey(submoduleFile)}`,
+    () =>
+      getSubmoduleChange(
+        repo!.path,
+        submoduleFile!.file.path,
+        submoduleSource(submoduleFile!),
+        SUBMODULE_CHANGE_LIMIT,
+      ),
+    submoduleFile === null
+      ? 0
+      : submoduleFile.area !== null
+        ? wipNonce + reloadKey
+        : submoduleFile.compare !== null
+          ? reloadKey
+          : 0,
+  );
+  const submoduleFileInfo =
+    submoduleFile === null
+      ? null
+      : (submodules.find((sub) => sub.path === submoduleFile.file.path) ?? null);
+
+  const openSubmoduleFromPanel = useCallback(() => {
+    const path = openFileRef.current?.file.path;
+    if (path !== undefined) {
+      openSubmodulePath(path);
+    }
+  }, [openSubmodulePath]);
+
+  const initializeFromPanel = useCallback(() => {
+    const path = openFileRef.current?.file.path;
+    const info = submodulesRef.current.find((sub) => sub.path === path);
+    if (info !== undefined && info.state === "uninitialized") {
+      updateSubmodule(info);
+    }
+  }, [updateSubmodule]);
+
   /** 구간 머리 Update All. --init은 붙이지 않는다(초기화 안 한 서브모듈을 몰래 clone하지 않는다) */
   const updateAllSubmodules = useCallback(() => {
     const targets = submodulesRef.current.map((sub) => ({ path: sub.path, info: sub }));
@@ -2991,9 +3069,10 @@ export function RepoWorkspace({
   const openFileRef = useRef<OpenFile | null>(null);
   openFileRef.current = openFile;
 
-  // 파일이 열리면 출처(커밋, 워킹 트리, 비교)에 맞는 unified diff를 읽는다
+  // 파일이 열리면 출처(커밋, 워킹 트리, 비교)에 맞는 unified diff를 읽는다.
+  // 서브모듈 포인터는 diff 대신 SubmoduleChangePanel이 get_submodule_change로 읽는다
   useEffect(() => {
-    if (repo === null || openFile === null) {
+    if (repo === null || openFile === null || isSubmoduleOpen(openFile)) {
       diffKeyRef.current = null;
       setDiffText(null);
       setFileText(null);
@@ -3522,6 +3601,8 @@ export function RepoWorkspace({
               onCompareWithCurrent={compareWithCurrent}
               filterInputRef={sidebarFilterRef}
               submodules={submodules}
+              selectedSubmodule={selectedSubmodule}
+              onSelectSubmodule={selectSubmodule}
               onOpenSubmodule={openSubmodule}
               onUpdateSubmodule={updateSubmodule}
               onUpdateAllSubmodules={updateAllSubmodules}
@@ -3546,6 +3627,17 @@ export function RepoWorkspace({
               dateMode={prefs.dateMode}
               onJumpToCommit={jumpFromBlame}
               onClose={closeBlame}
+            />
+          ) : submoduleFile !== null ? (
+            <SubmoduleChangePanel
+              path={submoduleFile.file.path}
+              change={submoduleChange.data}
+              error={submoduleChange.error}
+              info={submoduleFileInfo}
+              dateMode={prefs.dateMode}
+              onOpenSubmodule={openSubmoduleFromPanel}
+              onInitialize={initializeFromPanel}
+              onClose={closeFile}
             />
           ) : openFile !== null ? (
             <DiffPanel
