@@ -99,8 +99,13 @@ impl TempRepo {
     }
 
     pub fn git(&self, args: &[&str]) {
+        self.git_in("", args);
+    }
+
+    /// 하위 디렉토리(서브모듈 체크아웃 등)에서 git을 실행한다. 빈 문자열이면 루트다.
+    pub fn git_in(&self, dir: &str, args: &[&str]) {
         let output = Command::new("git")
-            .current_dir(&self.root)
+            .current_dir(self.root.join(dir))
             .env("GIT_AUTHOR_NAME", "테스터")
             .env("GIT_AUTHOR_EMAIL", "tester@example.com")
             .env("GIT_COMMITTER_NAME", "커미터")
@@ -113,6 +118,22 @@ impl TempRepo {
             "git {args:?} 실패: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// 서브모듈을 추가한다(커밋은 하지 않는다).
+    ///
+    /// 최근 git은 로컬 경로 서브모듈의 clone을 `protocol.file.allow`로 막는다. 테스트의 git
+    /// 호출에만 허용을 건다. 제품 코드는 사용자 설정을 그대로 따른다(CONTRACTS.md v0.19).
+    pub fn add_submodule(&self, url: &str, path: &str) {
+        self.git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            url,
+            path,
+        ]);
     }
 
     pub fn write(&self, name: &str, content: &str) {
@@ -135,5 +156,34 @@ impl TempRepo {
             .output()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+}
+
+/// 상위 레포와 서브모듈 원본들. 원본이 먼저 지워지지 않게 함께 들고 있는다
+pub struct Fixture {
+    pub parent: TempRepo,
+    pub libs: Vec<TempRepo>,
+}
+
+impl Fixture {
+    pub fn lib(&self, at: usize) -> &TempRepo {
+        &self.libs[at]
+    }
+}
+
+/// 커밋 3개짜리 서브모듈 원본. 포인터를 앞뒤로 옮길 수 있다
+pub fn lib(prefix: &str) -> TempRepo {
+    TempRepo::linear(prefix, 3)
+}
+
+/// 서브모듈 하나(`a`, 원본 HEAD를 가리킴)를 커밋한 상위 레포.
+pub fn one() -> Fixture {
+    let parent = TempRepo::linear("gitlanes-sub-parent1", 1);
+    let a = lib("gitlanes-sub-lib1a");
+    parent.add_submodule(&a.path(), "a");
+    parent.git(&["commit", "-qm", "add a"]);
+    Fixture {
+        parent,
+        libs: vec![a],
     }
 }

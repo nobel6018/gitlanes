@@ -207,6 +207,9 @@ pub struct FileChange {
     pub status: FileStatus,
     pub additions: u64,
     pub deletions: u64,
+    /// 서브모듈 포인터(gitlink, 모드 160000) 항목이면 true (v0.19). false면 키를 뺀다
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub submodule: bool,
 }
 
 /// 쓰기 작업 결과.
@@ -581,6 +584,73 @@ pub struct CompareResult {
     pub files: Vec<FileChange>,
 }
 
+/// 서브모듈 상태 (v0.19). types.ts `SubmoduleState`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubmoduleState {
+    /// .gitmodules에는 있지만 체크아웃이 없다 (`submodule status`의 '-')
+    Uninitialized,
+    /// 서브모듈 HEAD가 상위 레포 index에 기록된 커밋과 같다
+    Ok,
+    /// 서브모듈 HEAD가 기록된 커밋과 다르다 ('+')
+    Moved,
+    /// 상위 레포에서 gitlink가 충돌 중이다 ('U')
+    Conflict,
+}
+
+/// `get_submodules`의 한 항목 (v0.19).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmoduleInfo {
+    /// .gitmodules의 `submodule.<name>` 이름
+    pub name: String,
+    /// 상위 레포 기준 상대 경로
+    pub path: String,
+    pub url: Option<String>,
+    pub branch: Option<String>,
+    /// 상위 레포 index에 기록된 커밋. 충돌 중이거나 아직 add 전이면 None
+    pub recorded_sha: Option<String>,
+    /// 서브모듈 체크아웃의 HEAD. uninitialized면 None
+    pub head_sha: Option<String>,
+    pub state: SubmoduleState,
+    /// 서브모듈 안에 커밋 안 한 변경(추적 파일 수정, untracked 포함)이 있는가
+    pub dirty: bool,
+}
+
+/// `get_submodule_change`에서 old/new를 어디서 읽을지 (v0.19).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SubmoduleChangeSource {
+    /// 그 커밋의 첫 부모 → 그 커밋
+    Commit { sha: String },
+    /// HEAD → index
+    Staged,
+    /// index → 서브모듈 체크아웃 HEAD
+    Unstaged,
+    /// compare_refs와 같은 기준(merge-base → head)
+    Compare { base: String, head: String },
+}
+
+/// `get_submodule_change` 결과 (v0.19).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmoduleChange {
+    pub path: String,
+    /// None이면 그 쪽에 서브모듈이 없다(추가 또는 삭제)
+    pub old_sha: Option<String>,
+    pub new_sha: Option<String>,
+    /// source가 unstaged일 때 서브모듈 안에 커밋 안 한 변경이 있는가. 그 외는 false
+    pub dirty: bool,
+    /// 서브모듈 저장소에서 두 커밋을 읽을 수 있는가. false면 ahead, behind는 비어 있다
+    pub available: bool,
+    /// old..new: 새로 들어온 커밋, 최신이 먼저
+    pub ahead: Vec<CommitSummary>,
+    /// new..old: 포인터가 되감기며 빠진 커밋, 최신이 먼저
+    pub behind: Vec<CommitSummary>,
+    pub ahead_truncated: bool,
+    pub behind_truncated: bool,
+}
+
 /// `get_commit_template` 결과.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -759,6 +829,7 @@ mod tests {
             status: FileStatus::Modified,
             additions: 1,
             deletions: 2,
+            submodule: false,
         };
         assert_eq!(
             serde_json::to_string(&change).unwrap(),
