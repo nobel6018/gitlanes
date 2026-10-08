@@ -772,7 +772,7 @@ export function BranchSidebar({
             count={submoduleView.length}
             collapsed={isCollapsed("submodules")}
             emptyLabel={filtering ? "No matches" : "No submodules"}
-            actionLabel={dialogAvailable ? "Add Submodule" : undefined}
+            actionLabel={dialogAvailable ? "Add submodule" : undefined}
             onAction={() => onRequestDialog?.("addSubmodule", null)}
             secondaryAction={
               onUpdateAllSubmodules === undefined || submodules.length === 0
