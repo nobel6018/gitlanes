@@ -47,6 +47,9 @@ jobs:
       - name: History model test
         run: npm run test:history
 
+      - name: Submodule model test
+        run: npm run test:submodule
+
       - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
