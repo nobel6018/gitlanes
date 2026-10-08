@@ -16,9 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::commands::{first_line_parents, resolve_in_repo, validate_pathspec, validate_rev};
 use crate::git;
 use crate::inspect::{diff_range, merge_base, parse_summaries, SUMMARY_FORMAT};
-use crate::model::{
-    SubmoduleChange, SubmoduleChangeSource, SubmoduleInfo, SubmoduleState,
-};
+use crate::model::{SubmoduleChange, SubmoduleChangeSource, SubmoduleInfo, SubmoduleState};
 use crate::parse::GITLINK_MODE;
 
 const GITMODULES: &str = ".gitmodules";
@@ -234,7 +232,13 @@ fn read_pointers(
     source: &SubmoduleChangeSource,
 ) -> Result<(Option<String>, Option<String>, bool), String> {
     // `--no-abbrev`: raw의 sha가 기본으로 7자로 잘린다. `--no-renames`: 경로 하나라 짝이 없다
-    const RAW: [&str; 5] = ["--raw", "-z", "--no-abbrev", "--no-renames", "--no-ext-diff"];
+    const RAW: [&str; 5] = [
+        "--raw",
+        "-z",
+        "--no-abbrev",
+        "--no-renames",
+        "--no-ext-diff",
+    ];
     let fail = |e: String| format!("Could not read the submodule change: {e}");
 
     match source {
@@ -566,36 +570,7 @@ fn parse_submodule_status(out: &str, paths: &[&str]) -> HashMap<String, (char, S
 mod tests {
     use super::*;
     use crate::git::spawn_count;
-    use crate::testrepo::TempRepo;
-
-    /// 상위 레포와 서브모듈 원본들. 원본이 먼저 지워지지 않게 함께 들고 있는다
-    struct Fixture {
-        parent: TempRepo,
-        libs: Vec<TempRepo>,
-    }
-
-    impl Fixture {
-        fn lib(&self, at: usize) -> &TempRepo {
-            &self.libs[at]
-        }
-    }
-
-    /// 커밋 3개짜리 원본. 서브모듈 포인터를 앞뒤로 옮길 수 있다
-    fn lib(prefix: &str) -> TempRepo {
-        TempRepo::linear(prefix, 3)
-    }
-
-    /// 서브모듈 하나(`a`)를 커밋한 상위 레포.
-    fn one() -> Fixture {
-        let parent = TempRepo::linear("gitlanes-sub-parent1", 1);
-        let a = lib("gitlanes-sub-lib1a");
-        parent.add_submodule(&a.path(), "a");
-        parent.git(&["commit", "-qm", "add a"]);
-        Fixture {
-            parent,
-            libs: vec![a],
-        }
-    }
+    use crate::testrepo::{lib, one, Fixture, TempRepo};
 
     /// 서브모듈 3개: `a`는 moved, `dir/b sp`는 dirty, `c`는 uninitialized.
     fn three() -> Fixture {
@@ -643,15 +618,24 @@ mod tests {
         let a = find(&infos, "a");
         assert_eq!(a.name, "a");
         assert_eq!(a.state, SubmoduleState::Moved);
-        assert_eq!(a.recorded_sha.as_deref(), Some(fx.lib(0).rev("HEAD").as_str()));
-        assert_eq!(a.head_sha.as_deref(), Some(fx.lib(0).rev("HEAD~1").as_str()));
+        assert_eq!(
+            a.recorded_sha.as_deref(),
+            Some(fx.lib(0).rev("HEAD").as_str())
+        );
+        assert_eq!(
+            a.head_sha.as_deref(),
+            Some(fx.lib(0).rev("HEAD~1").as_str())
+        );
         assert!(!a.dirty);
         assert_eq!(a.url.as_deref(), Some(fx.lib(0).path().as_str()));
         assert_eq!(a.branch, None);
 
         let c = find(&infos, "c");
         assert_eq!(c.state, SubmoduleState::Uninitialized);
-        assert_eq!(c.recorded_sha.as_deref(), Some(fx.lib(2).rev("HEAD").as_str()));
+        assert_eq!(
+            c.recorded_sha.as_deref(),
+            Some(fx.lib(2).rev("HEAD").as_str())
+        );
         assert_eq!(c.head_sha, None);
         assert!(!c.dirty);
 
@@ -796,11 +780,18 @@ mod tests {
         fx.parent.git_in("a", &["pull", "-q", "--ff-only"]);
         fx.parent.git(&["commit", "-qam", "bump a"]);
 
-        let change =
-            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
-                .unwrap();
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            commit_source("HEAD".into()),
+            10,
+        )
+        .unwrap();
         assert_eq!(change.old_sha.as_deref(), Some(old.as_str()));
-        assert_eq!(change.new_sha.as_deref(), Some(fx.lib(0).rev("HEAD").as_str()));
+        assert_eq!(
+            change.new_sha.as_deref(),
+            Some(fx.lib(0).rev("HEAD").as_str())
+        );
         assert!(change.available);
         let subjects: Vec<&str> = change.ahead.iter().map(|c| c.subject.as_str()).collect();
         assert_eq!(subjects, ["lib 4", "lib 3"]);
@@ -814,9 +805,13 @@ mod tests {
         fx.parent.git_in("a", &["checkout", "-q", "HEAD~2"]);
         fx.parent.git(&["commit", "-qam", "rewind a"]);
 
-        let change =
-            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 1)
-                .unwrap();
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            commit_source("HEAD".into()),
+            1,
+        )
+        .unwrap();
         assert!(change.available);
         assert!(change.ahead.is_empty());
         assert_eq!(change.behind.len(), 1);
@@ -828,11 +823,18 @@ mod tests {
     #[test]
     fn 서브모듈을_추가한_커밋은_old가_없고_목록이_비어_있다() {
         let fx = one();
-        let change =
-            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
-                .unwrap();
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            commit_source("HEAD".into()),
+            10,
+        )
+        .unwrap();
         assert_eq!(change.old_sha, None);
-        assert_eq!(change.new_sha.as_deref(), Some(fx.lib(0).rev("HEAD").as_str()));
+        assert_eq!(
+            change.new_sha.as_deref(),
+            Some(fx.lib(0).rev("HEAD").as_str())
+        );
         assert!(change.available);
         assert!(change.ahead.is_empty() && change.behind.is_empty());
     }
@@ -865,7 +867,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(change.old_sha.as_deref(), Some(recorded.as_str()));
-        assert_eq!(change.new_sha.as_deref(), Some(fx.lib(0).rev("HEAD~1").as_str()));
+        assert_eq!(
+            change.new_sha.as_deref(),
+            Some(fx.lib(0).rev("HEAD~1").as_str())
+        );
         assert_eq!(change.behind.len(), 1);
         assert!(!change.dirty);
     }
@@ -935,7 +940,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(change.old_sha.as_deref(), Some(recorded.as_str()));
-        assert_eq!(change.new_sha.as_deref(), Some(fx.lib(0).rev("HEAD~2").as_str()));
+        assert_eq!(
+            change.new_sha.as_deref(),
+            Some(fx.lib(0).rev("HEAD~2").as_str())
+        );
         assert_eq!(change.behind.len(), 2);
     }
 
@@ -946,10 +954,17 @@ mod tests {
         fx.parent.git(&["commit", "-qam", "rewind a"]);
         fx.parent.git(&["submodule", "deinit", "-q", "a"]);
 
-        let change =
-            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
-                .unwrap();
-        assert!(change.available, "체크아웃이 없어도 .git/modules/a에 커밋이 있다");
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            commit_source("HEAD".into()),
+            10,
+        )
+        .unwrap();
+        assert!(
+            change.available,
+            "체크아웃이 없어도 .git/modules/a에 커밋이 있다"
+        );
         assert_eq!(change.behind.len(), 1);
     }
 
@@ -967,9 +982,13 @@ mod tests {
             .git(&["fetch", "-q", &fx.lib(0).path(), "main:refs/lib/main"]);
         assert!(std::path::Path::new(&fx.parent.path()).join("a").is_dir());
 
-        let change =
-            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
-                .unwrap();
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            commit_source("HEAD".into()),
+            10,
+        )
+        .unwrap();
         assert!(!change.available);
         assert!(change.behind.is_empty());
     }
@@ -985,9 +1004,13 @@ mod tests {
         ]);
         fx.parent.git(&["commit", "-qm", "point to missing"]);
 
-        let change =
-            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
-                .unwrap();
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            commit_source("HEAD".into()),
+            10,
+        )
+        .unwrap();
         assert_eq!(change.new_sha.as_deref(), Some(missing));
         assert!(!change.available);
         assert!(change.ahead.is_empty() && change.behind.is_empty());
@@ -1045,6 +1068,161 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&info).unwrap(),
             r#"{"name":"a","path":"a","url":null,"branch":null,"recordedSha":null,"headSha":null,"state":"uninitialized","dirty":false}"#
+        );
+    }
+
+    // ── FileChange.submodule (Rust 2) ──
+
+    #[test]
+    fn 커밋_상세의_gitlink는_submodule로_표시된다() {
+        let fx = one();
+        let details = crate::commands::get_commit_details(fx.parent.path(), "HEAD".into()).unwrap();
+        let a = details.files.iter().find(|f| f.path == "a").unwrap();
+        let gitmodules = details
+            .files
+            .iter()
+            .find(|f| f.path == ".gitmodules")
+            .unwrap();
+        assert!(a.submodule, "추가(000000 → 160000)도 서브모듈이다");
+        assert!(!gitmodules.submodule);
+    }
+
+    #[test]
+    fn wip_staged와_unstaged의_gitlink는_submodule로_표시된다() {
+        let fx = one();
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        let wip = crate::commands::get_wip_details(fx.parent.path()).unwrap();
+        assert!(wip.unstaged.iter().any(|f| f.path == "a" && f.submodule));
+
+        fx.parent.git(&["add", "a"]);
+        fx.parent.write("counter.txt", "changed\n");
+        let wip = crate::commands::get_wip_details(fx.parent.path()).unwrap();
+        assert!(wip.staged.iter().any(|f| f.path == "a" && f.submodule));
+        assert!(wip
+            .unstaged
+            .iter()
+            .any(|f| f.path == "counter.txt" && !f.submodule));
+    }
+
+    #[test]
+    fn compare_refs의_gitlink는_submodule로_표시된다() {
+        let fx = one();
+        let before = fx.parent.rev("HEAD");
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        fx.parent.git(&["commit", "-qam", "rewind"]);
+        let result =
+            crate::inspect::compare_refs(fx.parent.path(), before, "HEAD".into(), 10).unwrap();
+        assert!(result.files.iter().any(|f| f.path == "a" && f.submodule));
+    }
+
+    #[test]
+    fn 파일에서_서브모듈로_바뀐_항목도_submodule이다() {
+        let raw = ":100644 160000 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 T\0a\0";
+        assert!(crate::parse::parse_file_changes(raw)[0].submodule);
+        let raw = ":100644 100644 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 M\0a\0";
+        assert!(!crate::parse::parse_file_changes(raw)[0].submodule);
+    }
+
+    #[test]
+    fn submodule이_false면_키를_빼고_true면_넣는다() {
+        let raw = ":160000 160000 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 M\0a\0";
+        let change = &crate::parse::parse_file_changes(raw)[0];
+        assert!(serde_json::to_string(change)
+            .unwrap()
+            .contains(r#""submodule":true"#));
+        let raw = ":100644 100644 1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 M\0b\0";
+        let change = &crate::parse::parse_file_changes(raw)[0];
+        assert!(!serde_json::to_string(change).unwrap().contains("submodule"));
+    }
+
+    // ── diff.submodule 차단 (Rust 5) ──
+
+    /// 사용자가 `diff.submodule=log`를 켠 레포. 기본 short 모양이 아니면 실패한다
+    fn log_style() -> Fixture {
+        let fx = one();
+        fx.parent.git(&["config", "diff.submodule", "log"]);
+        fx
+    }
+
+    fn assert_short(diff: &str) {
+        assert!(diff.contains("+++ b/a"), "파일 헤더가 있어야 한다: {diff}");
+        assert!(diff.contains("+Subproject commit "), "{diff}");
+        assert!(
+            !diff.contains("Submodule a "),
+            "log 요약이 섞이면 안 된다: {diff}"
+        );
+    }
+
+    #[test]
+    fn 커밋_diff는_diff_submodule_log를_덮는다() {
+        let fx = log_style();
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        fx.parent.git(&["commit", "-qam", "rewind"]);
+        let diff =
+            crate::commands::get_file_diff(fx.parent.path(), "HEAD".into(), "a".into(), None)
+                .unwrap();
+        assert_short(&diff);
+    }
+
+    #[test]
+    fn 루트_커밋_diff도_diff_submodule_log를_덮는다() {
+        let parent = TempRepo::init("gitlanes-sub-rootdiff");
+        let a = lib("gitlanes-sub-rootdiff-lib");
+        parent.add_submodule(&a.path(), "a");
+        parent.git(&["commit", "-qm", "root"]);
+        parent.git(&["config", "diff.submodule", "log"]);
+        let diff =
+            crate::commands::get_file_diff(parent.path(), "HEAD".into(), "a".into(), None).unwrap();
+        assert_short(&diff);
+    }
+
+    #[test]
+    fn wip_diff는_diff_submodule_log를_덮는다() {
+        let fx = log_style();
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        let unstaged =
+            crate::commands::get_wip_file_diff(fx.parent.path(), "a".into(), "unstaged".into())
+                .unwrap();
+        assert_short(&unstaged.text);
+
+        fx.parent.git(&["add", "a"]);
+        let staged =
+            crate::commands::get_wip_file_diff(fx.parent.path(), "a".into(), "staged".into())
+                .unwrap();
+        assert_short(&staged.text);
+    }
+
+    #[test]
+    fn 비교_diff는_diff_submodule_log를_덮는다() {
+        let fx = log_style();
+        let before = fx.parent.rev("HEAD");
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        fx.parent.git(&["commit", "-qam", "rewind"]);
+        let diff = crate::inspect::get_compare_file_diff(
+            fx.parent.path(),
+            before,
+            "HEAD".into(),
+            "a".into(),
+            None,
+        )
+        .unwrap();
+        assert_short(&diff);
+    }
+
+    /// `diff.ignoreSubmodules`는 레포 의도라 덮지 않는다. dirty만 있는 서브모듈은 WIP에서 빠진다
+    #[test]
+    fn diff_ignore_submodules_dirty는_존중한다() {
+        let fx = one();
+        fx.parent.write("a/counter.txt", "dirty\n");
+        let wip = crate::commands::get_wip_details(fx.parent.path()).unwrap();
+        assert!(wip.unstaged.iter().any(|f| f.path == "a"));
+
+        fx.parent.git(&["config", "diff.ignoreSubmodules", "dirty"]);
+        let wip = crate::commands::get_wip_details(fx.parent.path()).unwrap();
+        assert!(
+            !wip.unstaged.iter().any(|f| f.path == "a"),
+            "{:?}",
+            wip.unstaged
         );
     }
 }

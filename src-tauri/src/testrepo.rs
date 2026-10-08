@@ -158,3 +158,32 @@ impl TempRepo {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 }
+
+/// 상위 레포와 서브모듈 원본들. 원본이 먼저 지워지지 않게 함께 들고 있는다
+pub struct Fixture {
+    pub parent: TempRepo,
+    pub libs: Vec<TempRepo>,
+}
+
+impl Fixture {
+    pub fn lib(&self, at: usize) -> &TempRepo {
+        &self.libs[at]
+    }
+}
+
+/// 커밋 3개짜리 서브모듈 원본. 포인터를 앞뒤로 옮길 수 있다
+pub fn lib(prefix: &str) -> TempRepo {
+    TempRepo::linear(prefix, 3)
+}
+
+/// 서브모듈 하나(`a`, 원본 HEAD를 가리킴)를 커밋한 상위 레포.
+pub fn one() -> Fixture {
+    let parent = TempRepo::linear("gitlanes-sub-parent1", 1);
+    let a = lib("gitlanes-sub-lib1a");
+    parent.add_submodule(&a.path(), "a");
+    parent.git(&["commit", "-qm", "add a"]);
+    Fixture {
+        parent,
+        libs: vec![a],
+    }
+}

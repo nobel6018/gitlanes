@@ -1041,7 +1041,13 @@ mod tests {
         }
         // 같은 문구라도 네트워크 명령이면 자격증명 문제다
         let ssh = "git@github.com: Permission denied (publickey).";
-        for args in [&["push"][..], &["fetch", "--all"], &["pull", "--ff-only"]] {
+        for args in [
+            &["push"][..],
+            &["fetch", "--all"],
+            &["pull", "--ff-only"],
+            // v0.19: 서브모듈 update는 clone과 fetch를 한다
+            &["submodule", "update", "--init", "--recursive", "--"],
+        ] {
             let result = finish(&nowhere(), args, failed(ssh), NETWORK_TIMEOUT);
             assert!(result.needs_auth, "{args:?}");
         }
