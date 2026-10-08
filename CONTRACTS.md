@@ -1099,3 +1099,69 @@ onShowBlame?: () => void;     // 있으면 머리에 Blame 버튼
 
 동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지. rust181은 `/Users/levit/leedo/target-rust181`.
 **세션이 자주 끊긴다. 단계마다 커밋하고, 추가 지시는 끝나면 한 줄로 알린다.**
+
+---
+
+# v0.19.0 - 서브모듈
+
+> 2026-10-08. 감사 기능 공백의 마지막 항목. 최상위 서브모듈만 다룬다(중첩은 그 서브모듈을 새 탭으로 열어서 본다). 서브모듈 추가와 제거는 이번 범위가 아니다. 테스트 픽스처 규칙(v0.16.1 절) 적용.
+
+## 화면
+
+- **사이드바 SUBMODULES 구간**: 브랜치, 태그, 스태시 구간과 같은 모양. 서브모듈이 없으면 구간을 숨긴다. 항목은 경로와 상태 표시(uninitialized, moved, conflict, dirty). 더블클릭 또는 메뉴 "Open Submodule"은 새 탭으로 연다(uninitialized면 비활성). 메뉴 "Initialize"(uninitialized일 때) / "Update to Recorded Commit"(moved일 때), "Copy Path". 구간 머리에 "Update All"
+- **서브모듈 포인터 변경 보기**: 커밋 상세, WIP(staged, unstaged), 비교의 파일 목록에서 `submodule: true` 항목을 누르면 가운데 diff 자리에 텍스트 diff 대신 SubmoduleChangePanel이 뜬다. "old → new" 짧은 sha, 새로 들어온 커밋과 되감긴 커밋 목록, unstaged면 dirty 안내, 읽을 수 없으면(available=false) 안내와 "Initialize" 버튼(uninitialized일 때만), "Open Submodule" 버튼
+- **파일 행**: `submodule: true` 항목은 서브모듈 아이콘. hunk 스테이징, History, Blame 없음. 파일 단위 stage/unstage는 그대로(gitlink를 add). unstaged 서브모듈의 "Discard" 자리에는 "Update to Recorded Commit"(= `git_submodule_update([path], false)`, ConfirmDialog)
+- **ConfirmDialog**: update 대상 중 moved가 있으면 "서브모듈 HEAD를 기록된 커밋으로 옮긴다. 지금 HEAD(<짧은 sha>)는 서브모듈 reflog에 남는다". dirty면 "git이 겹치는 파일은 거절한다"도 함께
+
+## Rust (rust19)
+
+1. `get_submodules`: `.gitmodules`(`config -f .gitmodules -z --get-regexp`), `submodule status`, 상위 `status --porcelain=v2 -z`의 서브모듈 플래그(S...)를 조합. 서브모듈 수에 비례해 git 프로세스가 늘지 않게 한다(`submodule status`가 내부에서 도는 것은 허용). `.gitmodules`가 없으면 git을 더 부르지 않고 `[]`
+2. `FileChange.submodule`: `--raw`의 모드(160000)로 채운다. 커밋 상세, WIP staged/unstaged, compare_refs 모두. serde는 false면 생략해도 된다
+3. `get_submodule_change`: source별 old/new는 계약 주석대로. 서브모듈 저장소 경로는 `git -C <path>/<subPath>`가 아니라 상위 레포의 `rev-parse --git-path modules/<name>` 또는 체크아웃 경로로 연다(초기화된 체크아웃이 있으면 그쪽). 커밋을 못 읽으면 available=false. limit+1로 truncated
+4. `git_submodule_update`: 위 주석대로. 경로는 `validate_pathspec`을 거치고 `--` 뒤에 둔다
+5. **사용자 설정 차단**: 우리가 텍스트 diff를 만드는 모든 diff 호출에 `--submodule=short`를 고정한다(`diff.submodule=log`면 출력 모양이 바뀐다). 반대로 `submodule.<name>.ignore`, `diff.ignoreSubmodules`는 레포 의도라 존중한다(status, diff에서 덮지 않는다). 무엇을 고정하고 무엇을 존중했는지 handoff에 적는다
+6. 기존 `reject_submodules`(discard 거절) 문구는 "Update to Recorded Commit"을 안내하게 고친다
+
+## 공개 API (ui19-b 부품, ui19-a 배선)
+
+```ts
+// src/shell/SubmoduleList.tsx (사이드바 구간 안쪽 내용. 구간 머리와 접기는 BranchSidebar 몫)
+export interface SubmoduleListProps {
+  submodules: SubmoduleInfo[];
+  selectedPath: string | null;
+  busy: boolean;                                   // 쓰기 중이면 버튼 비활성
+  onOpen(sub: SubmoduleInfo): void;                // 새 탭. uninitialized면 부르지 않는다
+  onSelect(sub: SubmoduleInfo): void;
+  onContextMenu(sub: SubmoduleInfo, x: number, y: number): void;
+}
+// src/shell/SubmoduleChangePanel.tsx (DiffPanel 자리)
+export interface SubmoduleChangePanelProps {
+  path: string;
+  change: SubmoduleChange | null;                  // null이면 로딩
+  error: string | null;
+  info: SubmoduleInfo | null;                      // get_submodules에서 찾은 항목. 없으면 null(삭제된 서브모듈 등)
+  dateMode: "absolute" | "relative";
+  onOpenSubmodule(): void;                         // info가 있고 uninitialized가 아닐 때만 버튼
+  onInitialize(): void;                            // info.state가 uninitialized일 때만 버튼
+  onClose(): void;
+}
+// src/shell/FileRow.tsx: file.submodule이면 아이콘만 바꾼다(props 변경 없음)
+```
+
+## 배선 (ui19-a)
+
+- `App.tsx`: `RepoWorkspaceProps`에 `openInNewTab(path: string): void` 추가(기존 `openInTab` 재사용, 이미 열린 레포면 그 탭으로)
+- `get_submodules`는 레포를 열 때, refreshAll 때, WIP 폴링 결과가 바뀔 때 다시 읽는다(useSoftLoad처럼 깜빡임 없이). 폴링 주기마다 새로 부르지 않는다
+- 서브모듈 경로는 `<repo>/<sub.path>`. 탭 라벨은 기존 규칙(폴더 이름)
+- devApp mock: 서브모듈 3개(ok, moved+dirty, uninitialized), 커밋 하나에 gitlink 변경, WIP unstaged에 gitlink. `?noSubmodules=1`이면 빈 배열
+
+## 소유권
+
+| 패키지 | 소유 파일 | 항목 |
+|---|---|---|
+| rust19 | `src-tauri/**` | Rust 1~6 |
+| ui19-b | 신규 `src/shell/{SubmoduleList,SubmoduleChangePanel}.tsx`, 신규 `src/shell/submodule.css`, `src/shell/FileRow.tsx` | 위 부품과 아이콘 |
+| ui19-a | `src/App.tsx`, `src/shell/{RepoWorkspace,BranchSidebar,SidebarContextMenu,WipDetailPanel,CommitDetailPanel,ActionDialogs,devApp}.tsx`, `src/shell/{api,actions}.ts` | 배선, 메뉴, 확인 대화상자, mock. 부품 import는 마지막 단계(단독 빌드 깨짐 허용) |
+
+동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지. rust19는 `/Users/levit/leedo/target-rust19`.
+**세션이 자주 끊긴다. 단계마다 커밋하고, 추가 지시는 끝나면 한 줄로 알린다.**
