@@ -71,7 +71,7 @@ pub mod spawn_count {
             .or_default() += 1;
     }
 
-    /// `prefix`로 시작하는 저장소 경로(그 아래 서브모듈 포함)에서 띄운 수의 합
+    /// `prefix` 저장소와 그 아래 경로(서브모듈 체크아웃 포함)에서 띄운 수의 합
     pub fn under(prefix: &str) -> usize {
         let counts = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
         counts
@@ -79,7 +79,14 @@ pub mod spawn_count {
             .map(|counts| {
                 counts
                     .iter()
-                    .filter(|(repo, _)| repo.to_string_lossy().starts_with(prefix))
+                    .filter(|(repo, _)| {
+                        // `repo-1`로 셀 때 `repo-10`이 섞이지 않게 경로 경계에서 자른다
+                        let repo = repo.to_string_lossy();
+                        repo == prefix
+                            || repo
+                                .strip_prefix(prefix)
+                                .is_some_and(|rest| rest.starts_with(['/', '\\']))
+                    })
                     .map(|(_, count)| count)
                     .sum()
             })

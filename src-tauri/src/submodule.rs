@@ -561,3 +561,490 @@ fn parse_submodule_status(out: &str, paths: &[&str]) -> HashMap<String, (char, S
     }
     heads
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::spawn_count;
+    use crate::testrepo::TempRepo;
+
+    /// 상위 레포와 서브모듈 원본들. 원본이 먼저 지워지지 않게 함께 들고 있는다
+    struct Fixture {
+        parent: TempRepo,
+        libs: Vec<TempRepo>,
+    }
+
+    impl Fixture {
+        fn lib(&self, at: usize) -> &TempRepo {
+            &self.libs[at]
+        }
+    }
+
+    /// 커밋 3개짜리 원본. 서브모듈 포인터를 앞뒤로 옮길 수 있다
+    fn lib(prefix: &str) -> TempRepo {
+        TempRepo::linear(prefix, 3)
+    }
+
+    /// 서브모듈 하나(`a`)를 커밋한 상위 레포.
+    fn one() -> Fixture {
+        let parent = TempRepo::linear("gitlanes-sub-parent1", 1);
+        let a = lib("gitlanes-sub-lib1a");
+        parent.add_submodule(&a.path(), "a");
+        parent.git(&["commit", "-qm", "add a"]);
+        Fixture {
+            parent,
+            libs: vec![a],
+        }
+    }
+
+    /// 서브모듈 3개: `a`는 moved, `dir/b sp`는 dirty, `c`는 uninitialized.
+    fn three() -> Fixture {
+        let parent = TempRepo::linear("gitlanes-sub-parent3", 1);
+        let libs = vec![
+            lib("gitlanes-sub-lib3a"),
+            lib("gitlanes-sub-lib3b"),
+            lib("gitlanes-sub-lib3c"),
+        ];
+        parent.add_submodule(&libs[0].path(), "a");
+        parent.add_submodule(&libs[1].path(), "dir/b sp");
+        parent.add_submodule(&libs[2].path(), "c");
+        parent.git(&["commit", "-qm", "add submodules"]);
+        parent.git(&["submodule", "deinit", "-q", "c"]);
+        parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        parent.write("dir/b sp/counter.txt", "dirty\n");
+        Fixture { parent, libs }
+    }
+
+    /// 서브모듈 안에서 커밋한다. 서브모듈 clone에는 TempRepo의 레포 설정이 없다
+    fn commit_in(repo: &TempRepo, dir: &str, file: &str, message: &str) {
+        repo.write(&format!("{dir}/{file}"), &format!("{message}\n"));
+        repo.git_in(dir, &["add", "-A"]);
+        repo.git_in(
+            dir,
+            &["-c", "commit.gpgsign=false", "commit", "-qm", message],
+        );
+    }
+
+    fn find<'a>(infos: &'a [SubmoduleInfo], path: &str) -> &'a SubmoduleInfo {
+        infos
+            .iter()
+            .find(|info| info.path == path)
+            .unwrap_or_else(|| panic!("{path}가 목록에 없다: {infos:?}"))
+    }
+
+    #[test]
+    fn get_submodules는_세_상태와_dirty를_경로순으로_돌려준다() {
+        let fx = three();
+        let infos = get_submodules(fx.parent.path()).unwrap();
+
+        let paths: Vec<&str> = infos.iter().map(|info| info.path.as_str()).collect();
+        assert_eq!(paths, ["a", "c", "dir/b sp"]);
+
+        let a = find(&infos, "a");
+        assert_eq!(a.name, "a");
+        assert_eq!(a.state, SubmoduleState::Moved);
+        assert_eq!(a.recorded_sha.as_deref(), Some(fx.lib(0).rev("HEAD").as_str()));
+        assert_eq!(a.head_sha.as_deref(), Some(fx.lib(0).rev("HEAD~1").as_str()));
+        assert!(!a.dirty);
+        assert_eq!(a.url.as_deref(), Some(fx.lib(0).path().as_str()));
+        assert_eq!(a.branch, None);
+
+        let c = find(&infos, "c");
+        assert_eq!(c.state, SubmoduleState::Uninitialized);
+        assert_eq!(c.recorded_sha.as_deref(), Some(fx.lib(2).rev("HEAD").as_str()));
+        assert_eq!(c.head_sha, None);
+        assert!(!c.dirty);
+
+        let b = find(&infos, "dir/b sp");
+        assert_eq!(b.state, SubmoduleState::Ok);
+        assert_eq!(b.head_sha, b.recorded_sha);
+        assert!(b.dirty, "추적 파일을 고친 서브모듈은 dirty다");
+    }
+
+    #[test]
+    fn untracked_파일만_있어도_dirty다() {
+        let fx = one();
+        fx.parent.write("a/new.txt", "new\n");
+        let infos = get_submodules(fx.parent.path()).unwrap();
+        assert!(find(&infos, "a").dirty);
+        assert_eq!(find(&infos, "a").state, SubmoduleState::Ok);
+    }
+
+    #[test]
+    fn gitmodules가_없으면_git을_부르지_않고_빈_목록이다() {
+        let repo = TempRepo::linear("gitlanes-sub-none", 1);
+        let before = spawn_count::under(&repo.path());
+        assert!(get_submodules(repo.path()).unwrap().is_empty());
+        assert_eq!(spawn_count::under(&repo.path()), before);
+    }
+
+    /// 성능 계약: 서브모듈 수에 비례해 git 프로세스가 늘지 않는다
+    #[test]
+    fn get_submodules의_git_호출_수는_서브모듈_수와_무관하다() {
+        let small = one();
+        let before = spawn_count::under(&small.parent.path());
+        get_submodules(small.parent.path()).unwrap();
+        let one_count = spawn_count::under(&small.parent.path()) - before;
+
+        let large = three();
+        let before = spawn_count::under(&large.parent.path());
+        get_submodules(large.parent.path()).unwrap();
+        let three_count = spawn_count::under(&large.parent.path()) - before;
+
+        assert_eq!(one_count, 4, "config, ls-files, status, submodule status");
+        assert_eq!(three_count, one_count);
+    }
+
+    #[test]
+    fn branch_설정을_읽는다() {
+        let fx = one();
+        fx.parent
+            .git(&["config", "-f", ".gitmodules", "submodule.a.branch", "main"]);
+        let infos = get_submodules(fx.parent.path()).unwrap();
+        assert_eq!(find(&infos, "a").branch.as_deref(), Some("main"));
+    }
+
+    /// `.gitmodules`에 없는 gitlink가 있으면 경로 없는 `submodule status`는 128로 끝난다
+    #[test]
+    fn gitmodules에_없는_gitlink가_있어도_목록을_돌려준다() {
+        let fx = one();
+        let stray = TempRepo::linear("gitlanes-sub-stray", 1);
+        let target = std::path::Path::new(&fx.parent.path()).join("stray");
+        std::fs::rename(stray.path(), &target).unwrap();
+        fx.parent.git(&["add", "stray"]);
+        fx.parent.git(&["commit", "-qm", "stray gitlink"]);
+
+        let infos = get_submodules(fx.parent.path()).unwrap();
+        let paths: Vec<&str> = infos.iter().map(|info| info.path.as_str()).collect();
+        assert_eq!(paths, ["a"]);
+    }
+
+    #[test]
+    fn gitlink_충돌은_conflict이고_기록된_커밋이_없다() {
+        let fx = one();
+        let parent = &fx.parent;
+        parent.git(&["checkout", "-q", "-b", "other"]);
+        parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        parent.git(&["commit", "-qam", "a back"]);
+        parent.git(&["checkout", "-q", "main"]);
+        commit_in(parent, "a", "x.txt", "a forward");
+        parent.git(&["commit", "-qam", "a forward"]);
+        let merge = std::process::Command::new("git")
+            .current_dir(parent.path())
+            .args(["merge", "-q", "other"])
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "충돌이 나야 한다");
+
+        let infos = get_submodules(parent.path()).unwrap();
+        let a = find(&infos, "a");
+        assert_eq!(a.state, SubmoduleState::Conflict);
+        assert_eq!(a.recorded_sha, None);
+        assert_eq!(a.head_sha, None);
+    }
+
+    /// 실측: `submodule status`는 ignore=all을 보지 않고 `status`는 본다
+    #[test]
+    fn ignore_all이면_moved는_보이고_dirty는_숨는다() {
+        let fx = one();
+        fx.parent.git(&["config", "submodule.a.ignore", "all"]);
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        fx.parent.write("a/counter.txt", "dirty\n");
+
+        let infos = get_submodules(fx.parent.path()).unwrap();
+        let a = find(&infos, "a");
+        assert_eq!(a.state, SubmoduleState::Moved);
+        assert!(!a.dirty, "레포 설정 ignore=all을 덮지 않는다");
+    }
+
+    #[test]
+    fn 한글_경로도_읽는다() {
+        let parent = TempRepo::linear("gitlanes-sub-hangul", 1);
+        let a = lib("gitlanes-sub-hangul-lib");
+        parent.add_submodule(&a.path(), "모듈 하나");
+        parent.git(&["commit", "-qm", "add"]);
+
+        let infos = get_submodules(parent.path()).unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].path, "모듈 하나");
+        assert_eq!(infos[0].state, SubmoduleState::Ok);
+        assert_eq!(infos[0].head_sha.as_deref(), Some(a.rev("HEAD").as_str()));
+    }
+
+    #[test]
+    fn 같은_경로의_describe를_경로로_착각하지_않는다() {
+        let out = " 1111 a (heads/main)\n+2222 a b\n";
+        let heads = parse_submodule_status(out, &["a", "a b"]);
+        assert_eq!(heads["a"], (' ', "1111".to_string()));
+        assert_eq!(heads["a b"], ('+', "2222".to_string()));
+    }
+
+    // ── get_submodule_change ──
+
+    fn commit_source(sha: String) -> SubmoduleChangeSource {
+        SubmoduleChangeSource::Commit { sha }
+    }
+
+    #[test]
+    fn 커밋의_포인터_전진은_ahead로_보인다() {
+        let fx = one();
+        let old = fx.lib(0).rev("HEAD");
+        fx.lib(0).write("counter.txt", "3\n");
+        fx.lib(0).git(&["commit", "-qam", "lib 3"]);
+        fx.lib(0).write("counter.txt", "4\n");
+        fx.lib(0).git(&["commit", "-qam", "lib 4"]);
+        fx.parent.git_in("a", &["pull", "-q", "--ff-only"]);
+        fx.parent.git(&["commit", "-qam", "bump a"]);
+
+        let change =
+            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
+                .unwrap();
+        assert_eq!(change.old_sha.as_deref(), Some(old.as_str()));
+        assert_eq!(change.new_sha.as_deref(), Some(fx.lib(0).rev("HEAD").as_str()));
+        assert!(change.available);
+        let subjects: Vec<&str> = change.ahead.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["lib 4", "lib 3"]);
+        assert!(change.behind.is_empty());
+        assert!(!change.dirty);
+    }
+
+    #[test]
+    fn 되감기는_behind로_보이고_limit에서_자른다() {
+        let fx = one();
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~2"]);
+        fx.parent.git(&["commit", "-qam", "rewind a"]);
+
+        let change =
+            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 1)
+                .unwrap();
+        assert!(change.available);
+        assert!(change.ahead.is_empty());
+        assert_eq!(change.behind.len(), 1);
+        assert_eq!(change.behind[0].subject, "commit 2");
+        assert!(change.behind_truncated);
+        assert!(!change.ahead_truncated);
+    }
+
+    #[test]
+    fn 서브모듈을_추가한_커밋은_old가_없고_목록이_비어_있다() {
+        let fx = one();
+        let change =
+            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
+                .unwrap();
+        assert_eq!(change.old_sha, None);
+        assert_eq!(change.new_sha.as_deref(), Some(fx.lib(0).rev("HEAD").as_str()));
+        assert!(change.available);
+        assert!(change.ahead.is_empty() && change.behind.is_empty());
+    }
+
+    #[test]
+    fn 루트_커밋의_서브모듈도_읽는다() {
+        let parent = TempRepo::init("gitlanes-sub-root");
+        let a = lib("gitlanes-sub-root-lib");
+        parent.add_submodule(&a.path(), "a");
+        parent.git(&["commit", "-qm", "root with a"]);
+        let change =
+            get_submodule_change(parent.path(), "a".into(), commit_source("HEAD".into()), 10)
+                .unwrap();
+        assert_eq!(change.old_sha, None);
+        assert_eq!(change.new_sha.as_deref(), Some(a.rev("HEAD").as_str()));
+    }
+
+    #[test]
+    fn staged는_head에서_index로_읽는다() {
+        let fx = one();
+        let recorded = fx.lib(0).rev("HEAD");
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        fx.parent.git(&["add", "a"]);
+
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            SubmoduleChangeSource::Staged,
+            10,
+        )
+        .unwrap();
+        assert_eq!(change.old_sha.as_deref(), Some(recorded.as_str()));
+        assert_eq!(change.new_sha.as_deref(), Some(fx.lib(0).rev("HEAD~1").as_str()));
+        assert_eq!(change.behind.len(), 1);
+        assert!(!change.dirty);
+    }
+
+    #[test]
+    fn unstaged는_체크아웃_head와_dirty를_읽는다() {
+        let fx = one();
+        let recorded = fx.lib(0).rev("HEAD");
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        fx.parent.write("a/counter.txt", "dirty\n");
+
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            SubmoduleChangeSource::Unstaged,
+            10,
+        )
+        .unwrap();
+        assert_eq!(change.old_sha.as_deref(), Some(recorded.as_str()));
+        assert_eq!(
+            change.new_sha.as_deref(),
+            Some(fx.lib(0).rev("HEAD~1").as_str()),
+            "워킹 트리 쪽 0 sha 대신 체크아웃 HEAD를 읽는다"
+        );
+        assert!(change.dirty);
+        assert_eq!(change.behind.len(), 1);
+    }
+
+    #[test]
+    fn unstaged에서_dirty만_있으면_old와_new가_같다() {
+        let fx = one();
+        fx.parent.write("a/counter.txt", "dirty\n");
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            SubmoduleChangeSource::Unstaged,
+            10,
+        )
+        .unwrap();
+        assert_eq!(change.old_sha, change.new_sha);
+        assert!(change.old_sha.is_some());
+        assert!(change.dirty);
+        assert!(change.available);
+    }
+
+    #[test]
+    fn compare는_merge_base에서_head로_읽는다() {
+        let fx = one();
+        let recorded = fx.lib(0).rev("HEAD");
+        fx.parent.git(&["checkout", "-q", "-b", "topic"]);
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~2"]);
+        fx.parent.git(&["commit", "-qam", "rewind a"]);
+        fx.parent.git(&["checkout", "-q", "main"]);
+        // main 쪽에서 다른 파일만 바꿔 merge-base와 main이 갈리게 한다
+        fx.parent.write("other.txt", "x\n");
+        fx.parent.git(&["add", "other.txt"]);
+        fx.parent.git(&["commit", "-qm", "other"]);
+
+        let change = get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            SubmoduleChangeSource::Compare {
+                base: "main".into(),
+                head: "topic".into(),
+            },
+            10,
+        )
+        .unwrap();
+        assert_eq!(change.old_sha.as_deref(), Some(recorded.as_str()));
+        assert_eq!(change.new_sha.as_deref(), Some(fx.lib(0).rev("HEAD~2").as_str()));
+        assert_eq!(change.behind.len(), 2);
+    }
+
+    #[test]
+    fn 초기화하지_않은_서브모듈은_modules_디렉토리로_읽는다() {
+        let fx = one();
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        fx.parent.git(&["commit", "-qam", "rewind a"]);
+        fx.parent.git(&["submodule", "deinit", "-q", "a"]);
+
+        let change =
+            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
+                .unwrap();
+        assert!(change.available, "체크아웃이 없어도 .git/modules/a에 커밋이 있다");
+        assert_eq!(change.behind.len(), 1);
+    }
+
+    #[test]
+    fn 빈_체크아웃_디렉토리에서_상위_레포를_서브모듈로_읽지_않는다() {
+        let fx = one();
+        fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        fx.parent.git(&["commit", "-qam", "rewind a"]);
+        fx.parent.git(&["submodule", "deinit", "-q", "a"]);
+        // modules 디렉토리까지 없애 서브모듈 저장소가 아예 없게 만든다. 대신 상위 레포가 서브모듈
+        // 커밋을 갖게 해서, 잘못 상위 레포를 열면 available=true가 나오게 한다
+        let modules = std::path::Path::new(&fx.parent.path()).join(".git/modules/a");
+        std::fs::remove_dir_all(modules).unwrap();
+        fx.parent
+            .git(&["fetch", "-q", &fx.lib(0).path(), "main:refs/lib/main"]);
+        assert!(std::path::Path::new(&fx.parent.path()).join("a").is_dir());
+
+        let change =
+            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
+                .unwrap();
+        assert!(!change.available);
+        assert!(change.behind.is_empty());
+    }
+
+    #[test]
+    fn 서브모듈에_없는_커밋이면_available이_false다() {
+        let fx = one();
+        let missing = "1234567890123456789012345678901234567890";
+        fx.parent.git(&[
+            "update-index",
+            "--cacheinfo",
+            &format!("160000,{missing},a"),
+        ]);
+        fx.parent.git(&["commit", "-qm", "point to missing"]);
+
+        let change =
+            get_submodule_change(fx.parent.path(), "a".into(), commit_source("HEAD".into()), 10)
+                .unwrap();
+        assert_eq!(change.new_sha.as_deref(), Some(missing));
+        assert!(!change.available);
+        assert!(change.ahead.is_empty() && change.behind.is_empty());
+    }
+
+    #[test]
+    fn 옵션처럼_생긴_인자는_거절한다() {
+        let fx = one();
+        assert!(get_submodule_change(
+            fx.parent.path(),
+            "-a".into(),
+            SubmoduleChangeSource::Staged,
+            10
+        )
+        .is_err());
+        assert!(get_submodule_change(
+            fx.parent.path(),
+            "a".into(),
+            commit_source("--all".into()),
+            10
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn source는_kind_태그로_역직렬화된다() {
+        let commit: SubmoduleChangeSource =
+            serde_json::from_str(r#"{"kind":"commit","sha":"abc"}"#).unwrap();
+        assert_eq!(commit, commit_source("abc".into()));
+        let staged: SubmoduleChangeSource = serde_json::from_str(r#"{"kind":"staged"}"#).unwrap();
+        assert_eq!(staged, SubmoduleChangeSource::Staged);
+        let compare: SubmoduleChangeSource =
+            serde_json::from_str(r#"{"kind":"compare","base":"main","head":"topic"}"#).unwrap();
+        assert_eq!(
+            compare,
+            SubmoduleChangeSource::Compare {
+                base: "main".into(),
+                head: "topic".into()
+            }
+        );
+    }
+
+    #[test]
+    fn info는_camel_case_키로_직렬화된다() {
+        let info = SubmoduleInfo {
+            name: "a".into(),
+            path: "a".into(),
+            url: None,
+            branch: None,
+            recorded_sha: None,
+            head_sha: None,
+            state: SubmoduleState::Uninitialized,
+            dirty: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&info).unwrap(),
+            r#"{"name":"a","path":"a","url":null,"branch":null,"recordedSha":null,"headSha":null,"state":"uninitialized","dirty":false}"#
+        );
+    }
+}
