@@ -1,6 +1,7 @@
 // Tauri command 래퍼. 시그니처는 CONTRACTS.md 동결 계약을 따른다.
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CommitTemplate,
   BlameResult,
   CommitDetails,
   CompareResult,
@@ -167,9 +168,9 @@ export function getLastCommitMessage(path: string): Promise<string> {
   return invoke<string>("get_last_commit_message", { path });
 }
 
-/** commit.template 설정이 있으면 그 내용, 없으면 null */
-export function getCommitTemplate(path: string): Promise<string | null> {
-  return invoke<string | null>("get_commit_template", { path });
+/** commit.template 설정이 있으면 그 내용과 주석 접두, 없으면 null */
+export function getCommitTemplate(path: string): Promise<CommitTemplate | null> {
+  return invoke<CommitTemplate | null>("get_commit_template", { path });
 }
 
 // ── 스테이징 ───────────────────────────────────────────────
