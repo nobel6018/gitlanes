@@ -703,6 +703,22 @@ mod tests {
         assert_eq!(paths, ["a"]);
     }
 
+    /// `.gitmodules`에만 있고 index에 없는 경로를 `submodule status`에 넘기면 pathspec 오류다
+    #[test]
+    fn index에_없는_gitmodules_항목은_uninitialized로_보인다() {
+        let fx = one();
+        fx.parent
+            .git(&["config", "-f", ".gitmodules", "submodule.ghost.path", "ghost"]);
+        fx.parent
+            .git(&["config", "-f", ".gitmodules", "submodule.ghost.url", "../ghost"]);
+
+        let infos = get_submodules(fx.parent.path()).unwrap();
+        let ghost = find(&infos, "ghost");
+        assert_eq!(ghost.state, SubmoduleState::Uninitialized);
+        assert_eq!(ghost.recorded_sha, None);
+        assert_eq!(find(&infos, "a").state, SubmoduleState::Ok);
+    }
+
     #[test]
     fn gitlink_충돌은_conflict이고_기록된_커밋이_없다() {
         let fx = one();
