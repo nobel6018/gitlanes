@@ -69,14 +69,19 @@ pub fn git_submodule_add(path: String, options: AddSubmoduleOptions) -> Result<O
     run_op(&path, &args, NETWORK_TIMEOUT)
 }
 
-/// `submodule deinit [-f] -- <subPath>` 뒤 `rm [-f] -- <subPath>`. `.gitmodules` 항목과 gitlink
+/// `submodule deinit -f -- <subPath>` 뒤 `rm -f -- <subPath>`. `.gitmodules` 항목과 gitlink
 /// 삭제가 스테이지된다. `.git/modules/<name>`은 지우지 않는다(서브모듈 안의 push 안 한 커밋 보존).
 ///
+/// force는 "서브모듈 안의 커밋 안 한 변경을 버린다"는 뜻이다. git의 `-f`는 구현 세부라 아래 검사를
+/// 통과하면 늘 준다. `-f` 없는 deinit은 HEAD만 옮겨진(moved) 서브모듈도 거절하는데, 그 커밋은
+/// `.git/modules`에 남아 손실이 아니다(CONTRACTS.md v0.20, 감독 결정).
+///
+/// - index에 gitlink가 아니면 git을 실행하지 않고 ok=false. `deinit -f`는 일반 파일에도 0으로
+///   끝나고 `rm -f`는 그 파일의 수정까지 지운다(실측)
 /// - force=false인데 서브모듈 안에 커밋 안 한 변경(추적 파일 수정 또는 untracked)이 있으면 git을
 ///   실행하지 않고 ok=false. 판정은 `get_submodules`의 dirty와 같다
-/// - force=true면 먼저 `rm -n -f`로 rm이 거절할 조건(스테이지 안 한 `.gitmodules` 수정 등)을 본다.
-///   deinit -f는 워킹 트리를 비우므로, rm이 뒤에서 거절하면 반쯤 지워진 상태가 남는다.
-///   force=false의 deinit은 git이 안에서 같은 `rm -n`을 돌린다
+/// - 먼저 `rm -n -f`로 rm이 거절할 조건(스테이지 안 한 `.gitmodules` 수정 등)을 본다. deinit -f는
+///   워킹 트리를 비우므로, rm이 뒤에서 거절하면 반쯤 지워진 상태가 남는다
 /// - 그래도 deinit 뒤 rm이 실패하면(권한 등) 실패한 단계와 남은 상태를 stderr 끝에 적는다
 #[tauri::command(async)]
 pub fn git_submodule_remove(
@@ -87,7 +92,14 @@ pub fn git_submodule_remove(
     let sub_path = validate_sub_path(&sub_path)?;
     let sub = sub_path.as_str();
 
-    if !force && crate::submodule::is_dirty(&path, sub)? {
+    let (gitlink, dirty) = crate::submodule::removal_check(&path, sub)?;
+    if !gitlink {
+        return Ok(refused(
+            &path,
+            &format!("{sub} is not a submodule in the index. Nothing was removed."),
+        ));
+    }
+    if !force && dirty {
         return Ok(refused(
             &path,
             &format!(
@@ -96,37 +108,32 @@ pub fn git_submodule_remove(
         ));
     }
 
-    let force_arg: &[&str] = if force { &["-f"] } else { &[] };
-    let deinit: Vec<&str> = [&["submodule", "deinit"][..], force_arg, &["--", sub]].concat();
-    let rm: Vec<&str> = [&["rm"][..], force_arg, &["--", sub]].concat();
-
-    if force {
-        let preflight: Vec<&str> = [&["rm", "-n"][..], force_arg, &["--", sub]].concat();
-        let checked = run_op(&path, &preflight, LOCAL_TIMEOUT)?;
-        if !checked.ok {
-            return Ok(checked);
-        }
+    let checked = run_op(&path, &["rm", "-n", "-f", "--", sub], LOCAL_TIMEOUT)?;
+    if !checked.ok {
+        return Ok(checked);
     }
 
+    let deinit = vec!["submodule", "deinit", "-f", "--", sub];
+    let rm = vec!["rm", "-f", "--", sub];
     let mut result = run_chain(&path, &[deinit, rm], LOCAL_TIMEOUT)?;
     if !result.ok {
-        let step = if result.command.first().map(String::as_str) == Some("rm") {
-            half_removed_note(sub)
-        } else {
-            format!(
-                "Removing {sub} stopped at step 1 of 2 (submodule deinit). The index and .gitmodules were not changed."
-            )
-        };
-        result.stderr = format!("{}\n\n{step}", result.stderr.trim_end());
+        append_stop_note(&mut result, sub);
     }
     Ok(result)
 }
 
-/// deinit은 됐는데 rm이 실패했을 때 남은 상태.
-fn half_removed_note(sub: &str) -> String {
-    format!(
-        "Removing {sub} stopped at step 2 of 2 (rm). Step 1 (submodule deinit) already ran: the submodule was unregistered from .git/config and its working tree was cleared. It is still in the index and .gitmodules, and its git directory in .git/modules is kept. Fix the problem above and remove it again, or run `git submodule update --init -- {sub}` to check it out again."
-    )
+/// 실패한 단계(result.command의 첫 인자로 가른다)와 남은 상태를 stderr 끝에 붙인다.
+fn append_stop_note(result: &mut OpResult, sub: &str) {
+    let note = if result.command.first().map(String::as_str) == Some("rm") {
+        format!(
+            "Removing {sub} stopped at step 2 of 2 (rm). Step 1 (submodule deinit) already ran: the submodule was unregistered from .git/config and its working tree was cleared. It is still in the index and .gitmodules, and its git directory in .git/modules is kept. Fix the problem above and remove it again, or run `git submodule update --init -- {sub}` to check it out again."
+        )
+    } else {
+        format!(
+            "Removing {sub} stopped at step 1 of 2 (submodule deinit). The index and .gitmodules were not changed."
+        )
+    };
+    result.stderr = format!("{}\n\n{note}", result.stderr.trim_end());
 }
 
 /// git을 돌리지 않고 실패 결과를 만든다. command는 비워 둔다(실행한 명령이 없다)
@@ -341,8 +348,8 @@ mod tests {
         assert!(result.ok, "{}", result.stderr);
         assert_eq!(
             result.command,
-            ["rm", "--", "a"],
-            "마지막 단계의 명령이 남는다"
+            ["rm", "-f", "--", "a"],
+            "마지막 단계의 명령이 남는다. force와 무관하게 -f다"
         );
         assert_eq!(staged(&fx.parent), "M\t.gitmodules\nD\ta");
         assert!(
@@ -361,36 +368,26 @@ mod tests {
         );
     }
 
-    /// moved는 dirty가 아니라 우리 가드는 통과시키지만, deinit이 안에서 돌리는 `rm -n`이 HEAD와
-    /// index의 차이를 "local modifications"로 보고 거절한다(git 2.50.1). 아무것도 바뀌지 않는다
+    /// moved(HEAD만 옮겨짐)는 dirty가 아니다. git -f 없는 deinit은 이걸 거절하지만 우리는 늘 -f를
+    /// 주므로 force 없이 지워진다. 옮긴 HEAD의 커밋은 `.git/modules`에 남는다
     #[test]
-    fn moved는_force_없이는_git이_1단계에서_거절하고_force면_지운다() {
+    fn moved는_force_없이도_지워지고_그_커밋이_modules에_남는다() {
         let fx = one();
         fx.parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
-        let moved_head = fx.lib(0).rev("HEAD~1");
+        fx.parent
+            .git_in("a", &["commit", "-q", "--allow-empty", "-m", "local only"]);
+        let local_only = crate::git::run(format!("{}/a", fx.parent.path()), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
 
         let result = git_submodule_remove(fx.parent.path(), "a/".into(), false).unwrap();
-        assert!(!result.ok);
-        assert_eq!(
-            result.command,
-            ["submodule", "deinit", "--", "a"],
-            "끝의 /는 뗀다"
-        );
-        assert!(
-            result.stderr.contains("local modifications"),
-            "{}",
-            result.stderr
-        );
-        assert!(result.stderr.contains("step 1 of 2"), "{}", result.stderr);
-        assert!(registered(&fx.parent, "a"));
-        assert_eq!(staged(&fx.parent), "");
-
-        let result = git_submodule_remove(fx.parent.path(), "a".into(), true).unwrap();
         assert!(result.ok, "{}", result.stderr);
+        assert_eq!(result.command, ["rm", "-f", "--", "a"], "끝의 /는 뗀다");
         assert_eq!(staged(&fx.parent), "M\t.gitmodules\nD\ta");
         let kept = crate::git::run(
             modules_dir(&fx.parent, "a").to_string_lossy().as_ref(),
-            &["cat-file", "-e", &format!("{moved_head}^{{commit}}")],
+            &["cat-file", "-e", &format!("{local_only}^{{commit}}")],
         );
         assert!(kept.is_ok(), "옮긴 HEAD의 커밋은 .git/modules에 남는다");
     }
@@ -446,21 +443,22 @@ mod tests {
 
     /// rm은 스테이지 안 한 `.gitmodules` 수정을 -f로도 거절한다. deinit -f 뒤에 알면 늦다
     #[test]
-    fn force여도_rm이_거절할_상태면_deinit_전에_멈춘다() {
+    fn rm이_거절할_상태면_deinit_전에_멈춘다() {
         let fx = one();
         let gitmodules =
             std::fs::read_to_string(format!("{}/.gitmodules", fx.parent.path())).unwrap();
         fx.parent
             .write(".gitmodules", &format!("{gitmodules}# memo\n"));
 
-        let result = git_submodule_remove(fx.parent.path(), "a".into(), true).unwrap();
-        assert!(!result.ok);
-        assert!(result.stderr.contains(".gitmodules"), "{}", result.stderr);
-        assert_eq!(result.command, ["rm", "-n", "-f", "--", "a"]);
-        assert!(registered(&fx.parent, "a"), "deinit이 돌지 않았다");
-        assert!(std::path::Path::new(&fx.parent.path())
-            .join("a/counter.txt")
-            .exists());
+        for force in [false, true] {
+            let result = git_submodule_remove(fx.parent.path(), "a".into(), force).unwrap();
+            assert!(!result.ok);
+            assert!(result.stderr.contains(".gitmodules"), "{}", result.stderr);
+            assert_eq!(result.command, ["rm", "-n", "-f", "--", "a"]);
+            assert!(registered(&fx.parent, "a"), "deinit이 돌지 않았다");
+            let checkout = std::path::Path::new(&fx.parent.path()).join("a/counter.txt");
+            assert!(checkout.exists(), "force={force}");
+        }
     }
 
     /// deinit은 됐는데 rm이 실패한 반쪽 상태. 상위 디렉토리에 쓰기 권한이 없으면 deinit은 경고만
@@ -506,16 +504,47 @@ mod tests {
         assert!(!registered(&parent, "mods/a"), "deinit은 이미 돌았다");
     }
 
+    /// `deinit -f`는 일반 파일에도 0으로 끝나고 `rm -f`는 그 파일의 수정까지 지운다
+    #[test]
+    fn 서브모듈이_아닌_경로는_git을_실행하지_않고_거절한다() {
+        let fx = one();
+        fx.parent.write("counter.txt", "edited\n");
+        for force in [false, true] {
+            for target in ["counter.txt", "zz"] {
+                let result = git_submodule_remove(fx.parent.path(), target.into(), force).unwrap();
+                assert!(!result.ok, "{target} force={force}");
+                assert!(result.command.is_empty(), "{:?}", result.command);
+                assert!(
+                    result.stderr.contains("not a submodule"),
+                    "{}",
+                    result.stderr
+                );
+            }
+        }
+        let on_disk = std::fs::read_to_string(format!("{}/counter.txt", fx.parent.path())).unwrap();
+        assert_eq!(on_disk, "edited\n");
+        assert_eq!(staged(&fx.parent), "");
+    }
+
+    /// deinit -f는 실측으로 실패를 만들 수 없었다(권한, config 잠금 모두 0으로 끝남). 문구만 고정한다
     #[test]
     fn deinit이_실패하면_1단계에서_멈췄다고_적는다() {
-        let fx = one();
-        // index에 없는 경로. deinit이 pathspec 오류로 끝난다
-        fx.parent.git(&["config", "submodule.zz.url", "../zz"]);
-        let result = git_submodule_remove(fx.parent.path(), "zz".into(), false).unwrap();
-        assert!(!result.ok);
-        assert_eq!(
-            result.command.first().map(String::as_str),
-            Some("submodule")
+        let mut result = refused(
+            &TempRepo::linear("gitlanes-subrm-note", 1).path(),
+            "fatal: boom",
+        );
+        result.command = vec![
+            "submodule".into(),
+            "deinit".into(),
+            "-f".into(),
+            "--".into(),
+            "a".into(),
+        ];
+        append_stop_note(&mut result, "a");
+        assert!(
+            result.stderr.starts_with("fatal: boom\n\n"),
+            "{}",
+            result.stderr
         );
         assert!(result.stderr.contains("step 1 of 2"), "{}", result.stderr);
         assert!(
@@ -537,6 +566,29 @@ mod tests {
             let checkout = std::path::Path::new(&fx.parent.path()).join("a/counter.txt");
             assert!(checkout.exists(), "force={force}");
         }
+    }
+
+    /// 이름 자체가 glob 문자를 담은 서브모듈. index 확인과 `rm -n`을 통과하므로 deinit의 리터럴
+    /// 처리만 남은 가드다. glob이면 `a[b]`가 `ab`까지 deinit한다
+    #[test]
+    fn 대괄호_이름의_서브모듈을_지워도_다른_서브모듈은_남는다() {
+        let parent = TempRepo::linear("gitlanes-subrm-bracket", 1);
+        let lib_ab = lib("gitlanes-subrm-bracket-ab");
+        let lib_br = lib("gitlanes-subrm-bracket-br");
+        // 테스트 git 호출은 리터럴 pathspec이 아니다. `a[b]`를 먼저 넣어야 `ab`에 걸리지 않는다
+        parent.add_submodule(&lib_br.path(), "a[b]");
+        parent.add_submodule(&lib_ab.path(), "ab");
+        parent.git(&["commit", "-qm", "two"]);
+
+        let result = git_submodule_remove(parent.path(), "a[b]".into(), false).unwrap();
+        assert!(result.ok, "{}", result.stderr);
+        // git 2.50.1은 이름에 `[`가 든 서브모듈의 `.gitmodules` 항목을 rm에서 지우지 못한다(터미널
+        // 실측, 리터럴 여부와 무관). 그래서 gitlink 삭제만 본다
+        assert!(staged(&parent).contains("D\ta[b]"), "{}", staged(&parent));
+        assert!(!staged(&parent).contains("\tab"), "{}", staged(&parent));
+        assert!(registered(&parent, "ab"), "ab는 deinit되지 않는다");
+        let checkout = std::path::Path::new(&parent.path()).join("ab/counter.txt");
+        assert!(checkout.exists());
     }
 
     #[test]

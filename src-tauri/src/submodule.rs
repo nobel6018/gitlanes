@@ -506,15 +506,23 @@ fn parse_index_gitlinks(out: &str) -> HashMap<String, IndexEntry> {
     entries
 }
 
-/// 서브모듈 안에 커밋 안 한 변경(추적 파일 수정 또는 untracked)이 있는가.
-/// [`get_submodules`]의 dirty와 같은 기준이다(같은 `status`, 같은 파서). 상위 레포 git 1회.
-pub(crate) fn is_dirty(path: &str, sub_path: &str) -> Result<bool, String> {
-    let out = git::run(path, &["status", "--porcelain=v2", "-z", "--", sub_path])
-        .map_err(|e| format!("Could not read the submodule status: {e}"))?;
-    Ok(parse_status_dirty(&out)
+/// 제거 전 확인. (index에 gitlink로 있는가, 서브모듈 안에 커밋 안 한 변경이 있는가).
+///
+/// dirty는 [`get_submodules`]와 같은 기준이다(같은 `status`, 같은 파서: 추적 파일 수정 또는
+/// untracked). 상위 레포 git 2회를 함께 띄운다.
+pub(crate) fn removal_check(path: &str, sub_path: &str) -> Result<(bool, bool), String> {
+    let ls_args = ["ls-files", "--stage", "-z", "--", sub_path];
+    let status_args = ["status", "--porcelain=v2", "-z", "--", sub_path];
+    let outputs = git::run_all(path, &[&ls_args[..], &status_args[..]]);
+    let [ls_out, status_out] =
+        <[_; 2]>::try_from(outputs).expect("run_all은 넘긴 수만큼 결과를 돌려준다");
+    let fail = |e| format!("Could not read the submodule status: {e}");
+    let gitlink = parse_index_gitlinks(&ls_out.map_err(fail)?).contains_key(sub_path);
+    let dirty = parse_status_dirty(&status_out.map_err(fail)?)
         .get(sub_path)
         .copied()
-        .unwrap_or(false))
+        .unwrap_or(false);
+    Ok((gitlink, dirty))
 }
 
 /// `status --porcelain=v2 -z`에서 서브모듈 항목의 dirty(추적 파일 수정 M 또는 untracked U).
