@@ -22,6 +22,8 @@ const LINE_ENDING_ARGS: [&str; 4] = ["-c", "core.autocrlf=false", "-c", "core.eo
 
 pub struct TempRepo {
     root: PathBuf,
+    /// 이 레포의 모든 git 호출에 얹는 환경변수. 호스트 설정을 흉내 내는 재현 테스트용이다
+    env: Vec<(String, String)>,
 }
 
 impl Drop for TempRepo {
@@ -35,7 +37,13 @@ impl TempRepo {
     ///
     /// 브랜치 이름, 서명, 사용자 정보를 명시해 호스트의 git 전역 설정에 흔들리지 않는다.
     pub fn init(prefix: &str) -> Self {
-        let repo = Self::empty_dir(prefix);
+        Self::init_with_env(prefix, Vec::new())
+    }
+
+    /// [`Self::init`]에 환경변수를 얹는다. 이 레포의 git 호출 전부에 걸린다.
+    pub fn init_with_env(prefix: &str, env: Vec<(String, String)>) -> Self {
+        let mut repo = Self::empty_dir(prefix);
+        repo.env = env;
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.name", "테스터"]);
         repo.git(&["config", "user.email", "tester@example.com"]);
@@ -58,10 +66,17 @@ impl TempRepo {
 
     /// `source`를 클론한다. 같은 리모트를 공유하는 두 번째 작업 사본이 필요할 때 쓴다.
     pub fn clone_of(prefix: &str, source: &str) -> Self {
-        let repo = Self::empty_dir(prefix);
+        Self::clone_with_env(prefix, source, Vec::new())
+    }
+
+    /// [`Self::clone_of`]에 환경변수를 얹는다. clone과 이후 이 레포의 git 호출 전부에 걸린다.
+    pub fn clone_with_env(prefix: &str, source: &str, env: Vec<(String, String)>) -> Self {
+        let mut repo = Self::empty_dir(prefix);
+        repo.env = env;
         // 설정은 clone 시점에 넣어야 한다. clone 뒤에 박으면 이미 전역 autocrlf=true로 CRLF가
         // 된 체크아웃 파일이 dirty로 보여 checkout이 거절된다(v0.18.1 Windows 릴리스 빌드)
         let output = Command::new("git")
+            .envs(repo.env.iter().map(|(key, value)| (key, value)))
             .args(["clone", "-q"])
             .args(LINE_ENDING_ARGS)
             .arg(source)
@@ -86,7 +101,10 @@ impl TempRepo {
         let root = std::env::temp_dir().join(format!("{prefix}-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("임시 디렉토리를 만들지 못했다");
-        Self { root }
+        Self {
+            root,
+            env: Vec::new(),
+        }
     }
 
     /// 부모 하나짜리 커밋 `count`개가 일렬로 쌓인 저장소를 만든다.
@@ -112,6 +130,7 @@ impl TempRepo {
     pub fn git_in(&self, dir: &str, args: &[&str]) {
         let output = Command::new("git")
             .current_dir(self.root.join(dir))
+            .envs(self.env.iter().map(|(key, value)| (key, value)))
             .args(LINE_ENDING_ARGS)
             .env("GIT_AUTHOR_NAME", "테스터")
             .env("GIT_AUTHOR_EMAIL", "tester@example.com")
@@ -197,5 +216,79 @@ pub fn one() -> Fixture {
     Fixture {
         parent,
         libs: vec![a],
+    }
+}
+
+/// Windows 러너 흉내: 전역 설정이 `core.autocrlf=true`인 호스트.
+///
+/// `GIT_CONFIG_GLOBAL`로 전역 파일을 바꿔 끼운다. 프로세스 환경을 건드리지 않고 이 레포의
+/// git 호출에만 걸어서, 병렬로 도는 다른 테스트에 새지 않는다. 반환한 경로는 호출자가 지운다.
+#[cfg(test)]
+fn crlf_host(prefix: &str) -> (PathBuf, Vec<(String, String)>) {
+    let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let file = std::env::temp_dir().join(format!("{prefix}-{}-{id}.gitconfig", std::process::id()));
+    std::fs::write(&file, "[core]\n\tautocrlf = true\n").unwrap();
+    let env = vec![(
+        "GIT_CONFIG_GLOBAL".to_string(),
+        file.to_string_lossy().into_owned(),
+    )];
+    (file, env)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(repo: &TempRepo, dir: &str) -> String {
+        let out = Command::new("git")
+            .current_dir(repo.root.join(dir))
+            .envs(repo.env.iter().map(|(key, value)| (key, value)))
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// v0.18.1 Windows 릴리스 실패의 재현. clone 뒤에 autocrlf=false를 박으면 CRLF로 체크아웃된
+    /// 파일이 dirty로 보여 `checkout --track`이 거절된다
+    #[test]
+    fn 전역_autocrlf가_켜진_호스트에서도_clone은_깨끗하다() {
+        let (global, env) = crlf_host("gitlanes-crlf-host");
+        let origin = TempRepo::linear("gitlanes-crlf-origin", 2);
+        origin.git(&["branch", "feature"]);
+
+        let clone = TempRepo::clone_with_env("gitlanes-crlf-clone", &origin.path(), env);
+        assert_eq!(
+            status(&clone, ""),
+            "",
+            "clone 직후 워킹 트리가 깨끗해야 한다"
+        );
+        let bytes = std::fs::read(clone.root.join("counter.txt")).unwrap();
+        assert_eq!(bytes, b"1\n", "체크아웃이 LF여야 한다");
+        clone.git(&["checkout", "-q", "--track", "origin/feature"]);
+        let _ = std::fs::remove_file(global);
+    }
+
+    /// 서브모듈은 `submodule add`가 내부에서 clone하고 체크아웃한다. 레포 로컬 설정은 거기에
+    /// 전달되지 않는다
+    #[test]
+    fn 전역_autocrlf가_켜진_호스트에서도_서브모듈_체크아웃은_깨끗하다() {
+        let (global, env) = crlf_host("gitlanes-crlf-subhost");
+        let lib = TempRepo::linear("gitlanes-crlf-sublib", 2);
+        let parent = TempRepo::init_with_env("gitlanes-crlf-subparent", env);
+        parent.write("r.txt", "r\n");
+        parent.git(&["add", "-A"]);
+        parent.git(&["commit", "-qm", "root"]);
+        parent.add_submodule(&lib.path(), "a");
+
+        let bytes = std::fs::read(parent.root.join("a/counter.txt")).unwrap();
+        assert_eq!(bytes, b"1\n", "서브모듈 체크아웃이 LF여야 한다");
+        assert_eq!(
+            status(&parent, "a"),
+            "",
+            "서브모듈 워킹 트리가 깨끗해야 한다"
+        );
+        parent.git_in("a", &["checkout", "-q", "HEAD~1"]);
+        let _ = std::fs::remove_file(global);
     }
 }
