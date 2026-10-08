@@ -154,10 +154,12 @@ pub fn run() {
         inspect::get_blame,
         inspect::compare_refs,
         inspect::get_compare_file_diff,
-        // 서브모듈 (v0.19)
+        // 서브모듈 (v0.19, 추가와 제거 v0.20)
         submodule::get_submodules,
         submodule::get_submodule_change,
         ops::submodule::git_submodule_update,
+        ops::submodule::git_submodule_add,
+        ops::submodule::git_submodule_remove,
     ]);
 
     // RunEvent를 받으려면 build + run으로 나눠야 한다. 앱이 닫힐 때 남은 셸을 죽인다.

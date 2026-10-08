@@ -52,7 +52,7 @@ const VIEW_EVENTS: [(&str, &str); 5] = [
 ///
 /// 여기서 git을 부르지 않는 이유는 File 메뉴와 같다. 어느 탭의 어느 저장소인지, 지금
 /// 커밋할 것이 있는지는 프론트가 안다. 메뉴는 의사만 전달한다.
-const REPOSITORY_EVENTS: [(&str, &str); 7] = [
+const REPOSITORY_EVENTS: [(&str, &str); 8] = [
     ("repo:fetch", "menu:fetch"),
     ("repo:pull", "menu:pull"),
     ("repo:push", "menu:push"),
@@ -60,6 +60,7 @@ const REPOSITORY_EVENTS: [(&str, &str); 7] = [
     ("repo:new-branch", "menu:new-branch"),
     ("repo:stash", "menu:stash"),
     ("repo:stash-pop", "menu:stash-pop"),
+    ("repo:add-submodule", "menu:add-submodule"),
 ];
 
 /// Help 메뉴 항목. payload는 없다.
@@ -290,8 +291,16 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             MenuItem::with_id(app, *id, *label, true, Some(*accelerator))
         })
         .collect::<tauri::Result<_>>()?;
+    // 자주 쓰지 않는 작업이라 단축키를 두지 않는다(v0.20)
+    let add_submodule = MenuItem::with_id(
+        app,
+        REPOSITORY_EVENTS[7].0,
+        "Add Submodule…",
+        true,
+        None::<&str>,
+    )?;
 
-    // Fetch/Pull/Push | Commit | New Branch | Stash/Pop 으로 끊어 읽는 순서를 만든다
+    // Fetch/Pull/Push | Commit | New Branch, Add Submodule | Stash/Pop 으로 끊어 읽는 순서를 만든다
     let after_network = PredefinedMenuItem::separator(app)?;
     let after_commit = PredefinedMenuItem::separator(app)?;
     let after_branch = PredefinedMenuItem::separator(app)?;
@@ -307,6 +316,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &repo_items[3],
             &after_commit,
             &repo_items[4],
+            &add_submodule,
             &after_branch,
             &repo_items[5],
             &repo_items[6],
@@ -769,6 +779,7 @@ mod tests {
                 "menu:new-branch",
                 "menu:stash",
                 "menu:stash-pop",
+                "menu:add-submodule",
             ]
         );
     }
