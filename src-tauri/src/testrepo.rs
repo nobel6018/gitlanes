@@ -99,8 +99,13 @@ impl TempRepo {
     }
 
     pub fn git(&self, args: &[&str]) {
+        self.git_in("", args);
+    }
+
+    /// 하위 디렉토리(서브모듈 체크아웃 등)에서 git을 실행한다. 빈 문자열이면 루트다.
+    pub fn git_in(&self, dir: &str, args: &[&str]) {
         let output = Command::new("git")
-            .current_dir(&self.root)
+            .current_dir(self.root.join(dir))
             .env("GIT_AUTHOR_NAME", "테스터")
             .env("GIT_AUTHOR_EMAIL", "tester@example.com")
             .env("GIT_COMMITTER_NAME", "커미터")
@@ -113,6 +118,22 @@ impl TempRepo {
             "git {args:?} 실패: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// 서브모듈을 추가한다(커밋은 하지 않는다).
+    ///
+    /// 최근 git은 로컬 경로 서브모듈의 clone을 `protocol.file.allow`로 막는다. 테스트의 git
+    /// 호출에만 허용을 건다. 제품 코드는 사용자 설정을 그대로 따른다(CONTRACTS.md v0.19).
+    pub fn add_submodule(&self, url: &str, path: &str) {
+        self.git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            url,
+            path,
+        ]);
     }
 
     pub fn write(&self, name: &str, content: &str) {

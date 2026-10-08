@@ -692,6 +692,7 @@ fn untracked_changes(repo: &str, out: &str) -> Vec<FileChange> {
             status: FileStatus::Added,
             old_path: None,
             path: path.to_string(),
+            submodule: false,
         })
         .collect()
 }
@@ -828,7 +829,7 @@ fn load_file_changes(path: &str, sha: &str, is_merge: bool) -> Result<Vec<FileCh
 }
 
 /// `git rev-list --parents -n 1`로 부모 목록만 얻는다.
-fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
+pub(crate) fn first_line_parents(path: &str, sha: &str) -> Result<Vec<String>, String> {
     let out = git::run(path, &["rev-list", "--parents", "--max-count=1", sha])
         .map_err(|e| format!("Commit not found: {e}"))?;
     let mut tokens = out.split_whitespace();

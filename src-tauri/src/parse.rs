@@ -38,6 +38,9 @@ const RECORD: char = '\u{1e}';
 /// git log 레코드 구분자. 스트리밍 파서가 이 바이트 단위로 끊어 읽는다.
 pub const RECORD_SEPARATOR: u8 = 0x1e;
 
+/// 서브모듈 포인터(gitlink)의 트리 모드. `--raw`, `ls-files --stage`, `ls-tree` 모두 이 값이다
+pub const GITLINK_MODE: &str = "160000";
+
 /// [`LOG_FORMAT`] 레코드 하나를 파싱한다. 빈 레코드는 `Ok(None)`이다.
 ///
 /// 레코드 앞에는 직전 레코드의 개행이 남아 있을 수 있어 먼저 털어낸다.
@@ -349,7 +352,7 @@ where
 /// 한 번의 스캔으로 두 섹션을 구분한다. 순서는 raw 섹션 순서를 따른다.
 pub fn parse_file_changes(out: &str) -> Vec<FileChange> {
     let chunks: Vec<&str> = out.split('\0').collect();
-    let mut entries: Vec<(String, Option<String>, FileStatus)> = Vec::new();
+    let mut entries: Vec<(String, Option<String>, FileStatus, bool)> = Vec::new();
     let mut counts: HashMap<String, (u64, u64)> = HashMap::new();
 
     let mut i = 0;
@@ -368,14 +371,19 @@ pub fn parse_file_changes(out: &str) -> Vec<FileChange> {
                 .and_then(|token| token.chars().next())
                 .unwrap_or('M');
             let status = FileStatus::from_letter(letter);
+            // 한쪽이라도 gitlink면 서브모듈 항목이다. 추가(000000 → 160000)와 삭제도 포함한다
+            let submodule = rest
+                .split_whitespace()
+                .take(2)
+                .any(|mode| mode == GITLINK_MODE);
             if matches!(status, FileStatus::Renamed | FileStatus::Copied) {
                 let old = chunks.get(i + 1).copied().unwrap_or_default();
                 let new = chunks.get(i + 2).copied().unwrap_or_default();
-                entries.push((new.to_string(), Some(old.to_string()), status));
+                entries.push((new.to_string(), Some(old.to_string()), status, submodule));
                 i += 3;
             } else {
                 let path = chunks.get(i + 1).copied().unwrap_or_default();
-                entries.push((path.to_string(), None, status));
+                entries.push((path.to_string(), None, status, submodule));
                 i += 2;
             }
             continue;
@@ -399,7 +407,7 @@ pub fn parse_file_changes(out: &str) -> Vec<FileChange> {
 
     entries
         .into_iter()
-        .map(|(path, old_path, status)| {
+        .map(|(path, old_path, status, submodule)| {
             let (additions, deletions) = counts.get(&path).copied().unwrap_or((0, 0));
             FileChange {
                 path,
@@ -407,6 +415,7 @@ pub fn parse_file_changes(out: &str) -> Vec<FileChange> {
                 status,
                 additions,
                 deletions,
+                submodule,
             }
         })
         .collect()

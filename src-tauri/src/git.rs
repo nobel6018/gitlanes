@@ -30,6 +30,8 @@ pub const STREAM_TIMEOUT: Duration = Duration::from_secs(120);
 /// `core.quotepath=false`로 비ASCII 경로가 이스케이프되지 않게 한다.
 /// `GIT_OPTIONAL_LOCKS=0`은 읽기 전용 뷰어가 인덱스 잠금을 건드리지 않게 한다.
 fn base_command<P: AsRef<OsStr>>(repo: P) -> Command {
+    #[cfg(test)]
+    spawn_count::record(repo.as_ref());
     let mut cmd = Command::new("git");
     cmd.arg("-c")
         .arg("core.quotepath=false")
@@ -47,6 +49,42 @@ fn base_command<P: AsRef<OsStr>>(repo: P) -> Command {
     // 이 모듈에 pathspec magic(`:(top)`, `*.rs`)을 일부러 쓰는 호출은 없다(v0.15.1 전수 확인).
     cmd.env("GIT_LITERAL_PATHSPECS", "1");
     cmd
+}
+
+/// 테스트 전용: 읽기 경로가 띄운 git 프로세스 수를 저장소 경로별로 센다.
+///
+/// 테스트는 병렬로 돌지만 저장소가 테스트마다 달라서 경로로 나누면 서로 섞이지 않는다.
+/// git이 내부에서 띄우는 자식(`submodule status`의 describe 등)은 세지 않는다.
+#[cfg(test)]
+pub mod spawn_count {
+    use std::collections::HashMap;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::Mutex;
+
+    static COUNTS: Mutex<Option<HashMap<OsString, usize>>> = Mutex::new(None);
+
+    pub fn record(repo: &OsStr) {
+        let mut counts = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+        *counts
+            .get_or_insert_with(HashMap::new)
+            .entry(repo.to_os_string())
+            .or_default() += 1;
+    }
+
+    /// `prefix`로 시작하는 저장소 경로(그 아래 서브모듈 포함)에서 띄운 수의 합
+    pub fn under(prefix: &str) -> usize {
+        let counts = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+        counts
+            .as_ref()
+            .map(|counts| {
+                counts
+                    .iter()
+                    .filter(|(repo, _)| repo.to_string_lossy().starts_with(prefix))
+                    .map(|(_, count)| count)
+                    .sum()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// git을 실행해 stdout을 문자열로 돌려준다. 실패하면 stderr를 담은 오류 메시지를 만든다.
