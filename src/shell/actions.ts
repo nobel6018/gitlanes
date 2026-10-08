@@ -206,13 +206,18 @@ export function submoduleUpdateConfirm(targets: SubmoduleTarget[]): ConfirmSpec 
   };
 }
 
-/** 서브모듈 제거 확인 문구 (v0.20). dirty면 서브모듈 안의 변경이 사라진다는 문장을 붙인다 */
+/**
+ * 서브모듈 제거 확인 문구 (v0.20). moved면 기록되지 않은 HEAD가 .git/modules에 남는다는 문장을,
+ * dirty면 서브모듈 안의 변경이 사라진다는 문장을 붙인다. force는 dirty만 뜻한다(moved는 force 없이 지워진다)
+ */
 export function submoduleRemoveConfirm(sub: SubmoduleInfo): ConfirmSpec {
   return {
     title: "Remove submodule?",
     body: `The submodule is deinitialized and its entry in .gitmodules and its gitlink are removed. The result is staged, so commit to record the removal. The submodule's git directory (.git/modules/${sub.name}) is kept.${
-      sub.dirty ? " Uncommitted changes inside the submodule are lost." : ""
-    }`,
+      sub.state === "moved" && sub.headSha !== null
+        ? ` The submodule's current HEAD (${sub.headSha.slice(0, 7)}) is not recorded in this repository. Its commits stay in .git/modules.`
+        : ""
+    }${sub.dirty ? " Uncommitted changes inside the submodule are lost." : ""}`,
     undo: `Before you commit, run git restore --staged --worktree -- .gitmodules ${quoteArg(sub.path)}, then initialize the submodule again. Commits inside it are kept in .git/modules${
       sub.dirty ? ", but uncommitted changes are not recoverable" : ""
     }.`,
