@@ -1165,3 +1165,42 @@ export interface SubmoduleChangePanelProps {
 
 동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지. rust19는 `/Users/levit/leedo/target-rust19`.
 **세션이 자주 끊긴다. 단계마다 커밋하고, 추가 지시는 끝나면 한 줄로 알린다.**
+
+---
+
+# v0.20.0 - 서브모듈 추가, 제거
+
+> 2026-10-08. v0.19에서 뺀 서브모듈 추가와 제거. 결과는 스테이지에 남고 커밋은 사용자가 한다. 테스트 픽스처 규칙(v0.16.1 절)과 v0.19 서브모듈 픽스처 규칙(테스트 git 호출에만 `-c protocol.file.allow=always`, `-c core.autocrlf=false -c core.eol=lf`) 적용.
+
+## 화면
+
+- **SUBMODULES 구간은 레포가 열려 있으면 늘 보인다**(서브모듈이 없으면 기존 `empty` 문구로). 머리 버튼은 "+"(Add Submodule). "Update All"(↻)은 서브모듈이 있을 때만 두 번째 머리 버튼으로 남긴다
+- **Repository 메뉴 "Add Submodule…"**: 같은 대화상자를 연다(`menu:add-submodule`)
+- **AddSubmoduleDialog**: URL, Path(URL 마지막 조각에서 `.git`을 뗀 값으로 미리 채우고, 사용자가 고치면 더는 따라가지 않음), Branch(선택). 확인은 URL과 Path가 비지 않을 때만. 실행은 fetch와 같은 busy, 실패 토스트, needsAuth 터미널 핸드오프. 성공하면 "Added <path>. Commit to record it." 토스트
+- **서브모듈 메뉴 "Remove Submodule…"**: ConfirmDialog(danger). 문구에 "결과는 스테이지되고 커밋해야 기록된다", "서브모듈 git 디렉토리(.git/modules)는 남는다", dirty면 "서브모듈 안의 커밋 안 한 변경은 사라진다". dirty면 force=true, 아니면 false로 부른다. Rust가 force=false에 dirty를 만나 ok=false를 주면(그 사이 생긴 변경) 그 이유를 토스트로
+- 두 작업 모두 되돌리기 스택에 넣지 않는다(워킹트리를 바꾸는 작업)
+
+## Rust (rust20)
+
+1. `git_submodule_add`, `git_submodule_remove`: 계약 주석대로. url은 `-`로 시작하면 Err, path는 `validate_pathspec`. remove의 dirty 판정은 v0.19 `get_submodules`와 같은 기준(추적 수정 또는 untracked)
+2. remove는 두 단계(deinit, rm)라 deinit 성공 뒤 rm이 실패하면 상태가 반쯤 바뀐다. 실패한 단계와 남은 상태를 OpResult stderr에 사람이 읽게 적는다. `GIT_LITERAL_PATHSPECS`는 v0.19 update와 같은 규칙
+3. `menu.rs`에 `repo:add-submodule` → `menu:add-submodule` 추가(Repository 메뉴, New Branch 근처)
+4. 테스트: add 후 `.gitmodules`와 gitlink가 스테이지됨, 같은 경로 재추가 거절, `-`로 시작하는 url 거절, remove 후 스테이지 상태와 `.git/modules` 보존, dirty에서 force=false 거절과 git 미실행, force=true 성공. 로컬 경로 url은 테스트 git 호출에만 protocol 허용을 주는 방식으로(제품 코드에 넣지 않음). 핵심 가드 뮤테이션 표
+
+## UI (ui20)
+
+1. api.ts 래퍼 2개, `RepoActions.addSubmodule`, `RepoActions.removeSubmodule`(확인 문구 포함)
+2. `AddSubmoduleDialog`(ActionDialogs.tsx, 기존 대화상자 모양과 키보드 관례, Path 자동 채움 규칙은 순수 함수로 빼서 테스트)
+3. 사이드바 구간 늘 표시, 머리 버튼 둘, 서브모듈 메뉴에 Remove Submodule…
+4. `menu:add-submodule` 리스너(활성 탭만, 기존 Repository 메뉴 이벤트와 같은 방식)
+5. devApp mock: add는 store에 서브모듈을 추가하고 WIP staged에 `.gitmodules`와 gitlink, remove는 반대. `?fail=submodule_add&auth=1` 경로
+
+## 소유권
+
+| 패키지 | 소유 파일 | 항목 |
+|---|---|---|
+| rust20 | `src-tauri/**` | Rust 1~4 |
+| ui20 | `src/App.tsx`, `src/shell/{RepoWorkspace,BranchSidebar,SidebarContextMenu,ActionDialogs,devApp}.tsx`, `src/shell/{api,actions}.ts`, 신규 `src/shell/submoduleAdd.ts`, 신규 `tests/submodule-add.test.mts` | UI 1~5 |
+
+동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지. rust20은 `/Users/levit/leedo/target-rust20`.
+**세션이 자주 끊긴다. 단계마다 커밋하고, 추가 지시는 끝나면 한 줄로 알린다.**
