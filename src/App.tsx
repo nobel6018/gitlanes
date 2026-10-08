@@ -666,6 +666,7 @@ export default function App() {
     track(listen("menu:push", () => menuHandlers.current.repoCommand("push")));
     track(listen("menu:commit", () => menuHandlers.current.repoCommand("commit")));
     track(listen("menu:new-branch", () => menuHandlers.current.repoCommand("newBranch")));
+    track(listen("menu:add-submodule", () => menuHandlers.current.repoCommand("addSubmodule")));
     track(listen("menu:stash", () => menuHandlers.current.repoCommand("stash")));
     track(listen("menu:stash-pop", () => menuHandlers.current.repoCommand("stashPop")));
 

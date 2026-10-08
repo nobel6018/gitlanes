@@ -68,7 +68,7 @@ export interface BranchSidebarProps {
   /** 브랜치 우클릭 "Compare with current branch" (v0.18). 인자는 그 브랜치 이름(head) */
   onCompareWithCurrent?: (name: string) => void;
 
-  // ── v0.19 서브모듈. 목록이 비었거나 없으면 구간을 숨긴다 ──
+  // ── v0.19 서브모듈. undefined면 구간을 숨긴다(v0.20부터 빈 목록이어도 보인다) ──
   /** get_submodules 결과(경로순) */
   submodules?: SubmoduleInfo[];
   /** 사이드바에서 고른 서브모듈 경로. 강조만 한다 */
@@ -78,8 +78,10 @@ export interface BranchSidebarProps {
   onOpenSubmodule?: (sub: SubmoduleInfo) => void;
   /** 메뉴 Initialize / Update to Recorded Commit. 확인창은 셸이 띄운다 */
   onUpdateSubmodule?: (sub: SubmoduleInfo) => void;
-  /** 구간 머리 "Update All" */
+  /** 구간 머리 "Update All". 서브모듈이 있을 때만 버튼이 뜬다 */
   onUpdateAllSubmodules?: () => void;
+  /** 메뉴 "Remove Submodule…" (v0.20). 확인창은 셸이 띄운다 */
+  onRemoveSubmodule?: (sub: SubmoduleInfo) => void;
 }
 
 interface RemoteGroup {
@@ -328,6 +330,7 @@ export function BranchSidebar({
   onOpenSubmodule,
   onUpdateSubmodule,
   onUpdateAllSubmodules,
+  onRemoveSubmodule,
 }: BranchSidebarProps) {
   // refs에 안 잡히는 remote(방금 추가해 아직 fetch 안 한 것)도 헤더는 보여야 Fetch를 누를 수 있다
   const all = useMemo<Grouped>(() => {
@@ -763,16 +766,24 @@ export function BranchSidebar({
           ))}
         </Section>
 
-        {submodules !== undefined && submodules.length > 0 && (
+        {submodules !== undefined && (
           <Section
             title="Submodules"
             count={submoduleView.length}
             collapsed={isCollapsed("submodules")}
-            emptyLabel="No matches"
-            actionLabel={onUpdateAllSubmodules === undefined ? undefined : "Update All"}
-            actionGlyph={"\u21bb"}
-            actionDisabled={actions === undefined || actions.busy}
-            onAction={() => onUpdateAllSubmodules?.()}
+            emptyLabel={filtering ? "No matches" : "No submodules"}
+            actionLabel={dialogAvailable ? "Add submodule" : undefined}
+            onAction={() => onRequestDialog?.("addSubmodule", null)}
+            secondaryAction={
+              onUpdateAllSubmodules === undefined || submodules.length === 0
+                ? undefined
+                : {
+                    label: "Update All",
+                    glyph: "\u21bb",
+                    disabled: actions === undefined || actions.busy,
+                    onAction: onUpdateAllSubmodules,
+                  }
+            }
             onToggle={() => toggle("submodules", rawCollapsed("submodules"))}
           >
             <SubmoduleList
@@ -826,6 +837,7 @@ export function BranchSidebar({
           onOpenWorktree={onOpenWorktree}
           onOpenSubmodule={onOpenSubmodule}
           onUpdateSubmodule={onUpdateSubmodule}
+          onRemoveSubmodule={onRemoveSubmodule}
           onClose={() => setMenu(null)}
         />
       )}
@@ -876,11 +888,16 @@ interface SectionProps {
   emptyLabel: string;
   /** 헤더 오른쪽 "+" 버튼의 툴팁. undefined면 버튼을 숨긴다 */
   actionLabel?: string;
-  /** 헤더 버튼 글자. 기본은 "+" (v0.19 서브모듈 Update All은 새로고침 화살표) */
+  /** 헤더 버튼 글자. 기본은 "+" */
   actionGlyph?: string;
   /** 헤더 버튼 비활성(쓰기 중 등) */
   actionDisabled?: boolean;
   onAction: () => void;
+  /**
+   * 주 버튼 왼쪽에 붙는 두 번째 머리 버튼 (v0.20 서브모듈 Update All).
+   * 주 버튼("+")이 다른 구간과 같은 오른쪽 끝에 남도록 왼쪽에 둔다
+   */
+  secondaryAction?: { label: string; glyph: string; disabled: boolean; onAction: () => void };
   onToggle: () => void;
   children: ReactNode;
 }
@@ -895,6 +912,7 @@ function Section({
   actionGlyph = "+",
   actionDisabled = false,
   onAction,
+  secondaryAction,
   onToggle,
   children,
 }: SectionProps) {
@@ -913,6 +931,20 @@ function Section({
           <span className="sb-title">{title}</span>
           <span className="sb-count">{count}</span>
         </button>
+        {secondaryAction !== undefined && (
+          <button
+            className="sb-head-action"
+            title={secondaryAction.label}
+            aria-label={secondaryAction.label}
+            disabled={secondaryAction.disabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              secondaryAction.onAction();
+            }}
+          >
+            {secondaryAction.glyph}
+          </button>
+        )}
         {actionLabel !== undefined && (
           <button
             className="sb-head-action"

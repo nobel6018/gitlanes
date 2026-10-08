@@ -7,6 +7,7 @@
 //   실패는 reject로 올려 호출 측이 입력 상태(커밋 메시지 등)를 지울지 스스로 정한다.
 import { useCallback, useMemo, useRef, useState } from "react";
 import type {
+  AddSubmoduleOptions,
   CommitOptions,
   DiscardArea,
   OpResult,
@@ -135,6 +136,16 @@ export interface RepoActions {
    */
   updateSubmodules(paths: string[], targets: SubmoduleTarget[], init: boolean): Promise<void>;
   /**
+   * `submodule add` (v0.20). clone이라 fetch처럼 busy, 실패 토스트, 인증 핸드오프가 붙는다.
+   * 결과는 스테이지에만 남아 되돌리기 스택에 넣지 않는다
+   */
+  addSubmodule(options: AddSubmoduleOptions): Promise<void>;
+  /**
+   * `submodule deinit` 뒤 `rm` (v0.20). 늘 확인창(danger)을 띄운다. sub.dirty면 force=true로 불러
+   * 서브모듈 안의 변경을 버린다. 확인 뒤에 생긴 변경은 Rust가 ok=false로 거절하고 그 이유가 토스트로 간다
+   */
+  removeSubmodule(sub: SubmoduleInfo): Promise<void>;
+  /**
    * 자동 fetch (v0.17 1번). 쓰기와 같은 직렬 큐로 돌지만 토스트도 busy도 없다.
    * 큐에 다른 쓰기가 있으면 이번 주기는 건너뛴다("skipped")
    */
@@ -192,6 +203,27 @@ export function submoduleUpdateConfirm(targets: SubmoduleTarget[]): ConfirmSpec 
     scope: nameList(moving.map((t) => t.path)),
     confirmLabel: "Update",
     danger: false,
+  };
+}
+
+/**
+ * 서브모듈 제거 확인 문구 (v0.20). moved면 기록되지 않은 HEAD가 .git/modules에 남는다는 문장을,
+ * dirty면 서브모듈 안의 변경이 사라진다는 문장을 붙인다. force는 dirty만 뜻한다(moved는 force 없이 지워진다)
+ */
+export function submoduleRemoveConfirm(sub: SubmoduleInfo): ConfirmSpec {
+  return {
+    title: "Remove submodule?",
+    body: `The submodule is deinitialized and its entry in .gitmodules and its gitlink are removed. The result is staged, so commit to record the removal. The submodule's git directory (.git/modules/${sub.name}) is kept.${
+      sub.state === "moved" && sub.headSha !== null
+        ? ` The submodule's current HEAD (${sub.headSha.slice(0, 7)}) is not recorded in this repository. Its commits stay in .git/modules.`
+        : ""
+    }${sub.dirty ? " Uncommitted changes inside the submodule are lost." : ""}`,
+    undo: `Before you commit, run git restore --staged --worktree -- .gitmodules ${quoteArg(sub.path)}, then initialize the submodule again. Commits inside it are kept in .git/modules${
+      sub.dirty ? ", but uncommitted changes are not recoverable" : ""
+    }.`,
+    scope: sub.path,
+    confirmLabel: "Remove",
+    danger: true,
   };
 }
 
@@ -1027,6 +1059,23 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           failure: init ? "Initializing the submodule failed" : "Updating submodules failed",
           confirm: submoduleUpdateConfirm(targets),
           call: () => api.gitSubmoduleUpdate(path, paths, init),
+        }),
+
+      addSubmodule: (options) =>
+        exec({
+          success: `Added ${options.path}. Commit to record it.`,
+          failure: `Adding the submodule ${options.path} failed`,
+          call: () => api.gitSubmoduleAdd(path, options),
+        }),
+
+      removeSubmodule: (sub) =>
+        exec({
+          success: `Removed ${sub.path}. Commit to record it.`,
+          failure: `Removing the submodule ${sub.path} failed`,
+          confirm: submoduleRemoveConfirm(sub),
+          // 로컬 작업이다. 거절 이유(그 사이 생긴 변경 등)는 stderr로 토스트에 실린다
+          noAuthHandoff: true,
+          call: () => api.gitSubmoduleRemove(path, sub.path, sub.dirty),
         }),
 
       // ── 되돌리기 ─────────────────────────────────────────

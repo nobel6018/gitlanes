@@ -1,6 +1,7 @@
 // Tauri command 래퍼. 시그니처는 CONTRACTS.md 동결 계약을 따른다.
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AddSubmoduleOptions,
   CommitTemplate,
   BlameResult,
   CommitDetails,
@@ -603,6 +604,22 @@ export function getSubmoduleChange(
 /** `submodule update [--init] --recursive -- <paths>`. paths가 비면 전부. 네트워크 명령이라 needsAuth가 올 수 있다 */
 export function gitSubmoduleUpdate(path: string, paths: string[], init: boolean): Promise<OpResult> {
   return invoke<OpResult>("git_submodule_update", { path, paths, init });
+}
+
+/**
+ * `submodule add [-b <branch>] -- <url> <path>` (v0.20). clone이라 네트워크 타임아웃과 needsAuth가 있다.
+ * .gitmodules와 gitlink가 스테이지에 남고 커밋은 사용자가 한다
+ */
+export function gitSubmoduleAdd(path: string, options: AddSubmoduleOptions): Promise<OpResult> {
+  return invoke<OpResult>("git_submodule_add", { path, options });
+}
+
+/**
+ * `submodule deinit [-f]` 뒤 `rm [-f]` (v0.20). .git/modules는 남긴다.
+ * force=false인데 서브모듈 안에 커밋 안 한 변경이 있으면 Rust가 git을 부르지 않고 ok=false로 돌려준다
+ */
+export function gitSubmoduleRemove(path: string, subPath: string, force: boolean): Promise<OpResult> {
+  return invoke<OpResult>("git_submodule_remove", { path, subPath, force });
 }
 
 // ── 내장 터미널 (인증 핸드오프) ─────────────────────────────

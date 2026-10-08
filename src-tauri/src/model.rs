@@ -651,6 +651,18 @@ pub struct SubmoduleChange {
     pub behind_truncated: bool,
 }
 
+/// `git_submodule_add` 인자 (v0.20).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddSubmoduleOptions {
+    /// 원격 URL 또는 상대 경로("../lib"). "-"로 시작하면 거절
+    pub url: String,
+    /// 상위 레포 기준 상대 경로
+    pub path: String,
+    /// `-b <branch>`. None이면 원격 기본 브랜치
+    pub branch: Option<String>,
+}
+
 /// `get_commit_template` 결과.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -61,6 +61,7 @@ import { copyText } from "./clipboard";
 import { BranchSidebar } from "./BranchSidebar";
 import { CommitDetailPanel } from "./CommitDetailPanel";
 import {
+  AddSubmoduleDialog,
   AddWorktreeDialog,
   CreateBranchDialog,
   CreateTagDialog,
@@ -373,6 +374,7 @@ type DialogState =
   | { kind: "setUpstream"; branch: string }
   | { kind: "remote"; remote: { name: string; url: string } | null }
   | { kind: "addWorktree" }
+  | { kind: "addSubmodule" }
   | { kind: "stash" }
   | { kind: "stashBranch"; ref: string; sha: string | null };
 
@@ -394,6 +396,8 @@ export interface RepoCommandNonces {
   newBranch: number;
   stash: number;
   stashPop: number;
+  /** Repository 메뉴 "Add Submodule…" (v0.20) */
+  addSubmodule: number;
 }
 
 export const NO_REPO_COMMANDS: RepoCommandNonces = {
@@ -404,6 +408,7 @@ export const NO_REPO_COMMANDS: RepoCommandNonces = {
   newBranch: 0,
   stash: 0,
   stashPop: 0,
+  addSubmodule: 0,
 };
 
 /** 가장 최근 스태시. Pop/Apply 단축키의 기본 대상 */
@@ -1769,6 +1774,9 @@ export function RepoWorkspace({
         case "addWorktree":
           setDialog({ kind: "addWorktree" });
           return;
+        case "addSubmodule":
+          setDialog({ kind: "addSubmodule" });
+          return;
         case "removeWorktree":
           if (target !== null) {
             fire(actions.removeWorktree(target, false));
@@ -1951,6 +1959,9 @@ export function RepoWorkspace({
     }
     if (repoCommands.stashPop > prev.stashPop) {
       doStashPop();
+    }
+    if (repoCommands.addSubmodule > prev.addSubmodule) {
+      setDialog({ kind: "addSubmodule" });
     }
   }, [
     repoCommands,
@@ -2373,7 +2384,7 @@ export function RepoWorkspace({
    * 사이드바 SUBMODULES 구간과 포인터 변경 패널이 같이 쓰는 목록. 레포를 열 때, refreshAll 때
    * (wipNonce가 오른다), 폴링이 WIP 변화를 잡았을 때(역시 wipNonce), 그래프 리로드 때 다시 읽는다.
    * 폴링 주기마다 부르지는 않는다. 서브모듈 HEAD가 움직이면 상위 status가 달라져 WIP 지문이 바뀐다.
-   * 실패는 조용히 빈 목록으로 둔다(구간이 숨는다)
+   * 실패는 조용히 빈 목록으로 둔다(구간은 빈 문구로 남는다. v0.20부터 늘 보인다)
    */
   const submoduleLoad = useSoftLoad(
     repo === null ? null : repo.path,
@@ -2431,6 +2442,14 @@ export function RepoWorkspace({
         info: info === null || info.state !== "ok" ? info : { ...info, state: "moved" },
       };
       fire(actions.updateSubmodules([path], [target], info?.state === "uninitialized"));
+    },
+    [actions, fire],
+  );
+
+  /** 사이드바 메뉴 "Remove Submodule…" (v0.20). 확인창과 force 판정은 actions.removeSubmodule 몫 */
+  const removeSubmodule = useCallback(
+    (sub: SubmoduleInfo) => {
+      fire(actions.removeSubmodule(sub));
     },
     [actions, fire],
   );
@@ -3610,6 +3629,7 @@ export function RepoWorkspace({
               onOpenSubmodule={openSubmodule}
               onUpdateSubmodule={updateSubmodule}
               onUpdateAllSubmodules={updateAllSubmodules}
+              onRemoveSubmodule={removeSubmodule}
             />
             <SplitHandle
               label="사이드바 폭 조절"
@@ -3974,6 +3994,16 @@ export function RepoWorkspace({
         onSubmit={(dir, branch, createBranch) => {
           closeDialog();
           fire(actions.addWorktree(dir, branch, createBranch));
+        }}
+      />
+
+      <AddSubmoduleDialog
+        open={dialog?.kind === "addSubmodule"}
+        onClose={closeDialog}
+        existingPaths={submodules.map((sub) => sub.path)}
+        onSubmit={(options) => {
+          closeDialog();
+          fire(actions.addSubmodule(options));
         }}
       />
 

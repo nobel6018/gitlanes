@@ -660,3 +660,28 @@ export interface SubmoduleChange {
 //   `submodule update [--init] --recursive -- <paths>`. paths가 비면 전부. 네트워크 명령(clone, fetch가
 //   일어날 수 있음)이라 네트워크 타임아웃과 needsAuth 판정을 쓴다. 서브모듈 HEAD를 기록된 커밋으로
 //   옮기므로 moved 상태 대상이 있으면 UI가 ConfirmDialog를 띄운다(옮기기 전 HEAD는 서브모듈 reflog에 남는다)
+
+// ════════════════════════════════════════════════════════════
+// v0.20 서브모듈 추가, 제거 (결과는 스테이지에 남고 커밋은 사용자가 한다. 되돌리기 스택 대상 아님)
+// ════════════════════════════════════════════════════════════
+
+export interface AddSubmoduleOptions {
+  /** 원격 URL 또는 상대 경로("../lib"). "-"로 시작하면 거절 */
+  url: string;
+  /** 상위 레포 기준 상대 경로. 레포 밖, 이미 있는 경로는 git이 거절 */
+  path: string;
+  /** `-b <branch>`. null이면 원격 기본 브랜치 */
+  branch: string | null;
+}
+
+// git_submodule_add(path, options: AddSubmoduleOptions) -> OpResult
+//   `submodule add [-b <branch>] -- <url> <path>`. 네트워크 명령(clone)이라 네트워크 타임아웃과 needsAuth.
+//   `protocol.file.allow` 같은 사용자 설정은 덮지 않는다(로컬 경로 URL이 막히면 git stderr 그대로)
+//
+// git_submodule_remove(path, subPath: string, force: boolean) -> OpResult
+//   `rm -n -f`로 미리 본 뒤 `submodule deinit -f -- <subPath>`, `rm -f -- <subPath>`. subPath가 index의 서브모듈이
+//   아니면 git을 실행하지 않고 거절한다. 커밋 안 한 변경 검사는 ignore 설정과 무관하게 실제 상태를 본다. .gitmodules 항목과 gitlink 삭제가 스테이지된다.
+//   `.git/modules/<name>`은 지우지 않는다(서브모듈 안의 push 안 한 커밋 보존). force=false인데 서브모듈 안에
+//   커밋 안 한 변경이 있으면 git을 실행하지 않고 ok=false와 이유를 돌려준다. force=true면 그 변경을 버린다.
+//   force는 이 뜻만 가진다. 검사를 통과하면 git에는 늘 `-f`를 준다(HEAD만 옮겨진 moved 서브모듈은 git이
+//   -f 없이 거절하지만 커밋이 .git/modules에 남아 손실이 아니다)
