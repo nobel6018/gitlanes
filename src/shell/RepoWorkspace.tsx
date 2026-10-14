@@ -120,6 +120,7 @@ import { WelcomeScreen } from "./WelcomeScreen";
 import { useRecentRepos } from "./useRecentRepos";
 import { APP_VERSION } from "./version";
 import { basename, formatCount, shortSha } from "./format";
+import { findPrRef } from "./prLink";
 
 const SIDEBAR_KEY = "gitlanes.sidebar";
 
@@ -2882,6 +2883,18 @@ export function RepoWorkspace({
           });
         },
       });
+      // 그래프 행에는 subject만 있어서 본문에 남는 GitLab 관례는 여기서 잡히지 않는다 (상세 패널에서는 잡힌다)
+      const pr = findPrRef({ subject: menuMessage, body: "", remoteUrl });
+      if (pr !== null) {
+        items.push({
+          label: `Open Pull Request #${pr.number}`,
+          onSelect: () => {
+            void openUrl(pr.url).catch((err: unknown) => {
+              showError(errorMessage(err));
+            });
+          },
+        });
+      }
     }
     return items;
   }, [
@@ -3790,6 +3803,7 @@ export function RepoWorkspace({
             onError={showError}
             onOpenFile={openCommitFile}
             openFilePath={openFile === null || openFile.area !== null ? null : openFile.file.path}
+            remoteUrl={remoteUrl}
           />
         )}
       </div>

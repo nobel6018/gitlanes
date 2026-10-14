@@ -53,6 +53,9 @@ jobs:
       - name: Submodule add test
         run: npm run test:submodule-add
 
+      - name: PR link test
+        run: npm run test:pr-link
+
       - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml

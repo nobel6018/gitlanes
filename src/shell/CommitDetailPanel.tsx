@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CommitDetails, FileChange, Signature } from "../types";
 import { errorMessage, getCommitDetails, getFileDiff } from "./api";
 import { FileRow } from "./FileRow";
@@ -13,6 +14,8 @@ import type { FileView } from "./FileTree";
 import { copyText } from "./clipboard";
 import { DiffView } from "./DiffView";
 import { formatTimestamp, shortSha, splitPath } from "./format";
+import { findPrRef, splitSubject } from "./prLink";
+import type { PrRef } from "./prLink";
 import { withKbd } from "./shortcuts";
 import "./panels.css";
 
@@ -32,6 +35,8 @@ export interface CommitDetailPanelProps {
   onOpenFile?: (file: FileChange) => void;
   /** 메인 영역 뷰어에 열려 있는 파일 경로. 그 행을 accent로 강조한다 */
   openFilePath?: string | null;
+  /** origin의 웹 URL. 있으면 머지 커밋 메시지의 PR 번호를 링크로 만든다 */
+  remoteUrl?: string | null;
 }
 
 interface DiffState {
@@ -54,6 +59,7 @@ export function CommitDetailPanel({
   closeDiffNonce,
   onOpenFile,
   openFilePath,
+  remoteUrl,
 }: CommitDetailPanelProps) {
   const [details, setDetails] = useState<CommitDetails | null>(null);
   const [loading, setLoading] = useState(false);
@@ -103,6 +109,20 @@ export function CommitDetailPanel({
     [fileView, files, collapsed],
   );
   const navCount = fileView === "tree" ? treeRows.length : files.length;
+
+  const pr = useMemo(() => {
+    if (details === null || remoteUrl === undefined || remoteUrl === null) {
+      return null;
+    }
+    return findPrRef({ subject: details.subject, body: details.body, remoteUrl });
+  }, [details, remoteUrl]);
+
+  const openPr = useCallback(() => {
+    if (pr === null) {
+      return;
+    }
+    void openUrl(pr.url).catch((err: unknown) => onError(errorMessage(err)));
+  }, [pr, onError]);
 
   const openDiff = useCallback(
     async (file: FileChange) => {
@@ -425,7 +445,7 @@ export function CommitDetailPanel({
         <section className="panel-section">
           <h2 className="commit-subject selectable">
             {isStash && <span className="stash-badge">STASH</span>}
-            {details.subject}
+            <SubjectText subject={details.subject} pr={pr} onOpen={openPr} />
           </h2>
           {details.body.trim() !== "" && (
             <pre className="commit-body selectable">{details.body.trimEnd()}</pre>
@@ -443,6 +463,16 @@ export function CommitDetailPanel({
           <SignatureRow label="Author" sig={details.author} />
           {isDistinct(details.author, details.committer) && (
             <SignatureRow label="Committer" sig={details.committer} />
+          )}
+          {pr !== null && (
+            <div className="meta-row">
+              <span className="meta-label">PR</span>
+              <span className="meta-value">
+                <button className="parent-link" onClick={openPr} title={pr.url}>
+                  #{pr.number} ↗
+                </button>
+              </span>
+            </div>
           )}
           <div className="meta-row">
             <span className="meta-label">Parents</span>
@@ -584,6 +614,22 @@ function FileSummary({ files }: { files: FileChange[] }) {
 }
 
 /** sha 복사 버튼. 성공하면 1.5초간 체크 표시 */
+function SubjectText({ subject, pr, onOpen }: { subject: string; pr: PrRef | null; onOpen: () => void }) {
+  if (pr === null || pr.token === null) {
+    return <>{subject}</>;
+  }
+  const [before, token, after] = splitSubject({ subject, token: pr.token });
+  return (
+    <>
+      {before}
+      <button className="parent-link subject-pr-link" onClick={onOpen} title={pr.url}>
+        {token}
+      </button>
+      {after}
+    </>
+  );
+}
+
 function CopyShaButton({ sha, onError }: { sha: string; onError: (message: string) => void }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | null>(null);
