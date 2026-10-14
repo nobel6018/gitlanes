@@ -810,7 +810,7 @@ function mockDetails(sha: string): CommitDetails {
   const now = Math.floor(Date.now() / 1000) - (seed % 900000);
   return {
     sha,
-    subject: "feat(graph): 레인 색 재활용과 통과선 계산을 분리",
+    subject: "feat(graph): 레인 색 재활용과 통과선 계산을 분리 (#128)",
     body:
       "레인이 종료될 때 색을 즉시 반납하지 않고 한 행 뒤에 반납하도록 바꿨다.\n" +
       "머지 직후 같은 색이 인접 레인에 다시 배정되면서 두 줄기가 한 줄기로\n" +
