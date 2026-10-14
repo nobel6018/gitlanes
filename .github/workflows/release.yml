@@ -1,8 +1,20 @@
 name: Release
 
+# 두 경로로 실행된다. 태그를 직접 푸시하거나, auto-release.yml이 버전 변경을 보고 태그를 만든 뒤 호출한다.
+# GITHUB_TOKEN으로 푸시한 태그는 이 워크플로를 깨우지 못해서 호출 경로가 따로 필요하다.
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: 릴리스할 태그 (예 v0.21.0). 이미 원격에 있어야 한다
+        required: true
+        type: string
+
+env:
+  # 호출 경로에서는 github.ref_name이 호출한 쪽 브랜치(main)라서 입력값을 쓴다
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -23,6 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0 # 직전 태그까지 거슬러 릴리스 노트를 만든다
 
       # 릴리스 노트: 변경 목록(PR/커밋 링크), 버전·커밋·시간, 받을 파일, 첫 실행 안내
@@ -30,18 +43,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          body="$(.github/scripts/release-notes.sh "${GITHUB_REF_NAME}" "${GITHUB_REPOSITORY}")"
+          body="$(.github/scripts/release-notes.sh "${TAG}" "${GITHUB_REPOSITORY}")"
           {
             echo "notes<<GL_NOTES_EOF"
             echo "$body"
             echo "GL_NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
-          echo "title=GitLanes ${GITHUB_REF_NAME} · $(TZ=Asia/Seoul date '+%Y-%m-%d') ($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
+          echo "title=GitLanes ${TAG} · $(TZ=Asia/Seoul date '+%Y-%m-%d') ($(git rev-parse --short HEAD))" >> "$GITHUB_OUTPUT"
 
       # 태그와 매니페스트 버전이 어긋나면(과거 sed 누락 사고) 여기서 멈춘다
       - name: Verify tag matches manifest version
         run: |
-          want="${GITHUB_REF_NAME#v}"
+          want="${TAG#v}"
           for f in package.json src-tauri/tauri.conf.json; do
             got="$(grep -m1 '"version"' "$f" | sed -E 's/.*"version": *"([^"]+)".*/\1/')"
             [ "$got" = "$want" ] || { echo "::error::$f has $got, tag is $want"; exit 1; }
@@ -52,7 +65,7 @@ jobs:
 
       - id: set
         run: |
-          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+          if [[ "${TAG}" == *-* ]]; then
             echo 'matrix=[{"platform":"macos-latest","args":"--target universal-apple-darwin"}]' >> "$GITHUB_OUTPUT"
             echo 'prerelease=true' >> "$GITHUB_OUTPUT"
           else
@@ -69,6 +82,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
 
       - uses: actions/setup-node@v4
         with:
@@ -103,7 +118,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
+          tagName: ${{ env.TAG }}
           releaseName: ${{ needs.plan.outputs.title }}
           releaseBody: ${{ needs.plan.outputs.notes }}
           releaseDraft: false
