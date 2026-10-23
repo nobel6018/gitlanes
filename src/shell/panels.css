@@ -629,10 +629,25 @@ kbd.sc-key.wide {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 28px;
+  height: 32px;
   padding: 0 6px 0 10px;
   border-bottom: 1px solid var(--border-1);
   background: var(--bg-toolbar);
+}
+
+/* 툴바(36px)와 비율을 맞춘다. dp-toggle, dp-close는 다른 패널도 쓰므로 머리 안에서만 키운다 */
+.dp-head .dp-toggle {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  line-height: 20px;
+}
+
+.dp-head .dp-close {
+  width: 24px;
+  height: 24px;
+  font-size: 17px;
+  line-height: 24px;
 }
 
 .dp-path {
