@@ -684,10 +684,38 @@ kbd.sc-key.wide {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  height: 26px;
+  gap: 16px;
+  height: 36px;
   padding: 0 10px;
   border-bottom: 1px solid var(--border-1);
+}
+
+/* 26px 툴바는 버튼 높이가 18px 남짓이라 누르기 어려웠다. 공용 클래스(view-btn, dp-toggle)는
+   Files 패널과 헤더에서도 쓰므로 툴바 안에서만 키운다 */
+.dp-toolbar .view-btn {
+  height: 24px;
+  padding: 0 11px;
+  font-size: 12px;
+}
+
+.dp-toolbar .dp-toggle {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 24px;
+}
+
+.dp-toolbar .dp-icon-btn {
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  line-height: 26px;
+}
+
+.dp-toolbar .dp-hunk-btn {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 12px;
 }
 
 .dp-hunks {
@@ -719,10 +747,10 @@ kbd.sc-key.wide {
 }
 
 .dp-hunk-count {
-  min-width: 34px;
+  min-width: 40px;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--fg-2);
 }
 

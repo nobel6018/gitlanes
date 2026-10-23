@@ -308,6 +308,13 @@ export function DiffPanel({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // .dp-body는 diff가 로드된 뒤에야 생긴다. 마운트 시점 ref는 null이라 측정을 놓치므로
+  // 요소가 붙는 순간을 state로 받아 측정과 ResizeObserver를 건다
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const bindScroll = useCallback((el: HTMLDivElement | null) => {
+    scrollRef.current = el;
+    setScrollEl(el);
+  }, []);
   const requestedRef = useRef<string | null>(null);
 
   const lang = useMemo(() => languageForPath(file.path), [file.path]);
@@ -409,23 +416,21 @@ export function DiffPanel({
   }, []);
 
   useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el === null) {
+    if (scrollEl === null) {
       return;
     }
-    setViewportHeight(el.clientHeight);
-    setScrollTop(el.scrollTop);
-  }, []);
+    setViewportHeight(scrollEl.clientHeight);
+    setScrollTop(scrollEl.scrollTop);
+  }, [scrollEl]);
 
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el === null || typeof ResizeObserver === "undefined") {
+    if (scrollEl === null || typeof ResizeObserver === "undefined") {
       return;
     }
-    const observer = new ResizeObserver(() => setViewportHeight(el.clientHeight));
-    observer.observe(el);
+    const observer = new ResizeObserver(() => setViewportHeight(scrollEl.clientHeight));
+    observer.observe(scrollEl);
     return () => observer.disconnect();
-  }, []);
+  }, [scrollEl]);
 
   // 파일이나 뷰가 바뀌면 맨 위로
   useEffect(() => {
@@ -809,7 +814,7 @@ export function DiffPanel({
     body = (
       <div
         className={wrap ? "dp-body dp-wrap" : "dp-body"}
-        ref={scrollRef}
+        ref={bindScroll}
         onScroll={onScroll}
         onKeyDown={handleKeyDown}
         onMouseDown={handleGutterDown}
