@@ -41,7 +41,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // 창 크기와 위치를 저장했다가 다음 실행에 복원한다. tauri.conf.json의 width/height는
         // 저장된 상태가 없는 첫 실행에만 쓰인다.
-        .plugin(tauri_plugin_window_state::Builder::default().build());
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 앱 안 업데이트(확인, 서명 검증, 설치)와 설치 뒤 다시 켜기. @see docs/update.md
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
 
     // 기본 메뉴를 쓰면 macOS의 Close Window가 ⌘W를 선점해 탭 대신 창이 닫힌다.
     // 직접 구성한 메뉴에는 ⌘W accelerator가 없어서 그 키가 웹뷰로 내려간다.
@@ -86,6 +89,8 @@ pub fn run() {
         term::term_write,
         term::term_resize,
         term::term_close,
+        term::term_count,
+        term::term_close_all,
         // 스테이징
         ops::stage::git_stage,
         ops::stage::git_unstage,

@@ -162,6 +162,20 @@ pub fn term_close(terminals: State<'_, Terminals>, id: String) -> Result<(), Str
     Ok(())
 }
 
+/// 열린 터미널 수. 업데이트로 앱을 다시 켜기 전에 셸이 닫힌다고 알리는 데 쓴다.
+#[tauri::command]
+pub fn term_count(terminals: State<'_, Terminals>) -> Result<usize, String> {
+    let count = terminals.0.lock().map_err(lock_error)?.len();
+    Ok(count)
+}
+
+/// 업데이트 설치 직전에 셸을 모두 닫는다. Windows는 설치 파일을 띄우며 프로세스를 바로 끝내서
+/// `RunEvent::Exit`가 오지 않으므로 설치 전에 직접 부른다. @see docs/update.md
+#[tauri::command]
+pub fn term_close_all(app: AppHandle) {
+    kill_all(&app);
+}
+
 /// 앱이 종료될 때 남은 셸을 모두 죽인다. 안 하면 고아 프로세스가 남는다.
 pub fn kill_all(app: &AppHandle) {
     let terminals = app.state::<Terminals>();

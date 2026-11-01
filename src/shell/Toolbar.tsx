@@ -364,7 +364,7 @@ export interface ToolbarProps {
   onRefresh: () => void;
   /** 새 버전이 있으면 배지를 띄운다 */
   updateTag: string | null;
-  onOpenRelease: () => void;
+  onShowUpdate: () => void;
   /** 현재 앱 버전. 클릭하면 수동으로 업데이트를 확인한다 */
   appVersion: string;
   checkingUpdate: boolean;
@@ -403,7 +403,7 @@ export function Toolbar({
   loading,
   onRefresh,
   updateTag,
-  onOpenRelease,
+  onShowUpdate,
   appVersion,
   checkingUpdate,
   onCheckUpdates,
@@ -733,8 +733,8 @@ export function Toolbar({
       {updateTag !== null && (
         <button
           className="update-badge"
-          onClick={onOpenRelease}
-          title={`새 버전 ${updateTag}가 있습니다. 릴리스 페이지 열기`}
+          onClick={onShowUpdate}
+          title={`새 버전 ${updateTag}가 있습니다. 업데이트 배너 열기`}
         >
           {updateTag} ↑
         </button>

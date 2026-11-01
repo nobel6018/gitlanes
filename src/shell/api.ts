@@ -633,3 +633,13 @@ export function termOpen(path: string, cols: number, rows: number): Promise<stri
 export function termWrite(id: string, data: string): Promise<void> {
   return invoke<void>("term_write", { id, data });
 }
+
+/** 열린 터미널 수. 업데이트로 다시 켜기 전에 확인한다 */
+export function termCount(): Promise<number> {
+  return invoke<number>("term_count");
+}
+
+/** 열린 터미널을 모두 닫는다. 업데이트 설치 직전에 부른다 */
+export function termCloseAll(): Promise<void> {
+  return invoke<void>("term_close_all");
+}

@@ -8,6 +8,8 @@
     "opener:default",
     "dialog:default",
     "window-state:default",
-    "core:webview:allow-set-webview-zoom"
+    "core:webview:allow-set-webview-zoom",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

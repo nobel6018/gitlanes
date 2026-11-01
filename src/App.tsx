@@ -804,15 +804,19 @@ export default function App() {
       tag: updater.update === null ? null : updater.update.tag,
       checking: updater.checking,
       onCheck: updater.checkNow,
-      onOpenRelease: updater.openRelease,
+      onShowUpdate: updater.showBanner,
     }),
-    [updater.update, updater.checking, updater.checkNow, updater.openRelease],
+    [updater.update, updater.checking, updater.checkNow, updater.showBanner],
   );
 
   const banner: ReactNode =
     updater.bannerVisible && updater.update !== null ? (
       <UpdateBanner
         update={updater.update}
+        installable={updater.installable}
+        phase={updater.phase}
+        installError={updater.installError}
+        onInstall={updater.install}
         onOpenRelease={updater.openRelease}
         onDismiss={updater.dismissBanner}
       />

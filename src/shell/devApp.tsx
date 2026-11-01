@@ -2373,7 +2373,11 @@ mockIPC(async (cmd, payload) => {
     case "term_write":
     case "term_resize":
     case "term_close":
+    case "term_close_all":
       return null;
+
+    case "term_count":
+      return 0;
 
     // v0.11 새 command. 하네스에는 OS 연동이 없으므로 로그만 남긴다
     case "reveal_path":

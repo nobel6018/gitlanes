@@ -33,6 +33,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU3OUIyM0ZEOEVBNTY1RkQKUldUOVphV08vU09iVi9FMHFoVERncWlGeEpJWlk1THRFZTJMamMxcGRENUUwNHhHNDV1VVRhR2kK",
+      "endpoints": [
+        "https://github.com/nobel6018/gitlanes/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
