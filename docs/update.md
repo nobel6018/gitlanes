@@ -12,13 +12,13 @@ GitLanes는 0.22.0부터 앱 안에서 새 버전을 받아 설치합니다. 0.2
 
 `latest.json`을 못 읽으면(updater 도입 전 릴리스, 이 플랫폼 파일 없음) GitHub API로 새 버전만 확인해 "릴리스 페이지 열기" 버튼을 보여 줍니다.
 
-플랫폼별 설치:
+플랫폼별 설치. `latest.json`에는 설치 방식별 키(`windows-x86_64-nsis`, `linux-x86_64-deb` 등)가 함께 들어 있어, updater가 지금 설치된 방식에 맞는 파일을 고릅니다.
 
 | 플랫폼 | 받는 파일 | 설치 |
 |---|---|---|
 | macOS | `GitLanes_universal.app.tar.gz` | `.app`을 통째로 바꾼다. 격리 표시가 붙지 않아 `xattr -cr`이 필요 없다 |
-| Windows | `.msi` | 설치 파일을 passive 모드(진행 막대만)로 띄우고 앱은 바로 끝난다. 설치 파일이 앱을 다시 켠다 |
-| Linux | `.AppImage` | AppImage로 설치한 경우만. deb, rpm 설치본은 릴리스 페이지에서 받는다 |
+| Windows | 설치한 방식대로 `-setup.exe`(NSIS) 또는 `.msi` | 설치 파일을 passive 모드(진행 막대만)로 띄우고 앱은 바로 끝난다. 설치 파일이 앱을 다시 켠다 |
+| Linux | 설치한 방식대로 `.AppImage`, `.deb`, `.rpm` | deb, rpm은 관리자 암호를 묻는다. 실기 확인 전 |
 
 Windows는 `install()`이 앱을 바로 끝내서 `RunEvent::Exit` 정리가 돌지 않으므로, 설치 직전에 `term_close_all`로 셸을 먼저 닫습니다.
 
