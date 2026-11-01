@@ -464,7 +464,7 @@ export interface WorkspaceUpdateProps {
   tag: string | null;
   checking: boolean;
   onCheck: () => void;
-  onOpenRelease: () => void;
+  onShowUpdate: () => void;
 }
 
 /** 우클릭 메뉴 위치와 대상. 커밋 행과 툴바 레포명이 같은 ContextMenu를 쓴다 */
@@ -3589,7 +3589,7 @@ export function RepoWorkspace({
         loading={graphLoading}
         onRefresh={manualRefresh}
         updateTag={update.tag}
-        onOpenRelease={update.onOpenRelease}
+        onShowUpdate={update.onShowUpdate}
         appVersion={APP_VERSION}
         checkingUpdate={update.checking}
         onCheckUpdates={update.onCheck}

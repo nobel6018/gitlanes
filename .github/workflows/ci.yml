@@ -82,8 +82,12 @@ jobs:
 
       - run: npm ci
 
+      # createUpdaterArtifacts가 켜져 있어 서명 키가 없으면 빌드가 실패한다. 릴리스와 같은 서명 단계를 여기서 먼저 확인한다
       - name: Build macOS arm64 bundle
         run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
 
       - uses: actions/upload-artifact@v7
         with:

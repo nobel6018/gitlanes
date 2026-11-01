@@ -1390,8 +1390,35 @@
   font-weight: 600;
 }
 
-.banner-action:hover {
+.banner-action:hover:not(:disabled) {
   background: rgba(212, 180, 85, 0.3);
+}
+
+.banner-action:disabled,
+.banner-close:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.banner-error {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--deleted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.banner-link {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+  font-size: 11px;
+  text-decoration: underline;
+}
+
+.banner-link:hover {
+  color: var(--fg-1);
 }
 
 .banner-close {

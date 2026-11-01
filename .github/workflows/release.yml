@@ -114,9 +114,13 @@ jobs:
           npx tsc --noEmit
           cargo test --manifest-path src-tauri/Cargo.toml
 
+      # 서명 키가 있으면 tauri-action이 업데이트 파일의 .sig와 latest.json을 Release에 함께 올린다.
+      # OS별 작업이 끝날 때마다 latest.json에 자기 플랫폼을 더한다. @see docs/update.md
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: ${{ env.TAG }}
           releaseName: ${{ needs.plan.outputs.title }}
