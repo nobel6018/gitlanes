@@ -33,7 +33,7 @@ jobs:
       notes: ${{ steps.notes.outputs.notes }}
       title: ${{ steps.notes.outputs.title }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0 # 직전 태그까지 거슬러 릴리스 노트를 만든다
@@ -81,13 +81,13 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.TAG }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable

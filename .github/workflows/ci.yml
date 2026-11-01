@@ -9,12 +9,12 @@ jobs:
   test:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      # 24: tests/*.mts를 플래그 없이 바로 실행한다 (22는 22.18 미만에서 --experimental-strip-types 필요)
-      - uses: actions/setup-node@v4
+      # 22.18 이상이어야 tests/*.mts를 플래그 없이 바로 실행한다 (그 미만은 --experimental-strip-types 필요)
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -66,11 +66,11 @@ jobs:
     if: github.event_name == 'push'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -85,7 +85,7 @@ jobs:
       - name: Build macOS arm64 bundle
         run: npm run tauri build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: GitLanes-dev-macos-arm64
           path: src-tauri/target/release/bundle/dmg/*.dmg
