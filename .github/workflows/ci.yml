@@ -5,8 +5,16 @@ on:
   push:
     branches: [main]
 
+# 같은 PR에 새 커밋이 오면 이전 실행을 끊는다. main push는 끊지 않는다
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # 버전만 올리는 릴리스 PR(release/v*)과 그 머지 커밋은 건너뛴다. 코드는 main에서 이미 통과했고,
+  # 같은 시각에 도는 릴리스 빌드와 macOS 러너를 다투지 않게 한다. @see docs/release.md
   test:
+    if: ${{ !startsWith(github.head_ref, 'release/') && !contains(github.event.head_commit.message, '/release/v') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -63,7 +71,7 @@ jobs:
   # 개발 중 스모크 빌드: main 머지마다 macOS arm64 번들만 만들고
   # 릴리스 프로필 캐시(shared-key: macos-latest)를 데워 태그 빌드를 가속한다.
   dev-build:
-    if: github.event_name == 'push'
+    if: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '/release/v') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
