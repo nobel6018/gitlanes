@@ -455,8 +455,8 @@ export function CommitDetailPanel({
         <section className="panel-section">
           <div className="meta-row">
             <span className="meta-label">Commit</span>
-            <span className="meta-value mono selectable">
-              {details.sha}
+            <span className="meta-value meta-value-sha mono selectable">
+              <span className="meta-sha">{details.sha}</span>
               <CopyShaButton sha={details.sha} onError={onError} />
             </span>
           </div>
@@ -605,7 +605,7 @@ function FileSummary({ files }: { files: FileChange[] }) {
     <div className="file-summary">
       {parts.map((part, i) => (
         <span key={part.key}>
-          {i > 0 && <span className="sum-sep"> · </span>}
+          {i > 0 && <span className="sum-sep">, </span>}
           <span className={part.className}>{part.text}</span>
         </span>
       ))}

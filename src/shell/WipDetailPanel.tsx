@@ -646,9 +646,9 @@ export function WipDetailPanel({
           </div>
           <div className="file-summary">
             <span className="sum-add">{counts.staged} staged</span>
-            <span className="sum-sep"> · </span>
+            <span className="sum-sep">, </span>
             <span className="sum-mod">{counts.unstaged} unstaged</span>
-            <span className="sum-sep"> · </span>
+            <span className="sum-sep">, </span>
             <span className="sum-untracked">{counts.untracked} untracked</span>
           </div>
         </section>

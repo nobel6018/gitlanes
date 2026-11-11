@@ -21,7 +21,8 @@ const KIND_ORDER: Record<RefInfo["kind"], number> = {
 };
 
 // graph.css의 .gl-pill과 맞춘 값들. 여기가 어긋나면 "+N" 판정이 틀어진다
-const UI_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+// theme.css --font-ui와 같은 스택. main.tsx가 폰트 로드를 기다린 뒤 렌더하므로 첫 측정부터 맞다
+const UI_FONT = '"Host Grotesk", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", system-ui, sans-serif';
 const PILL_FONT = `400 11px ${UI_FONT}`;
 const PILL_FONT_HEAD = `700 11px ${UI_FONT}`;
 const MORE_FONT = `400 10px ${UI_FONT}`;

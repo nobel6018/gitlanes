@@ -1,3 +1,4 @@
+import { LANE_COLORS } from "../constants";
 import { basename } from "./format";
 import { withKbd } from "./shortcuts";
 
@@ -23,15 +24,15 @@ export function WelcomeScreen({
           <div className="welcome-logo" aria-hidden="true">
             <svg viewBox="0 0 48 48" width="48" height="48">
               <g fill="none" strokeWidth="3" strokeLinecap="round">
-                <path d="M12 6v36" stroke="#3FB3DE" />
-                <path d="M24 42V22c0-5 6-6 6-12V6" stroke="#E88A5C" />
-                <path d="M36 6v14c0 6-6 7-6 12v10" stroke="#54C08A" />
+                <path d="M12 6v36" stroke={LANE_COLORS[0]} />
+                <path d="M24 42V22c0-5 6-6 6-12V6" stroke={LANE_COLORS[1]} />
+                <path d="M36 6v14c0 6-6 7-6 12v10" stroke={LANE_COLORS[2]} />
               </g>
-              <g fill="var(--bg-content)" stroke="#3FB3DE" strokeWidth="3">
+              <g fill="var(--bg-content)" stroke={LANE_COLORS[0]} strokeWidth="3">
                 <circle cx="12" cy="14" r="3.5" />
               </g>
-              <circle cx="24" cy="32" r="3.5" fill="var(--bg-content)" stroke="#E88A5C" strokeWidth="3" />
-              <circle cx="36" cy="14" r="3.5" fill="var(--bg-content)" stroke="#54C08A" strokeWidth="3" />
+              <circle cx="24" cy="32" r="3.5" fill="var(--bg-content)" stroke={LANE_COLORS[1]} strokeWidth="3" />
+              <circle cx="36" cy="14" r="3.5" fill="var(--bg-content)" stroke={LANE_COLORS[2]} strokeWidth="3" />
             </svg>
           </div>
           <h1 className="welcome-title">GitLanes</h1>

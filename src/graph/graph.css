@@ -1,11 +1,13 @@
+/* Hallmark · restyle of the project's own sheet · stamp and critique: src/theme.css · theme: Console · shape: app screen · redesign: restyle · v2.0.0 */
+/* Hallmark · waive 24b · off-scale paddings like 5px, 6px and 9px in this sheet's rows and controls · restyle keeps the GitKraken-dense layout the owner asked to keep; respacing would move every row */
+/* Hallmark · dismissed 23 · .gl-row-selected is a 16 to 18% amber mix on one 30px row, under 4% of the viewport */
 /* ui-graph 스타일. 색은 CONTRACTS.md의 CSS 변수만 사용하고, 레인 색만 인라인 style로 받는다 */
 
 .gl-root {
-  /* 쓰기 작업 상태 색. theme.css에는 대응하는 변수가 없어 여기서 정의한다.
-     값은 constants.ts의 LANE_COLORS[5](노랑), LANE_COLORS[1](주황)과 같고,
-     canvas.ts의 DROP_COLOR / PENDING_COLOR가 같은 색을 쓴다 */
-  --gl-drop: #d4b455;
-  --gl-pending: #e88a5c;
+  /* 쓰기 작업 상태 색. 드롭 후보는 changed(노랑), 진행 중 작업은 accent(앰버).
+     값은 tokens.css에서 오고, canvas.ts의 DROP_COLOR / PENDING_COLOR도 같은 역할을 한다 */
+  --gl-drop: var(--color-changed);
+  --gl-pending: var(--color-accent);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -13,7 +15,7 @@
   background: var(--bg-content);
   color: var(--fg-1);
   font-size: 13px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-ui);
   overflow: hidden;
 }
 
@@ -30,10 +32,8 @@
   border-bottom: 1px solid var(--border-0);
   background: var(--bg-content);
   color: var(--fg-2);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
   user-select: none;
 }
 
@@ -52,6 +52,11 @@
 }
 
 /* ── 본문 ───────────────────────────────────────── */
+
+.gl-scroll:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
 
 .gl-body {
   position: relative;
@@ -93,33 +98,37 @@
 }
 
 .gl-row:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--color-hover);
 }
 
-/* 선택 행: var(--accent) 위에 50% 투명 오버레이 */
+.gl-row:active {
+  background: var(--color-hover-2);
+}
+
+/* 선택 행: 행 전체를 accent로 옅게 물들인다. ::before가 셀 글자 위에 그려지므로
+   불투명 색이 아니라 반투명 틴트여야 글자가 그대로 읽힌다 */
 .gl-row-selected::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: var(--accent);
-  opacity: 0.5;
+  background: color-mix(in oklab, var(--color-accent) 18%, transparent);
   pointer-events: none;
 }
 
-/* 다중 선택 행: 옅은 accent 띠 + 왼쪽 굵은 막대. 주 선택(accent 50%)과 진하기로 갈리고,
-   막대가 있어 경로 강조(dim)나 hover 배경 위에서도 "골라 둔 행"이 읽힌다.
+/* 다중 선택 행: 행 전체에 옅은 accent 틴트와 1px 테두리. 한쪽 막대 대신 테두리로
+   경로 강조(dim)나 hover 배경 위에서도 "골라 둔 행"이 읽힌다.
    주 선택과 같은 ::before 자리를 쓰므로 둘이 겹치면 아래 결합 규칙이 이긴다 */
 .gl-row-multi::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  box-shadow: inset 3px 0 0 var(--accent);
+  background: color-mix(in oklab, var(--color-accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-accent) 45%, transparent);
   pointer-events: none;
 }
 
 .gl-row-selected.gl-row-multi::before {
-  background: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in oklab, var(--color-accent) 26%, transparent);
   opacity: 1;
 }
 
@@ -220,7 +229,7 @@
   flex: none;
   padding: 0 6px;
   border-radius: 8px;
-  font-size: 10px;
+  font-size: 11px;
   font-style: normal;
   line-height: 16px;
 }
@@ -235,12 +244,12 @@
 }
 
 .gl-wip-unstaged {
-  background: rgba(212, 180, 85, 0.15);
+  background: var(--color-changed-soft);
   color: var(--modified);
 }
 
 .gl-wip-untracked {
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--color-hover-2);
   color: var(--fg-2);
 }
 
@@ -320,8 +329,9 @@
 
 .gl-cell-sha {
   color: var(--fg-2);
-  font-family: ui-monospace, "SF Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
+  font-variant-numeric: tabular-nums slashed-zero;
 }
 
 .gl-cell-date {
@@ -333,8 +343,8 @@
    글자색은 셀에서 물려받아 MESSAGE/AUTHOR/SHA가 각자 색을 유지한다 */
 .gl-mark {
   border-radius: 2px;
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: inherit;
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
 }
 
 /* 폭이 부족해 드롭된 컬럼. 헤더와 행이 같은 클래스를 보므로 함께 사라진다.
@@ -453,6 +463,15 @@
   border-color: var(--border-0);
 }
 
+.gl-pill-more:active {
+  background: var(--color-hover-2);
+}
+
+.gl-pill-more:disabled {
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+
 /* "+N" 배지를 눌러 펼치는 ref 목록 팝오버. position: fixed라 셀 overflow에 안 잘린다 */
 .gl-refs-popover {
   position: fixed;
@@ -468,7 +487,7 @@
   background: var(--bg-panel);
   border: 1px solid var(--border-1);
   border-radius: 6px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-pop);
 }
 
 /* 팝오버 안에서는 이름을 자르지 않고 전부 보여준다 */

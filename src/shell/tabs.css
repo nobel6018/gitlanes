@@ -1,3 +1,5 @@
+/* Hallmark · restyle of the project's own sheet · stamp and critique: src/theme.css · theme: Console · shape: app screen · redesign: restyle · v2.0.0 */
+/* Hallmark · waive 24b · off-scale spacing in tabs.css · repo tab menu keeps 6px item padding so tab titles align with the tab strip text */
 /* ---------- 탭 드래그 재정렬 / 탭 컨텍스트 메뉴 (ui-tabs) ----------
    shell.css의 .tab / .tabbar 규칙은 그대로 두고, 여기서는 새 클래스만 더한다 */
 
@@ -21,7 +23,7 @@
   width: 2px;
   margin-left: -1px;
   border-radius: 1px;
-  background: var(--accent);
+  background: var(--color-accent);
   pointer-events: none;
   z-index: 3;
 }
@@ -76,7 +78,7 @@
   border: 1px solid var(--border-1);
   border-radius: 5px;
   background: var(--bg-panel);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-pop);
 }
 
 .tabs-menu-item {
@@ -94,13 +96,17 @@
 }
 
 .tabs-menu-item:hover:not(:disabled) {
-  background: var(--accent);
-  color: #fff;
+  background: var(--color-rule);
+  color: var(--color-ink);
+}
+
+.tabs-menu-item:active:not(:disabled) {
+  background: var(--color-rule-2);
 }
 
 .tabs-menu-item:disabled {
-  color: var(--fg-2);
-  cursor: default;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 /* 항목 오른쪽에 붙는 단축키 힌트 */
@@ -111,8 +117,7 @@
 }
 
 .tabs-menu-item:hover:not(:disabled) .tabs-menu-kbd {
-  color: #fff;
-  opacity: 0.85;
+  color: var(--color-ink-2);
 }
 
 .tabs-menu-sep {

@@ -1,3 +1,5 @@
+/* Hallmark · restyle of the project's own sheet · stamp and critique: src/theme.css · theme: Console · shape: app screen · redesign: restyle · v2.0.0 */
+/* Hallmark · waive 24b · off-scale spacing in history.css · file history and blame rows keep their 3px and 6px insets so the blame gutter matches the diff rows */
 /* 파일 히스토리, blame, 비교 (v0.18). 상세 패널 자리와 diff 영역 어느 쪽에도 놓인다 */
 
 .hp-root {
@@ -23,10 +25,8 @@
 .hp-kind {
   flex: 0 0 auto;
   color: var(--fg-2);
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .hp-path {
@@ -84,7 +84,7 @@
 }
 
 .hp-commit.kb-focus {
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 0 0 0 1px var(--color-rule-2);
 }
 
 .hp-list:focus-visible .hp-commit.kb-focus {
@@ -92,7 +92,8 @@
 }
 
 .hp-commit.selected {
-  background: var(--accent-soft);
+  background: var(--color-select);
+  color: var(--color-ink);
 }
 
 .hp-sha {
@@ -185,9 +186,7 @@
   padding: 2px 12px 4px;
   color: var(--fg-2);
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  text-transform: uppercase;
+  font-weight: 500;
 }
 
 .cp-n {
@@ -225,7 +224,7 @@
 }
 
 .bl-body:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 2px solid var(--color-focus);
   outline-offset: -1px;
 }
 
@@ -275,12 +274,12 @@
 .bl-line.bl-odd .bl-gutter,
 .bl-line.bl-odd {
   /* 구간 줄무늬. sticky 거터가 덮어도 비치지 않게 불투명한 혼합색을 쓴다 */
-  background-color: color-mix(in srgb, var(--fg-1) 4%, var(--bg-content));
+  background-color: color-mix(in oklab, var(--fg-1) 4%, var(--bg-content));
 }
 
 .bl-line.bl-hover,
 .bl-line.bl-hover .bl-gutter {
-  background-color: color-mix(in srgb, var(--accent) 24%, var(--bg-content));
+  background-color: var(--color-select-strong);
 }
 
 .bl-gutter.bl-jump {

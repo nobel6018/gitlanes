@@ -1,0 +1,19 @@
+[
+ {
+  "mode": "redesign",
+  "depth": "restyle",
+  "scope": "app",
+  "theme": "console",
+  "shape": "app screen",
+  "axes": "dark/grotesk-sans/chromatic-amber",
+  "signature": "the lane graph",
+  "nav": "kept",
+  "footer": "kept",
+  "waived": [
+   "24b",
+   "39b"
+  ],
+  "prompt": "a desktop git client: commit graph, staging, branches, for developers",
+  "date": "2026-11-11"
+ }
+]

@@ -4,6 +4,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import App from "../App";
+import { whenFontsReady } from "../fonts";
 import { makeMockGraph } from "../graph";
 import type {
   AddSubmoduleOptions,
@@ -2409,8 +2410,10 @@ mockIPC(async (cmd, payload) => {
   }
 });
 
-createRoot(document.getElementById("root") as HTMLElement).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+whenFontsReady().then(() => {
+  createRoot(document.getElementById("root") as HTMLElement).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+});

@@ -7,6 +7,7 @@ import type {
 import { LANE_COLORS } from "../constants";
 import { basename } from "./format";
 import { withKbd } from "./shortcuts";
+import { ChevronLeftIcon, ChevronRightIcon } from "./icons";
 import { TabContextMenu } from "./TabContextMenu";
 import "./tabs.css";
 
@@ -425,7 +426,7 @@ export function TabBar({
           title="Scroll tabs"
           aria-label="Scroll tabs left"
         >
-          ‹
+          <ChevronLeftIcon />
         </button>
       )}
 
@@ -513,7 +514,7 @@ export function TabBar({
           title="Scroll tabs"
           aria-label="Scroll tabs right"
         >
-          ›
+          <ChevronRightIcon />
         </button>
       )}
 

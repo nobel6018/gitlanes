@@ -1,3 +1,5 @@
+/* Hallmark · restyle of the project's own sheet · stamp and critique: src/theme.css · theme: Console · shape: app screen · redesign: restyle · v2.0.0 */
+/* Hallmark · waive 24b · off-scale spacing in wip.css · staging rows and hunk buttons keep 5px and 6px paddings so stage by line hits stay on the 20px diff rhythm */
 /* ============================================================
    ui-wip 전용 스타일. 스테이징 화면(파일 행 액션, 그룹 헤더, 커밋 박스)과
    diff 뷰어의 hunk/줄 단위 스테이징 UI만 여기에 둔다.
@@ -58,9 +60,13 @@
 }
 
 .file-act:hover:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--color-rule-2);
+  border-color: var(--color-rule-2);
+  color: var(--color-ink);
+}
+
+.file-act:active:not(:disabled) {
+  background: var(--color-rule);
 }
 
 .file-act.danger:hover:not(:disabled) {
@@ -71,12 +77,13 @@
 
 .file-act:disabled {
   opacity: 0.4;
-  cursor: default;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 /* untracked는 status가 'A'로 오므로 뱃지 색만 바꿔 구분한다 */
 .st-U {
-  background: rgba(111, 168, 232, 0.22);
+  background: var(--color-cool-soft);
   color: var(--link);
 }
 
@@ -100,7 +107,7 @@
   border: 1px solid var(--border-1);
   border-radius: 4px;
   color: var(--fg-2);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0;
   line-height: 16px;
@@ -108,9 +115,13 @@
 }
 
 .wip-btn:hover:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--color-rule-2);
+  border-color: var(--color-rule-2);
+  color: var(--color-ink);
+}
+
+.wip-btn:active:not(:disabled) {
+  background: var(--color-rule);
 }
 
 .wip-btn.danger:hover:not(:disabled) {
@@ -121,7 +132,8 @@
 
 .wip-btn:disabled {
   opacity: 0.4;
-  cursor: default;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 /* ---------- 커밋 박스 ---------- */
@@ -144,7 +156,7 @@
   display: block;
   width: 100%;
   padding: 6px 8px;
-  border: 1px solid var(--border-1);
+  border: 1px solid var(--color-field-edge);
   border-radius: 4px;
   background-color: var(--bg-content);
   /* 본문 72자 눈금선. 폭은 컴포넌트가 background-size로 준다 (72ch) */
@@ -165,7 +177,8 @@
 }
 
 .cb-input:focus {
-  border-color: var(--accent);
+  outline: 2px solid var(--color-focus);
+  outline-offset: -1px;
 }
 
 .cb-input::placeholder {
@@ -183,7 +196,7 @@
   background: var(--bg-content);
   color: var(--modified);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   pointer-events: none;
 }
 
@@ -234,26 +247,31 @@
   height: 26px;
   padding: 0 12px;
   border-radius: 4px;
-  background: var(--accent);
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
   font-size: 12px;
   font-weight: 600;
 }
 
 .cb-commit:hover:not(:disabled) {
-  filter: brightness(1.15);
+  background: var(--color-accent-hover);
+}
+
+.cb-commit:active:not(:disabled) {
+  background: var(--color-accent);
 }
 
 .cb-commit:disabled {
   opacity: 0.45;
-  cursor: default;
+  color: var(--color-accent-ink);
+  cursor: not-allowed;
 }
 
 .cb-spinner {
   width: 11px;
   height: 11px;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #fff;
+  border: 2px solid color-mix(in oklab, var(--color-accent-ink) 35%, transparent);
+  border-top-color: var(--color-accent-ink);
   border-radius: 50%;
   animation: cb-spin 0.7s linear infinite;
 }
@@ -283,15 +301,19 @@
   background: var(--bg-panel);
   color: var(--fg-2);
   font-family: var(--font-ui);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 13px;
 }
 
 .dp-hunk-btn:hover:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--color-rule-2);
+  border-color: var(--color-rule-2);
+  color: var(--color-ink);
+}
+
+.dp-hunk-btn:active:not(:disabled) {
+  background: var(--color-rule);
 }
 
 .dp-hunk-btn.danger:hover:not(:disabled) {
@@ -302,7 +324,8 @@
 
 .dp-hunk-btn:disabled {
   opacity: 0.4;
-  cursor: default;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 /* 줄 번호 칸을 끌어 범위를 고른다 */
@@ -317,8 +340,8 @@
 /* 고른 줄. add/del 배경을 덮지 않도록 그라데이션 레이어로 겹친다 */
 .dp-line.dp-picked {
   background-image: linear-gradient(
-    rgba(111, 168, 232, 0.18),
-    rgba(111, 168, 232, 0.18)
+    color-mix(in oklab, var(--color-cool) 18%, transparent),
+    color-mix(in oklab, var(--color-cool) 18%, transparent)
   );
 }
 

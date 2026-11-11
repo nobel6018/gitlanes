@@ -1,3 +1,5 @@
+/* Hallmark · restyle of the project's own sheet · stamp and critique: src/theme.css · theme: Console · shape: app screen · redesign: restyle · v2.0.0 */
+/* Hallmark · waive 24b · off-scale spacing in submodule.css · submodule rows keep 6px insets to match the sidebar tree they sit in */
 /* 서브모듈 (v0.19). 사이드바 SUBMODULES 행, 파일 행 아이콘, 포인터 변경 패널.
  * 색은 theme.css 변수만 쓴다. 패널 뼈대는 history.css(.hp-*, .cp-*)를 그대로 빌린다 */
 
@@ -37,7 +39,7 @@
   padding: 0 4px;
   border: 1px solid currentColor;
   border-radius: 8px;
-  font-size: 9.5px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 13px;
 }

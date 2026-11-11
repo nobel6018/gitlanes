@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import type { RefEntry, RefKind } from "../types";
 import { kbd } from "./shortcuts";
+import { BranchIcon, CloudIcon, TagIcon } from "./icons";
 import "./panels.css";
 
 export interface QuickSwitcherProps {
@@ -26,10 +27,10 @@ const KIND_ORDER: Record<RefKind, number> = {
   tag: 2,
 };
 
-const KIND_ICON: Record<RefKind, string> = {
-  localBranch: "⌂",
-  remoteBranch: "☁",
-  tag: "🏷",
+const KIND_ICON: Record<RefKind, ReactNode> = {
+  localBranch: <BranchIcon />,
+  remoteBranch: <CloudIcon />,
+  tag: <TagIcon />,
 };
 
 const KIND_TAG: Record<RefKind, string> = {
@@ -333,7 +334,7 @@ export function QuickSwitcher({ open, refs, onSelect, onClose }: QuickSwitcherPr
                   data-qs-index={index}
                   onMouseEnter={() => setActive(index)}
                   onClick={() => choose(entry)}
-                  title={`${entry.ref.name} — ${entry.ref.sha.slice(0, 10)}`}
+                  title={`${entry.ref.name} (${entry.ref.sha.slice(0, 10)})`}
                 >
                   <span className="qs-icon" aria-hidden="true">
                     {KIND_ICON[entry.ref.kind]}
@@ -349,7 +350,11 @@ export function QuickSwitcher({ open, refs, onSelect, onClose }: QuickSwitcherPr
         )}
         <div className="qs-foot">
           <span>{showingRecent ? "Recent & local branches" : `${results.length} shown`}</span>
-          <span>↑↓ move · Enter open · Esc close</span>
+          <span className="qs-keys">
+            <span>↑↓ move</span>
+            <span>Enter open</span>
+            <span>Esc close</span>
+          </span>
         </div>
       </div>
     </div>

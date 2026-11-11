@@ -1,3 +1,5 @@
+/* Hallmark · restyle of the project's own sheet · stamp and critique: src/theme.css · theme: Console · shape: app screen · redesign: restyle · v2.0.0 */
+/* Hallmark · waive 24b · off-scale spacing in actions.css · merge, rebase and push menus keep their 5px and 6px paddings so the dropdown rows line up with the toolbar split buttons */
 /* ============================================================
    v0.18 ui-actions: 툴바 액션 그룹 / 폼 다이얼로그 / 충돌 패널 /
    인터랙티브 리베이스 에디터 / 토스트 스택.
@@ -63,6 +65,11 @@
   background: var(--hover-bg);
 }
 
+.act-main:active:not(:disabled),
+.act-caret:active:not(:disabled) {
+  background: var(--color-hover-2);
+}
+
 .act-caret.open {
   background: var(--hover-bg);
   color: var(--fg-1);
@@ -71,7 +78,8 @@
 .act-main:disabled,
 .act-caret:disabled {
   opacity: 0.45;
-  cursor: default;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 .act-label {
@@ -95,22 +103,23 @@
   height: 15px;
   padding: 0 4px;
   border-radius: 7px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
+  background: var(--color-rule-2);
+  color: var(--color-ink);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
   line-height: 15px;
 }
 
 .act-badge.warn {
-  background: var(--modified);
-  color: var(--bg-content);
+  background: var(--color-changed-soft);
+  color: var(--color-changed);
 }
 
 /* upstream이 없을 때의 힌트 */
 .act-hint {
   color: var(--fg-2);
-  font-size: 10px;
+  font-size: 11px;
   font-style: italic;
 }
 
@@ -126,7 +135,7 @@
   background: var(--bg-panel);
   border: 1px solid var(--border-1);
   border-radius: 6px;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
 }
 
 .act-menu-item {
@@ -145,9 +154,14 @@
   background: var(--hover-bg);
 }
 
+.act-menu-item:active:not(:disabled) {
+  background: var(--color-hover-2);
+}
+
 .act-menu-item:disabled {
   opacity: 0.45;
-  cursor: default;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 .act-menu-item.danger,
@@ -157,7 +171,7 @@
 
 .act-menu-item.on .act-menu-label::after {
   content: " \2713";
-  color: var(--accent);
+  color: var(--color-accent);
 }
 
 .act-menu-label {
@@ -182,7 +196,7 @@
 /* ---------- 폼 다이얼로그 공통 ---------- */
 
 .dlg.wide {
-  width: min(560px, calc(100vw - 48px));
+  width: min(560px, calc(100% - 48px));
 }
 
 .dlg-head {
@@ -234,7 +248,7 @@
 .dlg-select {
   height: 28px;
   padding: 0 6px;
-  border: 1px solid var(--border-1);
+  border: 1px solid var(--color-field-edge);
   border-radius: 4px;
   background: var(--bg-content);
   color: var(--fg-1);
@@ -245,7 +259,7 @@
 .dlg-textarea {
   min-height: 72px;
   padding: 6px 8px;
-  border: 1px solid var(--border-1);
+  border: 1px solid var(--color-field-edge);
   border-radius: 4px;
   background: var(--bg-content);
   color: var(--fg-1);
@@ -257,7 +271,8 @@
 
 .dlg-textarea:focus,
 .dlg-select:focus {
-  border-color: var(--accent);
+  outline: 2px solid var(--color-focus);
+  outline-offset: -1px;
 }
 
 .dlg-check {
@@ -339,8 +354,9 @@
 }
 
 .dlg-radio.on {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--color-accent);
+  background: var(--color-select-panel);
+  color: var(--color-ink);
 }
 
 .dlg-radio.on.danger {
@@ -482,15 +498,29 @@
   background: var(--hover-bg);
 }
 
+.cfp-btn:active:not(:disabled) {
+  background: var(--color-hover-2);
+}
+
 .cfp-btn:disabled {
   opacity: 0.45;
-  cursor: default;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 .cfp-btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+.cfp-btn.primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.cfp-btn.primary:disabled {
+  color: var(--color-accent-ink);
 }
 
 .cfp-btn.danger {
@@ -569,9 +599,14 @@
   color: var(--fg-1);
 }
 
+.cfp-mini:active:not(:disabled) {
+  background: var(--color-hover-2);
+}
+
 .cfp-mini:disabled {
   opacity: 0.4;
-  cursor: default;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 .cfp-empty {
@@ -588,7 +623,7 @@
 }
 
 .rbe {
-  width: min(760px, calc(100vw - 48px));
+  width: min(760px, calc(100% - 48px));
   max-height: calc(100vh - 80px);
   display: flex;
   flex-direction: column;
@@ -596,7 +631,7 @@
   background: var(--bg-panel);
   border: 1px solid var(--border-1);
   border-radius: 8px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
 }
 
 .rbe-list {
@@ -625,7 +660,7 @@
 }
 
 .rbe-row.over {
-  box-shadow: inset 0 2px 0 0 var(--accent);
+  box-shadow: inset 0 2px 0 0 var(--color-accent);
 }
 
 .rbe-row.dropped .rbe-subject {
@@ -649,8 +684,8 @@
   left: 14px;
   top: 0;
   bottom: 50%;
-  border-left: 1px solid var(--accent);
-  border-bottom: 1px solid var(--accent);
+  border-left: 1px solid var(--color-rule-2);
+  border-bottom: 1px solid var(--color-rule-2);
   width: 8px;
 }
 
@@ -700,7 +735,7 @@
   width: 100%;
   min-height: 56px;
   padding: 6px 8px;
-  border: 1px solid var(--border-1);
+  border: 1px solid var(--color-field-edge);
   border-radius: 4px;
   background: var(--bg-panel);
   color: var(--fg-1);
@@ -711,7 +746,8 @@
 }
 
 .rbe-reword textarea:focus {
-  border-color: var(--accent);
+  outline: 2px solid var(--color-focus);
+  outline-offset: -1px;
 }
 
 .rbe-foot {
@@ -738,7 +774,7 @@
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
-  max-width: min(520px, calc(100vw - 28px));
+  max-width: min(520px, calc(100% - 28px));
   pointer-events: none;
 }
 

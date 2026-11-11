@@ -633,7 +633,7 @@ export function Toolbar({
             title={withKbd("Stash changes", "Mod+Shift+S")}
             busy={busy}
             disabled={busy}
-            badge={<Badge count={sync?.stashCount ?? 0} prefix="≡" warn />}
+            badge={<Badge count={sync?.stashCount ?? 0} prefix="≡" />}
             onDefault={() => run(actions.stashPush())}
             menu={[
               {

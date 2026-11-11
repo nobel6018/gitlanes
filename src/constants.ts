@@ -2,18 +2,21 @@
 // FROZEN CONTRACT — 이 파일은 감독(main session)만 수정한다.
 // ============================================================
 
-/** 레인(브랜치 줄기) 색상. CommitRow.color / Edge.color가 이 배열의 인덱스. */
+/** 레인(브랜치 줄기) 색상. CommitRow.color / Edge.color가 이 배열의 인덱스.
+ *  OKLCH 명도 76%, 채도 0.125(파랑만 0.11, sRGB 범위 안)로 맞춘 뒤 hex로 변환했다.
+ *  canvas와 rgba 파싱(layout.ts)이 hex를 전제하므로 hex로 둔다.
+ *  색상 순서(hue)는 이전 팔레트와 같다. @see docs/design-system.md */
 export const LANE_COLORS = [
-  "#3FB3DE",
-  "#E88A5C",
-  "#54C08A",
-  "#DE6E97",
-  "#7B99E3",
-  "#D4B455",
-  "#AE8CDE",
-  "#52C4AE",
-  "#DE7373",
-  "#A2BF66",
+  "#47C0EF",
+  "#F09866",
+  "#69C88E",
+  "#EF8EB5",
+  "#99ADF7",
+  "#CAB049",
+  "#C49CF1",
+  "#34CBB7",
+  "#F6908D",
+  "#9AC066",
 ] as const;
 
 /** 커밋 행 높이(px). 그래프 캔버스와 텍스트 행이 공유한다.

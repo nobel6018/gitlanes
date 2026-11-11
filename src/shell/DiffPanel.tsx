@@ -795,7 +795,7 @@ export function DiffPanel({
 
   let body: ReactNode;
   if (binary) {
-    body = <div className="dp-message">Binary file — no text preview.</div>;
+    body = <div className="dp-message">Binary file, no text preview.</div>;
   } else if (tooLarge) {
     body = <div className="dp-message">File is too large to display.</div>;
   } else if (error !== null) {

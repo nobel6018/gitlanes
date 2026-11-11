@@ -1,0 +1,103 @@
+/* ============================================================
+   GitLanes design tokens (Hallmark Console, graphite colourway).
+   Source of truth for every colour, font and motion value.
+   theme.css maps the CONTRACTS.md variable names onto these.
+   @see docs/design-system.md
+   ============================================================ */
+
+@font-face {
+  font-family: "Host Grotesk";
+  src: url("./assets/fonts/host-grotesk-latin.woff2") format("woff2");
+  font-weight: 300 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Mono";
+  src: url("./assets/fonts/atkinson-hyperlegible-mono-latin.woff2") format("woff2");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* scale */
+  --space-3xs: 2px; --space-2xs: 4px; --space-xs: 8px; --space-sm: 12px; --space-md: 16px;
+  --space-lg: 24px; --space-xl: 40px; --space-2xl: 64px; --space-3xl: 96px; --space-4xl: 144px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); --ease-in: cubic-bezier(0.7, 0, 0.84, 0); --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 120ms; --dur-short: 220ms; --dur-long: 420ms;
+  --z-base: 1; --z-raised: 10; --z-dropdown: 100; --z-sticky: 200; --z-sticky-nav: 300; --z-modal: 400; --z-toast: 500; --z-tooltip: 600;
+
+  /* ground, three steps; ink, three steps; rules */
+  --color-paper: oklch(17% 0.008 250);
+  --color-paper-2: oklch(21% 0.009 250);
+  --color-paper-3: oklch(13.5% 0.007 250);
+  --color-ink: oklch(95% 0.005 250);
+  --color-ink-2: oklch(86% 0.008 250);
+  --color-muted: oklch(73% 0.01 250);
+  --color-rule: oklch(31% 0.01 250);
+  --color-rule-2: oklch(42% 0.012 250);
+  /* input edges: 3:1 against paper and paper-2 so a field reads as a field */
+  --color-field-edge: oklch(55% 0.012 250);
+
+  /* amber: the person, the primary action, the current thing, focus */
+  --color-accent: oklch(82% 0.15 80);
+  --color-accent-hover: oklch(86% 0.14 82);
+  --color-accent-ink: oklch(18% 0.04 75);
+  --color-accent-soft: oklch(29% 0.05 80);
+  --color-focus: oklch(82% 0.15 80);
+  /* selected rows: amber mixed into the ground, text stays ink */
+  --color-select: color-mix(in oklab, var(--color-accent) 16%, var(--color-paper));
+  --color-select-panel: color-mix(in oklab, var(--color-accent) 22%, var(--color-paper-2));
+  --color-select-strong: color-mix(in oklab, var(--color-accent) 26%, var(--color-paper));
+
+  /* cool: what an instrument wrote (sha, links, chosen toggle) */
+  --color-cool: oklch(77% 0.12 245);
+  --color-cool-soft: oklch(29% 0.05 245);
+
+  /* status and diff */
+  --color-ok: oklch(77% 0.16 150);
+  --color-ok-soft: oklch(27% 0.045 150);
+  --color-ok-line: oklch(36% 0.07 150);
+  --color-bad: oklch(71% 0.17 25);
+  --color-bad-soft: oklch(27% 0.05 25);
+  --color-bad-line: oklch(38% 0.08 25);
+  --color-changed: oklch(82% 0.11 100);
+  --color-changed-soft: oklch(28% 0.045 100);
+  --color-moved: oklch(73% 0.01 250);
+  --color-moved-soft: oklch(29% 0.01 250);
+  --color-error: var(--color-bad);
+  --color-success: var(--color-ok);
+
+  /* syntax (highlight.js) */
+  --syn-keyword: oklch(78% 0.1 305);
+  --syn-string: oklch(81% 0.11 155);
+  --syn-number: oklch(80% 0.1 55);
+  --syn-comment: oklch(68% 0.012 250);
+  --syn-type: oklch(81% 0.09 190);
+  --syn-title: oklch(80% 0.09 250);
+  --syn-variable: var(--color-ink-2);
+  --syn-tag: var(--color-ink-2);
+
+  /* overlays */
+  --color-hover: oklch(95% 0.005 250 / 0.05);
+  --color-hover-2: oklch(95% 0.005 250 / 0.09);
+  --color-scrim: oklch(10% 0.008 250 / 0.6);
+  --color-scrim-light: oklch(10% 0.008 250 / 0.45);
+  --shadow-pop: 0 8px 24px oklch(6% 0.01 250 / 0.5);
+
+  /* type */
+  --font-display: "Host Grotesk", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+    "Noto Sans KR", "Segoe UI", system-ui, sans-serif;
+  --font-body: var(--font-display);
+  --font-outlier: "Atkinson Hyperlegible Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo,
+    Consolas, "Apple SD Gothic Neo", monospace;
+  --text-xs: 11px; --text-sm: 12px; --text-md: 13px; --text-lg: 15px; --text-xl: 18px;
+  --tracking-display: -0.01em;
+
+  /* shape */
+  --radius-card: 8px; --radius-pill: 6px; --radius-chip: 4px; --rule-hair: 1px;
+}
