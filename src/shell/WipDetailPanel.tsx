@@ -10,6 +10,7 @@ import type { FileRowAction } from "./FileRow";
 import { FileTree, buildFileNavRows, readFileView, writeFileView } from "./FileTree";
 import type { FileNavRow, FileRowExtras, FileView } from "./FileTree";
 import { CommitBox } from "./CommitBox";
+import { DiscardIcon, DownloadIcon, MinusIcon, PlusIcon } from "./icons";
 import "./panels.css";
 import "./wip.css";
 
@@ -303,6 +304,38 @@ export function WipDetailPanel({
     });
   }
 
+  /** discard할 수 있는 경로. 서브모듈 포인터(gitlink)는 Rust가 거절하므로 뺀다 */
+  function discardable(group: Group, paths?: string[]): string[] {
+    const wanted = paths === undefined ? null : new Set(paths);
+    return group.entries
+      .filter((entry) => entry.file.submodule !== true)
+      .map((entry) => entry.file.path)
+      .filter((path) => wanted === null || wanted.has(path));
+  }
+
+  /**
+   * Delete, ⌘⌫(Ctrl+Backspace) (v0.24). 포커스한 그룹에서 고른 파일이 있으면 그것을, 없으면 포커스한
+   * 행을 버린다. 버튼과 같은 확인창을 거친다. 범위는 그 행의 ↺ 버튼과 같다(Unstaged는 워킹 트리만)
+   */
+  function discardFromKeyboard() {
+    if (actions === undefined || busy || focusIndex < 0) {
+      return;
+    }
+    const hit = rowAt(focusIndex);
+    if (hit === null) {
+      return;
+    }
+    const picked = selectedPaths(hit.group);
+    const targets = discardable(
+      hit.group,
+      picked.length > 0 ? picked : hit.entry === null ? [] : [hit.entry.file.path],
+    );
+    if (targets.length === 0) {
+      return;
+    }
+    run(actions.discard(targets, hit.group.id === "unstaged" ? "worktree" : "all"));
+  }
+
   /** 그룹 안에서 선택된 파일 경로 (화면 순서 그대로) */
   function selectedPaths(group: Group): string[] {
     return group.entries.filter((entry) => selected.has(entry.key)).map((entry) => entry.file.path);
@@ -332,6 +365,15 @@ export function WipDetailPanel({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const modOnly = (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey;
+    if (
+      (event.key === "Delete" && !event.metaKey && !event.ctrlKey && !event.altKey) ||
+      (event.key === "Backspace" && modOnly)
+    ) {
+      event.preventDefault();
+      discardFromKeyboard();
+      return;
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }
@@ -460,14 +502,14 @@ export function WipDetailPanel({
         ? null
         : {
             key: "update",
-            glyph: "⤓",
+            icon: <DownloadIcon />,
             label: `Update ${path} to Recorded Commit`,
             disabled: busy,
             onRun: () => onUpdateSubmodule(path),
           }
       : {
           key: "discard",
-          glyph: "↺",
+          icon: <DiscardIcon />,
           label: `Discard working tree changes in ${path}`,
           danger: true,
           disabled: busy,
@@ -477,7 +519,7 @@ export function WipDetailPanel({
       ? null
       : {
           key: "discard",
-          glyph: "↺",
+          icon: <DiscardIcon />,
           label: `Discard staged and unstaged changes in ${path}`,
           danger: true,
           disabled: busy,
@@ -490,7 +532,7 @@ export function WipDetailPanel({
         ? [
             {
               key: "stage",
-              glyph: "+",
+              icon: <PlusIcon />,
               label: `Stage ${path}`,
               disabled: busy,
               onRun: () => run(actions.stage([path])),
@@ -500,7 +542,7 @@ export function WipDetailPanel({
         : [
             {
               key: "unstage",
-              glyph: "−",
+              icon: <MinusIcon />,
               label: `Unstage ${path}`,
               disabled: busy,
               onRun: () => run(actions.unstage([path])),
@@ -587,7 +629,7 @@ export function WipDetailPanel({
                   {isUnstaged ? "Stage" : "Unstage"} {picked.length} selected
                 </button>
                 <button
-                  className="wip-btn danger"
+                  className="wip-btn wip-btn-icon danger"
                   disabled={busy}
                   onClick={() => run(actions.discard(picked, isUnstaged ? "worktree" : "all"))}
                   title={
@@ -595,18 +637,35 @@ export function WipDetailPanel({
                       ? `Discard working tree changes in ${picked.length} selected`
                       : `Discard staged and unstaged changes in ${picked.length} selected`
                   }
+                  aria-label={
+                    isUnstaged
+                      ? `Discard working tree changes in ${picked.length} selected`
+                      : `Discard staged and unstaged changes in ${picked.length} selected`
+                  }
                 >
-                  ↺
+                  <DiscardIcon />
                 </button>
               </>
             ) : (
-              <button
-                className="wip-btn"
-                disabled={busy}
-                onClick={() => run(isUnstaged ? actions.stageAll() : actions.unstageAll())}
-              >
-                {isUnstaged ? "Stage all" : "Unstage all"}
-              </button>
+              <>
+                <button
+                  className="wip-btn"
+                  disabled={busy}
+                  onClick={() => run(isUnstaged ? actions.stageAll() : actions.unstageAll())}
+                >
+                  {isUnstaged ? "Stage all" : "Unstage all"}
+                </button>
+                {isUnstaged && discardable(group).length > 0 && (
+                  <button
+                    className="wip-btn danger"
+                    disabled={busy}
+                    onClick={() => run(actions.discard(discardable(group), "worktree"))}
+                    title="Discard every unstaged change. Staged changes are kept, untracked files are deleted"
+                  >
+                    Discard all
+                  </button>
+                )}
+              </>
             )}
           </span>
         )}

@@ -154,6 +154,7 @@ pub fn run() {
         // 되돌리기
         ops::undo::get_ref_snapshot,
         ops::undo::git_undo,
+        ops::discard_undo::get_work_snapshot,
         // 히스토리 탐색 (v0.18, 읽기 전용)
         inspect::get_file_history,
         inspect::get_blame,

@@ -473,7 +473,8 @@ export interface BranchUpstream {
 }
 
 /**
- * 되돌릴 수 있는 작업. 데이터 자체가 사라지는 작업(discard, clean, stash drop)은 되돌릴 수 없어 넣지 않는다.
+ * 되돌릴 수 있는 작업. stash drop처럼 데이터 자체가 사라지는 작업은 넣지 않는다.
+ * v0.24부터 discard(파일, hunk, 줄)와 clean은 버리기 전 파일 내용을 tree로 찍어 두어 되돌린다(kind "discard").
  * merge, pull, cherry-pick, rebase는 워킹트리까지 바뀌어 ref만 되돌려서는 원상복구가 안 되므로 넣지 않는다
  */
 export type UndoKind =
@@ -485,7 +486,8 @@ export type UndoKind =
   | "renameBranch"
   | "createTag"
   | "deleteTag"
-  | "reset";
+  | "reset"
+  | "discard";
 
 export interface UndoEntry {
   kind: UndoKind;
@@ -495,9 +497,29 @@ export interface UndoEntry {
   after: RefSnapshot;
   /** kind가 "reset"일 때 그 reset의 모드. 그 외는 null */
   resetMode: "soft" | "mixed" | "hard" | null;
+  /** kind가 "discard"일 때만 (v0.24) */
+  discard?: DiscardUndo;
+}
+
+/** 파일 내용 스냅샷 (v0.24). 둘 다 git tree sha. index는 실제 인덱스, worktree는 대상 경로의 워킹 트리 내용 */
+export interface WorkSnapshot {
+  index: string;
+  worktree: string;
+}
+
+/** discard 되돌리기에 필요한 것 (v0.24). @see docs/decisions.md#discard-되돌리기 */
+export interface DiscardUndo {
+  files: string[];
+  /** staged 변경까지 버린 discard("all")면 true. 인덱스도 되돌린다 */
+  restoreIndex: boolean;
+  before: WorkSnapshot;
+  after: WorkSnapshot;
 }
 
 // get_ref_snapshot(path) -> RefSnapshot
+// get_work_snapshot(path, files: string[]) -> WorkSnapshot   (v0.24)
+//   대상 경로의 인덱스와 워킹 트리 내용을 tree 두 개로 찍는다. 실제 인덱스는 움직이지 않는다.
+//   충돌 중이면 reject. 프론트는 그때 되돌리기만 포기한다
 // git_undo(path, entry: UndoEntry) -> OpResult
 //   현재 상태가 entry.after와 다르면(그 사이 다른 작업이 있었으면) git을 실행하지 않고 ok=false와
 //   사람이 읽을 이유를 돌려준다. 남의 작업을 덮어쓰지 않기 위해서다. 비교는 이 작업이 바꾼 ref만 본다.
@@ -508,6 +530,8 @@ export interface UndoEntry {
 //     지우고 그 브랜치의 upstream 설정도 지운다(옛 값 인자로 묶어서)
 //   - createBranch/deleteBranch/renameBranch/createTag/deleteTag: update-ref로 before 상태 복원
 //     v0.18.1: 되살린 브랜치는 before.upstreams의 설정도 복원하고, 지운 브랜치의 설정은 지운다
+//   - discard (v0.24): entry.discard.files가 지금도 after와 같을 때만 before 내용으로 되돌린다.
+//     restoreIndex면 인덱스도. discard가 되살린 파일(지웠던 파일)은 다시 지운다
 //   - reset: before.headSha로 같은 모드 reset. hard는 워킹트리가 깨끗할 때만(아니면 ok=false)
 //   v0.18.1: commit, amend, reset 되돌리기의 ref 이동은 `update-ref <ref> <before> <after>`로 옛 값을 묶는다.
 //   검사와 실행 사이에 ref가 움직이면 git이 거절한다. index와 워킹트리는 그 뒤 `reset --mixed`/`--hard`(대상 없이)로 맞춘다

@@ -22,6 +22,7 @@
 pub mod branch;
 pub mod commit;
 pub mod conflict;
+pub mod discard_undo;
 pub mod history;
 pub mod interactive;
 pub mod network;

@@ -1302,6 +1302,36 @@ function removeFiles(area: FileChange[], paths: string[]): void {
 }
 
 /**
+ * get_work_snapshot mock (v0.24). 실제는 tree sha를 돌려주지만, mock은 WIP 목록 사본을 저장하고 그 키를
+ * sha 모양으로 돌려준다. git_undo(kind "discard")가 before 키의 사본에서 대상 경로를 되살린다
+ */
+const workSnapshots = new Map<string, WipDetails>();
+
+function mockWorkSnapshot(): { index: string; worktree: string } {
+  const key = (workSnapshots.size + 1).toString(16).padStart(40, "0");
+  workSnapshots.set(key, {
+    ...wipStore,
+    staged: wipStore.staged.map((file) => ({ ...file })),
+    unstaged: wipStore.unstaged.map((file) => ({ ...file })),
+    untracked: wipStore.untracked.map((file) => ({ ...file })),
+  });
+  return { index: key, worktree: key };
+}
+
+function restoreWorkSnapshot(key: string, paths: string[]): boolean {
+  const saved = workSnapshots.get(key);
+  if (saved === undefined) {
+    return false;
+  }
+  const wanted = new Set(paths);
+  for (const area of ["staged", "unstaged", "untracked"] as const) {
+    removeFiles(wipStore[area], paths);
+    wipStore[area].unshift(...saved[area].filter((file) => wanted.has(file.path)).map((file) => ({ ...file })));
+  }
+  return true;
+}
+
+/**
  * 쓰기 command를 처리한다. 모르는 command면 null을 돌려 기존 switch로 넘긴다.
  * 각 분기는 mock 상태를 실제로 고친다 (stage 하면 파일이 옮겨 가고, commit 하면 행이 생긴다).
  */
@@ -2045,6 +2075,25 @@ function handleWrite(cmd: string, payload: unknown): OpResult | null {
       if (entry === undefined) {
         return fail(["undo"], "error: missing undo entry");
       }
+      if (entry.kind === "discard" && entry.discard !== undefined) {
+        const undo = entry.discard;
+        const command = ["restore", `--source=${undo.before.worktree}`, "--worktree", "--", ...undo.files];
+        if (PARAMS.get("undo") === "stale") {
+          return {
+            ok: false,
+            stdout: "",
+            stderr: "The files changed since they were discarded. Undo would overwrite those changes, so it was skipped.",
+            conflicts: [],
+            command: [],
+            needsAuth: false,
+            deniedAccount: null,
+          };
+        }
+        if (shouldFail(cmd) || !restoreWorkSnapshot(undo.before.worktree, undo.files)) {
+          return fail(command, "error: could not restore the discarded files");
+        }
+        return ok(command);
+      }
       const command =
         entry.kind === "commit" || entry.kind === "amend"
           ? ["reset", "--soft", entry.before.headSha]
@@ -2243,6 +2292,10 @@ mockIPC(async (cmd, payload) => {
     case "get_ref_snapshot":
       await sleep(30);
       return mockRefSnapshot();
+
+    case "get_work_snapshot":
+      await sleep(20);
+      return mockWorkSnapshot();
 
     case "list_remotes":
       await sleep(35);

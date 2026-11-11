@@ -22,6 +22,7 @@ import type {
 } from "../types";
 import * as api from "./api";
 import { basename } from "./format";
+import { kbd } from "./shortcuts";
 // 다이얼로그와 토스트의 모양은 ui-actions 소유다. 여기서 새로 정의하지 않고 그대로 쓴다
 import type { ConfirmSpec } from "./Dialogs";
 import type { ToastProps } from "./Toast";
@@ -65,6 +66,8 @@ export interface RepoActions {
     reverse: boolean,
     scope?: string,
     encoding?: WipDiff["encoding"],
+    /** 패치 대상 파일 (v0.24). 있으면 워킹 트리 discard를 되돌릴 수 있게 스냅샷을 찍는다 */
+    file?: string,
   ): Promise<void>;
   clean(paths: string[]): Promise<void>;
   // 커밋
@@ -352,8 +355,20 @@ interface RunSpec {
    * 되돌릴 수 있는 작업이면 채운다. command 전후로 get_ref_snapshot을 찍어 UndoEntry를 만든다.
    * 스냅샷은 command와 같은 큐 항목 안에서 찍어 다른 쓰기가 사이에 끼지 않게 한다
    */
-  undo?: { kind: UndoKind; label: string; resetMode?: UndoEntry["resetMode"] };
+  undo?: {
+    kind: UndoKind;
+    label: string;
+    resetMode?: UndoEntry["resetMode"];
+    /**
+     * kind "discard"일 때 (v0.24). command 전후로 get_work_snapshot도 찍는다. ref는 그대로라
+     * ref 스냅샷이 같아도 항목을 만든다. @see docs/decisions.md#discard-되돌리기
+     */
+    discard?: { files: string[]; restoreIndex: boolean };
+  };
 }
+
+/** 확인창 undo 줄. discard 계열은 v0.24부터 되돌릴 수 있다 */
+const DISCARD_UNDO_NOTE = `Undo (${kbd("Mod+Z")}) brings them back while this repository stays open, as long as the files do not change again first.`;
 
 export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
   const { repoPath } = opts;
@@ -428,10 +443,35 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           : async (): Promise<OpResult> => {
               // 스냅샷을 못 찍으면 되돌리기만 포기하고 작업은 그대로 한다
               const before = await api.getRefSnapshot(path).catch(() => null);
+              const files = undoSpec.discard;
+              const workBefore =
+                files === undefined
+                  ? null
+                  : await api.getWorkSnapshot(path, files.files).catch(() => null);
               const result = await spec.call();
               if (result.ok && before !== null) {
                 const after = await api.getRefSnapshot(path).catch(() => null);
-                if (after !== null && !sameSnapshot(before, after)) {
+                if (files !== undefined) {
+                  const workAfter =
+                    workBefore === null
+                      ? null
+                      : await api.getWorkSnapshot(path, files.files).catch(() => null);
+                  if (after !== null && workBefore !== null && workAfter !== null) {
+                    recorded.entry = {
+                      kind: undoSpec.kind,
+                      label: undoSpec.label,
+                      before,
+                      after,
+                      resetMode: null,
+                      discard: {
+                        files: files.files,
+                        restoreIndex: files.restoreIndex,
+                        before: workBefore,
+                        after: workAfter,
+                      },
+                    };
+                  }
+                } else if (after !== null && !sameSnapshot(before, after)) {
                   recorded.entry = {
                     kind: undoSpec.kind,
                     label: undoSpec.label,
@@ -542,10 +582,15 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
               area === "worktree"
                 ? "Unstaged changes will be thrown away. Anything already staged is kept. Untracked files among them are deleted from disk."
                 : "Local changes will be thrown away, staged and unstaged alike. Untracked files among them are deleted from disk.",
-            undo: "This cannot be undone. Uncommitted changes are not stored anywhere, not even in the reflog.",
+            undo: DISCARD_UNDO_NOTE,
             scope: fileWord(files.length),
             confirmLabel: "Discard",
             danger: true,
+          },
+          undo: {
+            kind: "discard",
+            label: `Undo discard of ${fileWord(files.length)}`,
+            discard: { files, restoreIndex: area === "all" },
           },
           call: () => api.gitDiscard(path, files, area),
         }),
@@ -567,7 +612,7 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
       // 워킹 트리에서 버리기는 파일 단위 discard와 같은 효과다. 실수로 옆 버튼을 눌러도
       // 미커밋 변경이 사라지지 않게 확인을 받는다 (audit-state H2). 인덱스 쪽 조작은
       // 워킹 트리에 내용이 남아 있어 되돌릴 수 있으므로 묻지 않는다
-      applyPatch: (patch, cached, reverse, scope, encoding) =>
+      applyPatch: (patch, cached, reverse, scope, encoding, file) =>
         exec({
           success: null,
           failure: "Applying the patch failed",
@@ -576,10 +621,22 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
               ? {
                   title: "Discard these changes?",
                   body: "The selected changes will be removed from the file in the working tree.",
-                  undo: "This cannot be undone. Uncommitted changes are not stored anywhere, not even in the reflog.",
+                  undo:
+                    file === undefined
+                      ? "This cannot be undone. Uncommitted changes are not stored anywhere, not even in the reflog."
+                      : DISCARD_UNDO_NOTE,
                   scope: scope ?? null,
                   confirmLabel: "Discard",
                   danger: true,
+                }
+              : undefined,
+          // 워킹 트리에서 버릴 때만 되돌리기를 남긴다. 인덱스 쪽은 워킹 트리에 내용이 남아 있다
+          undo:
+            !cached && reverse && file !== undefined
+              ? {
+                  kind: "discard",
+                  label: `Undo discard of ${scope ?? "changes"} in ${basename(file)}`,
+                  discard: { files: [file], restoreIndex: false },
                 }
               : undefined,
           call: () => api.gitApplyPatch(path, patch, cached, reverse, encoding ?? "utf8"),
@@ -592,10 +649,15 @@ export function useRepoActions(opts: UseRepoActionsOptions): RepoActions {
           confirm: {
             title: "Delete untracked files?",
             body: "Files that git does not track will be deleted from disk.",
-            undo: "This cannot be undone. Untracked files were never stored in git.",
+            undo: DISCARD_UNDO_NOTE,
             scope: fileWord(paths.length),
             confirmLabel: "Delete",
             danger: true,
+          },
+          undo: {
+            kind: "discard",
+            label: `Undo delete of ${fileWord(paths.length)}`,
+            discard: { files: paths, restoreIndex: false },
           },
           call: () => api.gitClean(path, paths),
         }),

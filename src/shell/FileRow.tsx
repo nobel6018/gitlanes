@@ -1,4 +1,4 @@
-import type { MouseEvent } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import type { FileChange, FileStatus } from "../types";
 import { splitPath, statusLabel } from "./format";
 
@@ -31,8 +31,8 @@ export function SubmoduleIcon({ size = 11 }: { size?: number }) {
 /** hover 시 행 오른쪽에 뜨는 버튼 하나 */
 export interface FileRowAction {
   key: string;
-  /** 버튼에 찍는 글리프 (+, −, ↺) */
-  glyph: string;
+  /** 버튼 안의 SVG 아이콘 (icons.tsx). 글자 대신 쓴다 */
+  icon: ReactNode;
   /** 툴팁과 스크린리더 레이블 */
   label: string;
   onRun: () => void;
@@ -154,7 +154,7 @@ export function FileRow({
               aria-label={action.label}
               tabIndex={-1}
             >
-              {action.glyph}
+              {action.icon}
             </button>
           ))}
         </span>

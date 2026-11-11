@@ -1210,3 +1210,22 @@ export interface SubmoduleChangePanelProps {
 
 동결: `src/types.ts`, `src/constants.ts`, `CONTRACTS.md`, `package.json`. 새 npm/Rust 다운로드 금지. rust20은 `/Users/levit/leedo/target-rust20`.
 **세션이 자주 끊긴다. 단계마다 커밋하고, 추가 지시는 끝나면 한 줄로 알린다.**
+
+# v0.24.0 - discard 되돌리기, Discard all, discard 단축키
+
+## 되돌리기 (types.ts `UndoKind` "discard", `UndoEntry.discard`, `WorkSnapshot`, `DiscardUndo`)
+
+- 파일 discard(`git_discard`), hunk와 줄 discard(`git_apply_patch` cached=false reverse=true), untracked 삭제(`git_clean`)는 v0.17 되돌리기 스택에 들어간다. 툴바 Undo와 ⌘Z가 그대로 쓴다
+- 액션 계층이 실행 전후로 `get_ref_snapshot`에 더해 `get_work_snapshot(path, files)`를 찍는다. 둘 중 하나라도 못 찍으면 되돌리기만 포기하고 discard는 한다
+- `get_work_snapshot`: 인덱스는 `write-tree`, 워킹 트리는 git 디렉토리 안 인덱스 사본에 `add -A -- <files>` 후 `write-tree`. 실제 인덱스는 움직이지 않는다. 디스크에도 인덱스에도 없는 경로는 빼고 찍는다
+- `git_undo`(kind "discard"): `files`의 내용이 지금도 `after`와 같을 때만 `before`로 되돌린다(`ls-tree` 비교). 다르면 git을 실행하지 않고 ok=false. `restoreIndex`면 인덱스도 되돌린다. discard가 되살린 파일(워킹 트리에서 지웠던 파일)은 다시 지운다
+- 확인창은 그대로 띄우고, undo 줄 문구만 "Undo(⌘Z)로 되살린다"로 바꾼다
+- 레포를 바꾸면 스택을 비우는 규칙은 같다. tree 객체는 어느 ref에도 걸리지 않아 `gc` 유예 기간(기본 2주) 동안 남는다
+
+## 화면
+
+- WIP Unstaged 머리: 아무것도 고르지 않았을 때 `Stage all` 옆에 `Discard all`(서브모듈 포인터 제외, area "worktree"). 확인창은 파일 discard와 같다
+- WIP 행 버튼(stage, unstage, discard, update)과 선택분 discard 버튼은 글리프 대신 `src/shell/icons.tsx` SVG
+- 단축키 Delete, ⌘⌫(Ctrl+Backspace): 파일 목록에서는 고른 파일(없으면 포커스한 행)을 그 그룹의 area로, diff에서는 고른 줄(없으면 머리 n/m의 hunk)을 워킹 트리에서 버린다. 항상 확인창을 거친다. staged diff에서는 아무것도 하지 않는다
+
+@see docs/decisions.md#discard-되돌리기

@@ -491,6 +491,8 @@ pub enum UndoKind {
     CreateTag,
     DeleteTag,
     Reset,
+    /// v0.24. discard, hunk discard, clean. ref가 아니라 파일 내용을 되돌린다([`DiscardUndo`])
+    Discard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,6 +513,33 @@ pub struct UndoEntry {
     pub after: RefSnapshot,
     /// kind가 Reset일 때만 Some
     pub reset_mode: Option<ResetMode>,
+    /// kind가 Discard일 때만 Some (v0.24). 예전 프론트가 보낸 항목에는 없다
+    #[serde(default)]
+    pub discard: Option<DiscardUndo>,
+}
+
+/// 파일 내용 스냅샷 (v0.24). 둘 다 git tree sha다.
+///
+/// `index`는 실제 인덱스를 `write-tree`한 것이고, `worktree`는 인덱스 사본에 워킹 트리의 대상 파일을
+/// `add -A`한 뒤 `write-tree`한 것이다. untracked 파일도 담긴다. 어느 ref에도 걸리지 않은 객체라
+/// `gc`의 유예 기간(기본 2주) 동안 남는다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkSnapshot {
+    pub index: String,
+    pub worktree: String,
+}
+
+/// discard를 되돌리는 데 필요한 것 (v0.24). @see docs/decisions.md#discard-되돌리기
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardUndo {
+    /// discard한 경로. 스냅샷과 비교, 복원 모두 이 경로로 한정한다
+    pub files: Vec<String>,
+    /// staged 변경까지 버린 discard("all")면 인덱스도 되돌린다
+    pub restore_index: bool,
+    pub before: WorkSnapshot,
+    pub after: WorkSnapshot,
 }
 
 /// 비교 결과와 파일 히스토리에 쓰는 커밋 요약 (v0.18).

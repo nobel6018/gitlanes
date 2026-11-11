@@ -3334,7 +3334,7 @@ export function RepoWorkspace({
         );
         return;
       }
-      await actions.applyPatch(patch, cached, reverse, scope, fresh.encoding);
+      await actions.applyPatch(patch, cached, reverse, scope, fresh.encoding, open.file.path);
     },
     [actions, showError, showToast],
   );
