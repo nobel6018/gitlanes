@@ -1,3 +1,5 @@
+/* Hallmark · restyle of the project's own sheet · stamp and critique: src/theme.css · theme: Console · shape: app screen · redesign: restyle · v2.0.0 */
+/* Hallmark · waive 24b · off-scale spacing in panels.css · diff panel, quick switcher and dialogs keep 5px and 6px insets so diff lines sit on the 20px code rhythm */
 /* ============================================================
    ui-panels 전용 스타일. shell.css는 ui-shell 소유이므로
    상세 패널 키보드 탐색과 신규 오버레이 스타일만 여기에 둔다.
@@ -8,8 +10,8 @@
 
 .qs-item mark,
 .fr-cell mark {
-  background: rgba(212, 180, 85, 0.28);
-  color: inherit;
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
   border-radius: 2px;
   padding: 0 1px;
 }
@@ -23,21 +25,21 @@
 }
 
 .file-nav:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
 
-/* 포커스 행 강조. 클릭 선택과 구분되도록 왼쪽 막대 + 옅은 배경 */
+/* 포커스 행 강조. 클릭 선택과 구분되도록 옅은 배경 + 행 전체 테두리 */
 .file-nav .file-row.kb-focus,
 .file-nav .tree-dir.kb-focus {
-  background: var(--hover-bg);
-  box-shadow: inset 2px 0 0 var(--accent);
-  color: var(--fg-1);
+  background: var(--color-hover-2);
+  box-shadow: inset 0 0 0 1px var(--color-rule-2);
+  color: var(--color-ink);
 }
 
 .file-nav:focus-visible .file-row.kb-focus,
 .file-nav:focus-visible .tree-dir.kb-focus {
-  background: var(--accent-soft);
+  background: var(--color-select-panel);
 }
 
 /* diff 화면 래퍼. ←/Backspace로 목록 복귀를 받기 위해 포커스 가능 */
@@ -50,7 +52,7 @@
 }
 
 .panel-diff-nav:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 2px solid var(--color-focus);
   outline-offset: -1px;
 }
 
@@ -61,7 +63,7 @@
   inset: 0;
   z-index: 60;
   display: flex;
-  background: rgba(12, 13, 16, 0.55);
+  background: var(--color-scrim);
 }
 
 /* ---------- 단축키 치트시트 ---------- */
@@ -72,14 +74,14 @@
 }
 
 .sc-modal {
-  width: min(760px, calc(100vw - 48px));
+  width: min(760px, 100% - 48px);
   max-height: calc(100vh - 80px);
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
   border: 1px solid var(--border-1);
   border-radius: 6px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
 
@@ -97,9 +99,7 @@
   flex: 1 1 auto;
   margin: 0;
   font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-weight: 500;
   color: var(--fg-2);
 }
 
@@ -136,10 +136,8 @@
 
 .sc-group-title {
   margin: 6px 0 3px;
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--fg-2);
 }
 
@@ -170,7 +168,7 @@
 
 .sc-or {
   color: var(--fg-2);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 kbd.sc-key {
@@ -190,7 +188,7 @@ kbd.sc-key {
 }
 
 kbd.sc-key.wide {
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 @media (max-width: 700px) {
@@ -204,18 +202,18 @@ kbd.sc-key.wide {
 .ov-backdrop.qs-backdrop {
   align-items: flex-start;
   justify-content: center;
-  background: rgba(12, 13, 16, 0.4);
+  background: var(--color-scrim-light);
 }
 
 .qs-modal {
   margin-top: 84px;
-  width: min(560px, calc(100vw - 48px));
+  width: min(560px, 100% - 48px);
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
   border: 1px solid var(--border-1);
   border-radius: 6px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
 
@@ -287,15 +285,13 @@ kbd.sc-key.wide {
 .qs-tag {
   flex: 0 0 auto;
   color: var(--fg-2);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-size: 11px;
 }
 
 .qs-sha {
   flex: 0 0 auto;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--fg-2);
 }
 
@@ -312,7 +308,14 @@ kbd.sc-key.wide {
   padding: 4px 10px;
   border-top: 1px solid var(--border-1);
   color: var(--fg-2);
-  font-size: 10.5px;
+  font-size: 11px;
+}
+
+/* 키 안내는 가운뎃점 대신 간격으로 나눈다 */
+.qs-keys {
+  display: flex;
+  gap: 12px;
+  margin-left: auto;
 }
 
 /* ---------- 검색 필터 결과 목록 ---------- */
@@ -334,10 +337,8 @@ kbd.sc-key.wide {
   padding: 0 10px;
   border-bottom: 1px solid var(--border-1);
   background: var(--bg-toolbar);
-  font-size: 10.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--fg-2);
 }
 
@@ -351,10 +352,8 @@ kbd.sc-key.wide {
   height: 20px;
   padding: 0 10px;
   border-bottom: 1px solid var(--border-1);
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--fg-2);
   line-height: 20px;
 }
@@ -461,7 +460,7 @@ kbd.sc-key.wide {
 /* hover 피드백을 shell.css 기본(0.05)보다 한 단계 또렷하게 */
 .file-nav .file-row:hover,
 .file-nav .tree-dir:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--color-hover-2);
 }
 
 .file-nav .file-row .file-path {
@@ -526,7 +525,7 @@ kbd.sc-key.wide {
   height: 15px;
   border-radius: 3px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0;
@@ -534,54 +533,43 @@ kbd.sc-key.wide {
 
 .st-M,
 .st-T {
-  background: rgba(212, 180, 85, 0.22);
+  background: var(--color-changed-soft);
   color: var(--modified);
 }
 
 .st-A {
-  background: rgba(84, 192, 138, 0.22);
+  background: var(--color-ok-soft);
   color: var(--added);
 }
 
 .st-D {
-  background: rgba(222, 115, 115, 0.22);
+  background: var(--color-bad-soft);
   color: var(--deleted);
 }
 
 .st-R,
 .st-C {
-  background: rgba(147, 151, 159, 0.22);
-  color: var(--fg-2);
+  background: var(--color-moved-soft);
+  color: var(--color-moved);
 }
 
-/* 메인 영역 뷰어에 열려 있는 파일 */
+/* 메인 영역 뷰어에 열려 있는 파일: 행 전체를 amber로 옅게 물들이고 글자는 ink */
 .file-nav .file-row.active {
-  background: var(--accent);
-  color: #fff;
+  background: var(--color-select-panel);
+  color: var(--color-ink);
 }
 
 .file-nav .file-row.active .path-dir {
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--color-ink-2);
 }
 
 .file-nav .file-row.active .path-base {
-  color: #fff;
+  color: var(--color-ink);
 }
 
-/* 포커스 행과 열린 파일이 겹치면 열린 파일(solid accent)이 이긴다 */
+/* 포커스 행과 열린 파일이 겹치면 열린 파일이 이긴다 */
 .file-nav:focus-visible .file-row.active {
-  background: var(--accent);
-}
-
-/* accent 배경 위에서는 뱃지와 ± 숫자를 흰 계열로 바꿔 대비를 지킨다 */
-.file-nav .file-row.active .file-icon {
-  background: rgba(255, 255, 255, 0.22);
-  color: #fff;
-}
-
-.file-nav .file-row.active .stat-add,
-.file-nav .file-row.active .stat-del {
-  color: rgba(255, 255, 255, 0.88);
+  background: var(--color-select-panel);
 }
 
 /* "N modified · N added · N deleted" */
@@ -757,8 +745,9 @@ kbd.sc-key.wide {
 .dp-icon-btn:disabled,
 .dp-toggle:disabled,
 .view-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
+  opacity: 0.55;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 .dp-hunk-count {
@@ -775,7 +764,7 @@ kbd.sc-key.wide {
   border: 1px solid var(--border-1);
   border-radius: 4px;
   color: var(--fg-2);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 16px;
 }
@@ -786,9 +775,9 @@ kbd.sc-key.wide {
 }
 
 .dp-toggle.on {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--color-cool-soft);
+  border-color: var(--color-cool-soft);
+  color: var(--color-ink);
 }
 
 .dp-body {
@@ -802,7 +791,7 @@ kbd.sc-key.wide {
 }
 
 .dp-body:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 2px solid var(--color-focus);
   outline-offset: -1px;
 }
 
@@ -858,17 +847,15 @@ kbd.sc-key.wide {
 .dp-code {
   flex: 1 1 auto;
   padding: 0 10px 0 2px;
-  /* 코드 본문은 --fg-1(#D0D3D9)보다 밝게. 하이라이트 안 된 텍스트의 기본색 */
-  color: #E4E7EC;
+  /* 코드 본문은 --fg-1(ink-2)보다 밝게. 하이라이트 안 된 텍스트의 기본색 */
+  color: var(--color-ink);
   user-select: text;
   -webkit-user-select: text;
 }
 
-/* add/del: 배경을 좀 더 진하게 + 좌측 2px 실선 강조바(레이아웃 안 밀도록 inset shadow).
-   GitKraken처럼 줄 종류가 한눈에 스캔된다 */
+/* add/del: 행 전체 틴트와 +/- 기호로 줄 종류를 구분한다 */
 .dp-line.dp-add {
-  background: rgba(84, 192, 138, 0.2);
-  box-shadow: inset 2px 0 0 var(--added);
+  background: var(--color-ok-soft);
 }
 
 .dp-line.dp-add .dp-sign {
@@ -876,8 +863,7 @@ kbd.sc-key.wide {
 }
 
 .dp-line.dp-del {
-  background: rgba(222, 115, 115, 0.2);
-  box-shadow: inset 2px 0 0 var(--deleted);
+  background: var(--color-bad-soft);
 }
 
 .dp-line.dp-del .dp-sign {
@@ -885,7 +871,7 @@ kbd.sc-key.wide {
 }
 
 .dp-line.dp-hunk {
-  background: rgba(111, 168, 232, 0.08);
+  background: color-mix(in oklab, var(--color-cool-soft) 55%, transparent);
   color: var(--link);
 }
 
@@ -911,21 +897,19 @@ kbd.sc-key.wide {
 }
 
 .dp-half.dp-add {
-  background: rgba(84, 192, 138, 0.2);
-  box-shadow: inset 2px 0 0 var(--added);
+  background: var(--color-ok-soft);
 }
 
 .dp-half.dp-del {
-  background: rgba(222, 115, 115, 0.2);
-  box-shadow: inset 2px 0 0 var(--deleted);
+  background: var(--color-bad-soft);
 }
 
 /* 대응하는 줄이 없는 쪽은 해칭으로 비운다 */
 .dp-half.dp-empty {
   background-image: repeating-linear-gradient(
     45deg,
-    rgba(255, 255, 255, 0.035) 0,
-    rgba(255, 255, 255, 0.035) 1px,
+    var(--color-hover) 0,
+    var(--color-hover) 1px,
     transparent 1px,
     transparent 6px
   );
@@ -957,7 +941,7 @@ kbd.sc-key.wide {
 .hljs-literal,
 .hljs-doctag,
 .hljs-meta .hljs-keyword {
-  color: #CBA6F7;
+  color: var(--syn-keyword);
 }
 
 /* 문자열은 add 배경(초록)과 겹쳐 뭉개지지 않게 더 밝은 초록으로 분리한다 */
@@ -967,7 +951,7 @@ kbd.sc-key.wide {
 .hljs-attribute,
 .hljs-meta .hljs-string,
 .hljs-quote {
-  color: #8BDBA4;
+  color: var(--syn-string);
 }
 
 .hljs-number,
@@ -976,14 +960,14 @@ kbd.sc-key.wide {
 .hljs-link,
 .hljs-selector-attr,
 .hljs-selector-pseudo {
-  color: #F0A177;
+  color: var(--syn-number);
 }
 
-/* 주석: fg-2(#93979F)는 너무 흐리다. 읽히되 튀지 않는 밝기로 */
+/* 주석: fg-2보다 조금 밝게. 읽히되 튀지 않는 밝기로 */
 .hljs-comment,
 .hljs-meta,
 .hljs-deletion {
-  color: #9DA8B8;
+  color: var(--syn-comment);
   font-style: italic;
 }
 
@@ -992,7 +976,7 @@ kbd.sc-key.wide {
 .hljs-title.class_,
 .hljs-built_in,
 .hljs-builtin-name {
-  color: #5FD3BD;
+  color: var(--syn-type);
 }
 
 .hljs-title,
@@ -1002,7 +986,7 @@ kbd.sc-key.wide {
 .hljs-name,
 .hljs-selector-id,
 .hljs-selector-class {
-  color: #8FACF5;
+  color: var(--syn-title);
 }
 
 .hljs-variable,
@@ -1010,12 +994,12 @@ kbd.sc-key.wide {
 .hljs-attr,
 .hljs-params,
 .hljs-property {
-  color: #E4E7EC;
+  color: var(--syn-variable);
 }
 
 /* JSX/HTML 태그 괄호: fg-2는 TSX에서 너무 묻힌다. 밝은 중립색으로 */
 .hljs-tag {
-  color: #C6CCD6;
+  color: var(--syn-tag);
 }
 
 .hljs-strong {
@@ -1047,7 +1031,7 @@ kbd.sc-key.wide {
 .wip-refreshing {
   flex: 0 0 auto;
   color: var(--fg-2);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .sum-untracked {
@@ -1070,7 +1054,7 @@ kbd.sc-key.wide {
   border: 1px solid var(--border-1);
   color: var(--fg-2);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 12px;
   text-align: center;
@@ -1078,12 +1062,12 @@ kbd.sc-key.wide {
 
 .wip-count-staged {
   color: var(--added);
-  border-color: rgba(84, 192, 138, 0.5);
+  border-color: var(--color-ok-line);
 }
 
 .wip-count-unstaged {
   color: var(--modified);
-  border-color: rgba(212, 180, 85, 0.5);
+  border-color: color-mix(in oklab, var(--color-changed) 45%, transparent);
 }
 
 /* WIP 패널은 섹션 자체가 파일 목록이라 마지막 구분선을 지운다 */
@@ -1144,11 +1128,9 @@ kbd.sc-key.wide {
   border-radius: 8px;
   background: var(--bg-panel);
   color: var(--fg-2);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   line-height: 13px;
-  letter-spacing: 0.3px;
-  text-transform: uppercase;
   white-space: nowrap;
 }
 
@@ -1162,14 +1144,14 @@ kbd.sc-key.wide {
 }
 
 .dlg {
-  width: min(420px, calc(100vw - 48px));
+  width: min(420px, 100% - 48px);
   display: flex;
   flex-direction: column;
   padding: 14px 16px 12px;
   background: var(--bg-panel);
   border: 1px solid var(--border-1);
   border-radius: 8px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
 }
 
 .dlg-title {
@@ -1192,16 +1174,14 @@ kbd.sc-key.wide {
 .dlg-label {
   margin: 4px 0 4px;
   font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-weight: 500;
   color: var(--fg-2);
 }
 
 .dlg-input {
   height: 28px;
   padding: 0 8px;
-  border: 1px solid var(--border-1);
+  border: 1px solid var(--color-field-edge);
   border-radius: 4px;
   background: var(--bg-content);
   color: var(--fg-1);
@@ -1210,8 +1190,9 @@ kbd.sc-key.wide {
   outline: none;
 }
 
-.dlg-input:focus {
-  border-color: var(--accent);
+.dlg-input:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -1px;
 }
 
 .dlg-input.bad {
@@ -1252,20 +1233,20 @@ kbd.sc-key.wide {
 }
 
 .dlg-btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-ink);
 }
 
 .dlg-btn.primary:hover:not(:disabled) {
-  filter: brightness(1.12);
-  background: var(--accent);
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
 }
 
 .dlg-btn.primary.danger {
   background: var(--deleted);
   border-color: var(--deleted);
-  color: #1C1E23;
+  color: var(--color-paper-3);
 }
 
 .dlg-btn.primary.danger:hover:not(:disabled) {
@@ -1273,8 +1254,9 @@ kbd.sc-key.wide {
 }
 
 .dlg-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
+  opacity: 0.55;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 /* ---------- 충돌 배너 ---------- */
@@ -1308,7 +1290,7 @@ kbd.sc-key.wide {
 }
 
 .cfb-main:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--color-hover);
 }
 
 .cfb-text {
@@ -1334,8 +1316,8 @@ kbd.sc-key.wide {
   border-radius: 9px;
   background: var(--bg-panel);
   color: var(--fg-2);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-family: var(--font-ui);
+  font-size: 11px;
   line-height: 16px;
   white-space: nowrap;
   overflow: hidden;
@@ -1345,7 +1327,7 @@ kbd.sc-key.wide {
 .cfb-more {
   flex: 0 0 auto;
   color: var(--fg-2);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 16px;
 }
 
@@ -1375,14 +1357,14 @@ kbd.sc-key.wide {
 }
 
 .pf-modal {
-  width: min(620px, calc(100vw - 48px));
-  height: min(420px, calc(100vh - 96px));
+  width: min(620px, 100% - 48px);
+  height: min(420px, 100% - 96px);
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
   border: 1px solid var(--border-1);
   border-radius: 8px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
   overflow: hidden;
 }
 
@@ -1400,9 +1382,7 @@ kbd.sc-key.wide {
   flex: 1 1 auto;
   margin: 0;
   font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-weight: 500;
   color: var(--fg-2);
 }
 
@@ -1456,8 +1436,8 @@ kbd.sc-key.wide {
 }
 
 .pf-tab.on {
-  background: var(--accent);
-  color: #fff;
+  background: var(--color-cool-soft);
+  color: var(--color-ink);
 }
 
 .pf-tab-icon {
@@ -1468,7 +1448,7 @@ kbd.sc-key.wide {
 }
 
 .pf-tab.on .pf-tab-icon {
-  color: #fff;
+  color: var(--color-ink);
 }
 
 .pf-panel {
@@ -1480,10 +1460,8 @@ kbd.sc-key.wide {
 
 .pf-section {
   margin: 10px 0 6px;
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--fg-2);
 }
 
@@ -1501,7 +1479,7 @@ kbd.sc-key.wide {
 }
 
 .pf-check input {
-  accent-color: var(--accent);
+  accent-color: var(--color-accent);
   margin: 0;
 }
 
@@ -1527,7 +1505,7 @@ kbd.sc-key.wide {
 .pf-slider {
   flex: 1 1 auto;
   min-width: 0;
-  accent-color: var(--accent);
+  accent-color: var(--color-accent);
 }
 
 .pf-value {
@@ -1554,8 +1532,9 @@ kbd.sc-key.wide {
 }
 
 .pf-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
+  opacity: 0.55;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 /* 컨텍스트 메뉴 서브메뉴 (Reset ▸ Soft / Mixed / Hard).
@@ -1591,4 +1570,16 @@ kbd.sc-key.wide {
   right: 100%;
   margin-left: 0;
   margin-right: 2px;
+}
+
+/* 눌림 상태: 한 단계 더 밝은 hover 배경 */
+.dp-icon-btn:active:not(:disabled),
+.dp-toggle:active:not(:disabled),
+.dlg-btn:active:not(:disabled),
+.pf-btn:active:not(:disabled) {
+  background: var(--color-hover-2);
+}
+
+.dlg-btn.primary:active:not(:disabled) {
+  background: var(--color-accent);
 }

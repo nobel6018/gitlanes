@@ -4,6 +4,7 @@
 import type { ConflictFile, PendingOp } from "../types";
 import { ConflictPanel } from "./ConflictPanel";
 import type { ConflictActions } from "./ConflictPanel";
+import { WarningIcon } from "./icons";
 import "./panels.css";
 
 export interface ConflictBannerProps {
@@ -46,7 +47,7 @@ export function ConflictBanner({
   return (
     <div className="cfb" role="alert">
       <span className="cfb-icon" aria-hidden="true">
-        ⚠
+        <WarningIcon />
       </span>
       <button className="cfb-main" onClick={onOpenWip} title="Open the WIP panel">
         <span className="cfb-text">

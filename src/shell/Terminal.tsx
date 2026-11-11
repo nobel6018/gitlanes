@@ -30,38 +30,50 @@ type Status = "idle" | "opening" | "ready" | "exited" | "unavailable";
 /** PTY가 열린 직후의 출력이 listen 등록 전에 지나갔을 때 프롬프트를 다시 그리게 하는 대기시간(ms) */
 const PROMPT_NUDGE_MS = 400;
 
-/** xterm은 CSS 변수를 못 받는다. 컨테이너에서 실제 색을 읽어 ITheme으로 넘긴다 */
+/** xterm은 CSS 변수를 못 받고 oklch()도 해석하지 못한다.
+ *  컨테이너에서 토큰 값을 읽고, 1x1 canvas에 칠해 sRGB hex로 바꿔 넘긴다.
+ *  @see docs/design-system.md */
+function toSrgbHex(color: string, fallback: string): string {
+  const ctx = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  if (!ctx || color === "") {
+    return fallback;
+  }
+  ctx.fillStyle = fallback;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, 1, 1);
+  const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
 function readTheme(host: HTMLElement): ITheme {
   const style = getComputedStyle(host);
-  const read = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
-  const bg = read("--bg-content", "#1C1E23");
-  const fg = read("--fg-1", "#D0D3D9");
-  const accent = read("--accent", "#3D6DA8");
-  const red = read("--deleted", "#DE7373");
-  const green = read("--added", "#54C08A");
-  const yellow = read("--modified", "#D4B455");
+  const read = (name: string, fallback: string) =>
+    toSrgbHex(style.getPropertyValue(name).trim(), fallback);
+  const bg = read("--bg-content", "#16191D");
+  const fg = read("--fg-1", "#D3D7DD");
+  const accent = read("--accent", "#F2B94B");
   return {
     background: bg,
     foreground: fg,
     cursor: accent,
     cursorAccent: bg,
-    selectionBackground: "rgba(61, 109, 168, 0.45)",
+    selectionBackground: read("--color-select-strong", "#4A4433"),
     black: bg,
-    red,
-    green,
-    yellow,
+    red: read("--deleted", "#F0807A"),
+    green: read("--added", "#5FCB8A"),
+    yellow: read("--modified", "#D7C66F"),
     blue: LANE_COLORS[4],
     magenta: LANE_COLORS[6],
     cyan: LANE_COLORS[0],
     white: fg,
-    brightBlack: read("--fg-2", "#93979F"),
-    brightRed: "#E88A8A",
-    brightGreen: "#6FD3A2",
-    brightYellow: "#E5C86B",
-    brightBlue: "#93AEEB",
-    brightMagenta: "#C4A6E8",
-    brightCyan: "#6CCBEB",
-    brightWhite: "#F0F2F5",
+    brightBlack: read("--fg-2", "#A5A9B0"),
+    brightRed: LANE_COLORS[8],
+    brightGreen: LANE_COLORS[2],
+    brightYellow: LANE_COLORS[5],
+    brightBlue: LANE_COLORS[4],
+    brightMagenta: LANE_COLORS[3],
+    brightCyan: LANE_COLORS[7],
+    brightWhite: read("--color-ink", "#EFF1F4"),
   };
 }
 

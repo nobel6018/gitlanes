@@ -1391,7 +1391,7 @@ export function GraphView({
         </div>
         <div className="gl-cell gl-col-sha">
           <Resizer column="sha" side="left" active={resizing === "sha"} onStart={startResize} onReset={resetColumn} />
-          <span className="gl-header-label">Sha</span>
+          <span className="gl-header-label">SHA</span>
         </div>
         <div className="gl-cell gl-col-date">
           <Resizer column="date" side="left" active={resizing === "date"} onStart={startResize} onReset={resetColumn} />
@@ -1403,6 +1403,7 @@ export function GraphView({
         <canvas
           ref={canvasRef}
           className="gl-canvas"
+          aria-hidden="true"
           style={{
             left: hiddenMask & COLUMN_FLAG.branch ? 0 : fit.widths.branch,
             width: graphWidth,

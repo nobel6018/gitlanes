@@ -5,7 +5,7 @@ import { LANE_COLORS, LANE_WIDTH } from "../constants";
 export const BRANCH_COL_WIDTH = 190;
 export const AUTHOR_COL_WIDTH = 150;
 export const SHA_COL_WIDTH = 90;
-export const DATE_COL_WIDTH = 130;
+export const DATE_COL_WIDTH = 144;
 
 /** GRAPH 컬럼에 실제로 그리는 최대 레인 수. 초과 레인은 캔버스 밖으로 잘린다 */
 export const MAX_DRAWN_LANES = 16;

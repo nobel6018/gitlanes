@@ -55,7 +55,7 @@ const LANE_BAR_WIDTH = 3;
 /** 커밋 노드를 작성자 이니셜 아바타로 그린다. 반지름(px) */
 const AVATAR_R = 8;
 /** 아바타 이니셜 폰트. AUTHOR 컬럼 .gl-avatar(9px/700)와 눈금을 맞춘다 */
-const AVATAR_FONT = '700 9px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+const AVATAR_FONT = '700 9px "Host Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 
 // 드롭 후보와 진행 중 작업은 레인 색이 아니라 상태 색이다. 레인 팔레트에서
 // 어느 레인에도 거의 안 겹치는 두 색을 빌려 새 색을 만들지 않는다.

@@ -1,3 +1,5 @@
+/* Hallmark · restyle of the project's own sheet · stamp and critique: src/theme.css · theme: Console · shape: app screen · redesign: restyle · v2.0.0 */
+/* Hallmark · waive 24b · off-scale spacing in sidebar.css · branch tree indents keep 6px and 14px steps so nested refs stay readable at depth four */
 /* ---------- 브랜치 사이드바 추가분 (v0.11) ----------
  * 기존 .sidebar / .sb-* 규칙은 shell.css에 있다. 여기에는 새로 붙는 것만 둔다.
  */
@@ -13,7 +15,7 @@
   width: 100%;
   height: 24px;
   padding: 0 22px 0 8px;
-  border: 1px solid var(--border-1);
+  border: 1px solid var(--color-field-edge);
   border-radius: 4px;
   background: var(--bg-content);
   color: var(--fg-1);
@@ -27,7 +29,8 @@
 }
 
 .sb-filter-input:focus {
-  border-color: var(--accent);
+  outline: 2px solid var(--color-focus);
+  outline-offset: -1px;
 }
 
 .sb-filter-clear {
@@ -48,12 +51,10 @@
   color: var(--fg-1);
 }
 
-/* 매치 구간 강조. 글자색은 그대로 두고 배경만 얹는다
- * (첫 줄은 color-mix 미지원 웹뷰용 폴백) */
+/* 매치 구간 강조. 옅은 앰버 바탕에 밝은 글자 */
 .sb-mark {
-  background: rgba(61, 109, 168, 0.35);
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: inherit;
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
   border-radius: 2px;
 }
 
@@ -107,9 +108,14 @@
   color: var(--fg-1);
 }
 
+.sb-head-action:active:not(:disabled) {
+  background: var(--color-hover-2);
+}
+
 .sb-head-action:disabled {
   opacity: 0.3;
-  cursor: default;
+  color: var(--color-muted);
+  cursor: not-allowed;
 }
 
 .sb-subsection {
@@ -140,9 +146,10 @@
   margin-left: 4px;
   padding: 0 4px;
   border-radius: 8px;
-  background: var(--bg-content);
-  color: var(--fg-2);
-  font-size: 10px;
+  background: var(--color-rule);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -154,7 +161,7 @@
   margin-left: 6px;
   overflow: hidden;
   color: var(--fg-2);
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -188,8 +195,8 @@
 }
 
 .sb-item.drop-active {
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--color-select-panel);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
 }
 
 /* 드롭 타깃 위에서는 자식 요소가 dragleave를 만들지 않게 이벤트를 행이 대표로 받는다 */

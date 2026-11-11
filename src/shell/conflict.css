@@ -1,3 +1,5 @@
+/* Hallmark · restyle of the project's own sheet · stamp and critique: src/theme.css · theme: Console · shape: app screen · redesign: restyle · v2.0.0 */
+/* Hallmark · waive 24b · off-scale spacing in conflict.css · the conflict compare columns keep 6px gutters so ours and theirs stay aligned line for line */
 /* 3-way 충돌 비교 화면 (ConflictCompare.tsx) */
 
 .ov-backdrop.cfc-backdrop {
@@ -6,16 +8,16 @@
 }
 
 .cfc {
-  width: calc(100vw - 48px);
+  width: calc(100% - 48px);
   max-width: 1600px;
-  height: calc(100vh - 80px);
+  height: calc(100% - 80px);
   display: flex;
   flex-direction: column;
   padding: 14px 16px 12px;
   background: var(--bg-panel);
   border: 1px solid var(--border-1);
   border-radius: 8px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
   outline: none;
 }
 
@@ -38,10 +40,10 @@
 .cfc-warn {
   margin: 0 0 8px;
   padding: 6px 8px;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--color-accent);
   border-radius: 4px;
-  background: var(--accent-soft);
-  color: var(--fg-1);
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
 }
 
 /* 넓은 창에서는 세 칸이 다 보이므로 탭을 숨긴다 */
@@ -59,14 +61,14 @@
   background: transparent;
   color: var(--fg-2);
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 500;
   text-transform: capitalize;
 }
 
 .cfc-tab.active {
-  border-color: var(--accent);
-  color: var(--fg-1);
-  background: var(--accent-soft);
+  border-color: var(--color-cool-soft);
+  color: var(--color-ink);
+  background: var(--color-cool-soft);
 }
 
 .cfc-panes {

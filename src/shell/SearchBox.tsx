@@ -1,4 +1,5 @@
 import type { RefObject } from "react";
+import { ChevronLeftIcon, ChevronRightIcon } from "./icons";
 import { withKbd } from "./shortcuts";
 
 export interface SearchBoxProps {
@@ -107,11 +108,11 @@ export function SearchBox({
               {exhausted && matchCount > 0 ? " (전체)" : ""}
             </span>
           )}
-          <button className="search-nav" onClick={onPrev} title={withKbd("Previous match", "Shift+Enter")}>
-            ‹
+          <button className="search-nav" onClick={onPrev} title={withKbd("Previous match", "Shift+Enter")} aria-label="Previous match">
+            <ChevronLeftIcon />
           </button>
-          <button className="search-nav" onClick={onNext} title={withKbd("Next match", "Enter")}>
-            ›
+          <button className="search-nav" onClick={onNext} title={withKbd("Next match", "Enter")} aria-label="Next match">
+            <ChevronRightIcon />
           </button>
           <button className="search-clear" onClick={onClear} title={withKbd("Clear", "Esc")}>
             ×

@@ -128,31 +128,37 @@ export function GraphView(props: GraphViewProps): JSX.Element;
 - BRANCH/TAG 컬럼: refs pill을 그래프 밖 별도 컬럼에 표시 (GitKraken 방식). `showTags=false`면 tag pill 숨김
 - GRAPH 컬럼: canvas에 곡선 엣지 + 커밋 점. 색은 `LANE_COLORS[color]`
 - 행 높이 `ROW_HEIGHT` 고정, 가상 스크롤 필수 (5만 행에서 60fps 목표)
-- 선택 행 하이라이트 배경: `var(--accent)`에 50% 투명
+- 선택 행 하이라이트 배경: `var(--color-select)` (앰버를 바탕에 16% 섞은 값, 한쪽 띠 없음)
 - 텍스트/배경 색은 아래 CSS 변수만 사용
 
 ## CSS 변수 (ui-shell이 src/theme.css에 정의, 모두가 참조)
 
+v0.23(Hallmark Console 리스타일)부터 값의 출처는 `src/tokens.css`입니다.
+아래 계약 이름은 그대로 유지하고, 값은 tokens.css의 OKLCH 토큰을 가리키는 별칭입니다.
+새 코드는 계약 이름 또는 `--color-*` 토큰을 쓰고, 색 리터럴을 쓰지 않습니다.
+
 ```css
 :root {
-  --bg-window: #282A31;
-  --bg-titlebar: #212327;
-  --bg-toolbar: #2B2D34;
-  --bg-content: #1C1E23;   /* 그래프/리스트 영역 */
-  --bg-panel: #26282F;     /* 상세 패널, 팝업 */
-  --border-0: #17181C;
-  --border-1: #3A3D46;
-  --fg-1: #D0D3D9;         /* 본문 */
-  --fg-2: #93979F;         /* 보조(날짜, sha) */
-  --accent: #3D6DA8;       /* 선택, 포커스 */
-  --link: #6FA8E8;
-  --added: #54C08A;
-  --deleted: #DE7373;
-  --modified: #D4B455;
+  --bg-window: var(--color-paper-2);
+  --bg-titlebar: var(--color-paper-3);
+  --bg-toolbar: var(--color-paper-2);
+  --bg-content: var(--color-paper);    /* 그래프/리스트 영역 */
+  --bg-panel: var(--color-paper-2);    /* 상세 패널, 팝업 */
+  --border-0: var(--color-paper-3);
+  --border-1: var(--color-rule);
+  --fg-1: var(--color-ink-2);          /* 본문 */
+  --fg-2: var(--color-muted);          /* 보조(날짜, sha) */
+  --accent: var(--color-accent);       /* 앰버: 주 버튼, 포커스, 현재 항목 */
+  --link: var(--color-cool);
+  --added: var(--color-ok);
+  --deleted: var(--color-bad);
+  --modified: var(--color-changed);
 }
 ```
 
-폰트: 시스템 UI 폰트, sha/diff는 `ui-monospace, SF Mono, monospace`. 기본 13px.
+- 계약 변수 값이 `oklch()`이므로 JS에서 읽어 canvas 밖으로 넘길 때(xterm 등)는 sRGB로 바꿔야 합니다. `src/shell/Terminal.tsx`의 `toSrgbHex` 참고. canvas `fillStyle`에는 그대로 넣어도 됩니다
+- 폰트: UI는 Host Grotesk, sha/diff/날짜는 Atkinson Hyperlegible Mono (`src/assets/fonts`에 번들, 한글은 Apple SD Gothic Neo 대체). 기본 13px. 터미널은 시스템 monospace 유지
+- 첫 렌더는 `src/fonts.ts`의 `whenFontsReady()` 뒤에 합니다. RefPills가 canvas로 pill 폭을 재고 캐시하기 때문입니다
 
 ## 앱 레이아웃 (ui-shell)
 

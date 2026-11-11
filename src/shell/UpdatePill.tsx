@@ -28,7 +28,7 @@ export function UpdatePill({ checking, result }: UpdatePillProps) {
               strokeLinecap="round"
             />
           </svg>
-          <span>업데이트 확인 중...</span>
+          <span>업데이트 확인 중…</span>
         </>
       ) : result === "upToDate" ? (
         <>

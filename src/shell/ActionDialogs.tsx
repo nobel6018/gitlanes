@@ -916,7 +916,7 @@ export function AddSubmoduleDialog({
           autoComplete="off"
           autoFocus
         />
-        <div className="dlg-note">A remote URL, or a path relative to this repository's origin such as ../lib.</div>
+        <div className="dlg-note">A remote URL, or a path relative to this repository’s origin such as ../lib.</div>
       </Field>
       <Field label="Path" htmlFor={`${id}-path`}>
         <input

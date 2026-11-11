@@ -3,6 +3,7 @@
 // 저장 버튼은 없다. 모든 컨트롤은 controlled이고 변경 즉시 onChange로 셸에 올린다.
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
+import { ContrastIcon, GearIcon, GraphIcon, TerminalIcon } from "./icons";
 import "./panels.css";
 
 export interface PrefValues {
@@ -29,11 +30,11 @@ export interface PreferencesProps {
 
 type TabKey = "general" | "appearance" | "graph" | "terminal";
 
-const TABS: { key: TabKey; label: string; icon: string }[] = [
-  { key: "general", label: "General", icon: "⚙" },
-  { key: "appearance", label: "Appearance", icon: "◑" },
-  { key: "graph", label: "Graph", icon: "⑃" },
-  { key: "terminal", label: "Terminal", icon: "▤" },
+const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
+  { key: "general", label: "General", icon: <GearIcon /> },
+  { key: "appearance", label: "Appearance", icon: <ContrastIcon /> },
+  { key: "graph", label: "Graph", icon: <GraphIcon /> },
+  { key: "terminal", label: "Terminal", icon: <TerminalIcon /> },
 ];
 
 const ZOOM_MIN = 0.8;
