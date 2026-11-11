@@ -144,6 +144,10 @@ pub fn git_undo(path: String, entry: UndoEntry) -> Result<OpResult, String> {
         | UndoKind::RenameBranch
         | UndoKind::CreateTag
         | UndoKind::DeleteTag => undo_refs(&path, &entry),
+        UndoKind::Discard => match entry.discard.as_ref() {
+            Some(undo) => super::discard_undo::undo_discard(&path, undo),
+            None => Err("This discard has no file snapshot to restore.".to_string()),
+        },
     }
 }
 
@@ -562,7 +566,7 @@ fn looks_like_full_ref(name: &str) -> bool {
 }
 
 /// SHA-1(40)과 SHA-256(64) 레포 둘 다.
-fn is_oid(text: &str) -> bool {
+pub(super) fn is_oid(text: &str) -> bool {
     matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -585,6 +589,7 @@ mod tests {
             before,
             after: snapshot(repo),
             reset_mode: None,
+            discard: None,
         }
     }
 

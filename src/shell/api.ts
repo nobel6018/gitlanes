@@ -17,6 +17,7 @@ import type {
   RebaseStep,
   RefEntry,
   RefSnapshot,
+  WorkSnapshot,
   RemoteInfo,
   RepoInfo,
   RepoState,
@@ -536,6 +537,11 @@ export function gitApplyPatchFile(
 /** HEAD와 로컬 브랜치, 태그의 위치. 되돌릴 수 있는 쓰기 전후로 찍는다 */
 export function getRefSnapshot(path: string): Promise<RefSnapshot> {
   return invoke<RefSnapshot>("get_ref_snapshot", { path });
+}
+
+/** v0.24. discard 되돌리기용 파일 내용 스냅샷 */
+export function getWorkSnapshot(path: string, files: string[]): Promise<WorkSnapshot> {
+  return invoke<WorkSnapshot>("get_work_snapshot", { path, files });
 }
 
 /**

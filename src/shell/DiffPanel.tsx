@@ -644,7 +644,46 @@ export function DiffPanel({
     [hunkRows, currentHunk, scrollToRow],
   );
 
+  /**
+   * Delete, ⌘⌫(Ctrl+Backspace) (v0.24). 고른 줄이 있으면 그 줄을, 없으면 지금 보고 있는 hunk(머리의 n/m)를
+   * 워킹 트리에서 버린다. 버튼과 같은 확인창을 거친다. staged diff에서는 아무것도 하지 않는다
+   */
+  function discardFromKeyboard(): boolean {
+    if (!canPatch || hunkActions === undefined || hunkActions === null) {
+      return false;
+    }
+    if (hunkActions.area === "staged" || hunkActions.busy) {
+      return false;
+    }
+    if (picked.size > 0) {
+      sendPatch(
+        buildLinePatch(patchSource, picked, true),
+        false,
+        true,
+        picked.size === 1 ? "1 line" : `${picked.size} lines`,
+      );
+      return true;
+    }
+    if (patchSource.hunks[currentHunk] === undefined) {
+      return false;
+    }
+    sendPatch(buildPatch(patchSource, [currentHunk], true), false, true, "1 hunk");
+    return true;
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (
+      (event.key === "Delete" && !event.metaKey && !event.ctrlKey && !event.altKey) ||
+      (event.key === "Backspace" &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey)
+    ) {
+      if (discardFromKeyboard()) {
+        event.preventDefault();
+      }
+      return;
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }

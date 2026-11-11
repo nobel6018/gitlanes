@@ -116,3 +116,38 @@ export function ChevronRightIcon(props: IconProps) {
     </Svg>
   );
 }
+
+export function PlusIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 3.2v9.6M3.2 8h9.6" />
+    </Svg>
+  );
+}
+
+export function MinusIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3.2 8h9.6" />
+    </Svg>
+  );
+}
+
+/** 되돌리기(discard). 반시계 화살표 */
+export function DiscardIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3.4 6.2A5 5 0 1 1 3.2 9.6" />
+      <path d="M3 2.8v3.6h3.6" />
+    </Svg>
+  );
+}
+
+/** 기록된 커밋으로 맞추기(서브모듈 update). 아래 화살표와 받침 */
+export function DownloadIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 2.6v7.6M4.8 7.2 8 10.4l3.2-3.2M3.2 13.2h9.6" />
+    </Svg>
+  );
+}

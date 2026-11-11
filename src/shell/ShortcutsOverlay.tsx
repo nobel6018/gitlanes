@@ -76,7 +76,8 @@ const GROUPS: ShortcutGroup[] = [
       { combos: ["Mod+Shift+N"], label: "New branch" },
       { combos: ["Mod+Shift+S"], label: "Stash changes" },
       { combos: ["Mod+Shift+O"], label: "Pop latest stash" },
-      { combos: ["Mod+Z"], label: "Undo the last commit, checkout, branch, tag or reset" },
+      { combos: ["Mod+Z"], label: "Undo the last commit, checkout, branch, tag, reset or discard" },
+      { combos: ["Delete", "Mod+Backspace"], label: "Discard the selected files or lines (asks first)" },
     ],
   },
   {
@@ -102,6 +103,7 @@ const ALIASES: Record<string, string> = {
 
 const MAC_EXTRA: Record<string, string> = {
   Backspace: "⌫",
+  Delete: "⌦",
   PageUp: "PgUp",
   PageDown: "PgDn",
 };

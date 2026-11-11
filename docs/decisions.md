@@ -96,3 +96,33 @@ Staged
 이 테스트는 `git diff --cached` 와 `git diff` 를 따로 읽어 양쪽을 각각 단언하고,
 호출 전에 파일이 정말 두 영역에 다 있는지도 확인합니다. `"worktree"` 분기에 일부러
 `--source=HEAD --staged` 를 주입하면 실제로 실패하는 것을 확인했습니다.
+
+## discard 되돌리기
+
+**결정**: v0.24부터 discard(파일, hunk, 줄)와 untracked 삭제를 Undo(⌘Z)로 되돌립니다. 버리기 직전과 직후의 파일 내용을 git tree로 찍어 두고, 되돌릴 때 직전 내용을 다시 씁니다. 확인창은 그대로 둡니다.
+
+| 단계 | 하는 일 | 코드 |
+|---|---|---|
+| 찍기 | 인덱스 `write-tree`, 인덱스 사본에 대상 경로 `add -A` 후 `write-tree` | `src-tauri/src/ops/discard_undo.rs` `get_work_snapshot` |
+| 기록 | discard 전후 스냅샷을 `UndoEntry.discard`에 담아 스택에 쌓기 | `src/shell/actions.ts` `run`의 `undo.discard` |
+| 되돌리기 | 대상 경로가 직후 스냅샷과 같을 때만 직전 내용으로 `restore` | `discard_undo.rs` `undo_discard` |
+
+### 왜 `git stash create`가 아닌가
+
+`stash create`는 워킹 트리를 건드리지 않고 커밋을 만들어 주지만 untracked 파일을 담지 못합니다. `-u`를 붙일 수 있는 `stash push`는 워킹 트리를 바꿉니다. untracked 삭제가 되돌릴 수 없는 작업 중 가장 아픈 것이라, 인덱스 사본에 `add -A`하는 방식을 골랐습니다. 실제 인덱스는 움직이지 않습니다.
+
+### 그 사이 파일을 고쳤으면 되돌리지 않는다
+
+discard한 뒤 같은 파일을 다시 고쳤다면, 되살리는 순간 그 수정이 사라집니다. 그래서 대상 경로의 지금 내용이 discard 직후와 다르면 아무것도 하지 않고 이유를 알립니다. 다른 파일을 고친 것은 상관없습니다. ref 되돌리기가 "이 작업이 바꾼 ref만 본다"는 규칙과 같습니다.
+
+### 한계
+
+- 레포를 바꾸면 스택을 비웁니다. 앱을 다시 켜도 사라집니다
+- tree 객체는 어느 ref에도 걸리지 않습니다. `git gc --prune=now`를 직접 돌리면 되살릴 내용이 지워집니다. 기본 `gc`는 2주를 기다립니다
+- 아주 큰 untracked 파일을 지울 때는 찍는 동안 그 파일을 한 번 해시합니다
+- 충돌 중(unmerged 인덱스)에는 `write-tree`가 실패해 되돌리기를 남기지 않습니다. discard는 그대로 합니다
+
+### 이 결정을 지키는 것
+
+`src-tauri/src/ops/discard_undo.rs` 테스트 10개입니다. 특히 `discard_뒤에_파일을_고쳤으면_되돌리지_않는다`와 `스냅샷은_실제_인덱스를_건드리지_않는다`가 위 두 규칙을 지킵니다.
+
